@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.next/
+.expo/
+.turbo/
+coverage/
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+/data/
+minio-data/
+mongo-data/
+uploads-tmp/
+playwright-report/
+test-results/
