@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AdminOverviewResponse } from '@playin/contracts';
 import type { RoomKind } from '@playin/contracts';
-import { api } from '@/lib/api';
+import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/hooks/useTheme';
 import { Avatar } from '@/components/ui/avatar';
@@ -108,6 +109,16 @@ export default function HomePage() {
     enabled: user !== null,
   });
 
+  /** Admin probe: the Owner console menu entry renders only when the API
+   *  confirms this account is on ADMIN_EMAILS (403 otherwise). */
+  const adminProbe = useQuery({
+    queryKey: ['admin-probe'],
+    queryFn: () => apiFetch('/admin/overview', { schema: AdminOverviewResponse }),
+    enabled: user !== null,
+    retry: false,
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     if (!loading && user === null) router.replace('/login');
   }, [user, loading, router]);
@@ -148,6 +159,15 @@ export default function HomePage() {
                 >
                   Settings
                 </DropdownMenuItem>
+                {adminProbe.isSuccess && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      router.push('/admin');
+                    }}
+                  >
+                    Owner console
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   destructive
                   onSelect={() => {

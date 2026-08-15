@@ -503,6 +503,139 @@ export type MeExportResponse = z.infer<typeof MeExportResponse>;
 export const DeleteMeResponse = z.object({ ok: z.literal(true), purgeAt: Timestamp });
 export type DeleteMeResponse = z.infer<typeof DeleteMeResponse>;
 
+// ---------- admin ops surface (owner-only; ADMIN_EMAILS) ----------
+//
+// Operational telemetry ONLY — counts, gauges, aggregates, abuse reports.
+// The spec's safeguard clause forbids content/play-activity telemetry, so
+// nothing here exposes what users watch or say.
+
+export const AdminOverviewResponse = z.object({
+  now: Timestamp,
+  /** Process start (epoch ms) — in-process counters reset on restart. */
+  processStartedAt: Timestamp,
+  uptimeSec: z.number().nonnegative(),
+  nodeVersion: z.string(),
+  memoryRssMb: z.number().nonnegative(),
+  counts: z.object({
+    users: z.number().int().nonnegative(),
+    rooms: z.number().int().nonnegative(),
+    members: z.number().int().nonnegative(),
+    messages: z.number().int().nonnegative(),
+    reportsOpen: z.number().int().nonnegative(),
+    sessionsActive: z.number().int().nonnegative(),
+    assets: z.number().int().nonnegative(),
+  }),
+  /** Live WS gauges for THIS instance. */
+  live: z.object({
+    connections: z.number().int().nonnegative(),
+    rooms: z.number().int().nonnegative(),
+  }),
+  adapters: z.object({
+    store: z.string(),
+    bus: z.string(),
+  }),
+  features: z.object({
+    mediaPipeline: z.boolean(),
+    sfu: z.boolean(),
+    gifs: z.boolean(),
+    stripe: z.boolean(),
+    push: z.boolean(),
+  }),
+});
+export type AdminOverviewResponse = z.infer<typeof AdminOverviewResponse>;
+
+export const AdminRouteCounter = z.object({
+  route: z.string(),
+  method: z.string(),
+  ok: z.number().int().nonnegative(),
+  clientError: z.number().int().nonnegative(),
+  serverError: z.number().int().nonnegative(),
+  totalMs: z.number().nonnegative(),
+});
+export type AdminRouteCounter = z.infer<typeof AdminRouteCounter>;
+
+export const AdminMetricsResponse = z.object({
+  since: Timestamp,
+  requests: z.array(AdminRouteCounter),
+  totalRequests: z.number().int().nonnegative(),
+  total4xx: z.number().int().nonnegative(),
+  total5xx: z.number().int().nonnegative(),
+  wsEvents: z.record(z.string(), z.number().int().nonnegative()),
+});
+export type AdminMetricsResponse = z.infer<typeof AdminMetricsResponse>;
+
+export const AdminReport = z.object({
+  id: z.string().min(1),
+  reporterId: UserId,
+  reporterName: z.string().nullable(),
+  target: ReportTarget,
+  reason: z.string(),
+  createdAt: Timestamp,
+  resolvedAt: Timestamp.nullable(),
+});
+export type AdminReport = z.infer<typeof AdminReport>;
+
+export const AdminReportsResponse = z.object({ reports: z.array(AdminReport) });
+export type AdminReportsResponse = z.infer<typeof AdminReportsResponse>;
+
+export const AdminResolveReportBody = z.object({
+  reportId: z.string().min(1),
+  /** Resolve WITHOUT touching the target. */
+  dismiss: z.boolean().default(false),
+});
+export type AdminResolveReportBody = z.infer<typeof AdminResolveReportBody>;
+
+export const AdminResolveReportResponse = z.object({
+  ok: z.literal(true),
+  action: z.string(),
+});
+export type AdminResolveReportResponse = z.infer<typeof AdminResolveReportResponse>;
+
+export const AdminRoomRow = z.object({
+  room: Room,
+  memberCount: z.number().int().nonnegative(),
+  liveConnections: z.number().int().nonnegative(),
+  messageCount: z.number().int().nonnegative(),
+});
+export type AdminRoomRow = z.infer<typeof AdminRoomRow>;
+
+export const AdminRoomsResponse = z.object({ rooms: z.array(AdminRoomRow) });
+export type AdminRoomsResponse = z.infer<typeof AdminRoomsResponse>;
+
+export const AdminUserRow = z.object({
+  user: User,
+  activeSessions: z.number().int().nonnegative(),
+  memberships: z.number().int().nonnegative(),
+});
+export type AdminUserRow = z.infer<typeof AdminUserRow>;
+
+export const AdminUsersResponse = z.object({ users: z.array(AdminUserRow) });
+export type AdminUsersResponse = z.infer<typeof AdminUsersResponse>;
+
+/** Usage-metering rollup (cost attribution / fair-use): sums by kind+unit
+ *  over the window. */
+export const AdminUsageBucket = z.object({
+  kind: z.string(),
+  unit: z.string(),
+  total: z.number().finite().nonnegative(),
+  samples: z.number().int().nonnegative(),
+});
+export type AdminUsageBucket = z.infer<typeof AdminUsageBucket>;
+
+export const AdminUsageResponse = z.object({
+  windowDays: z.number().int().positive(),
+  buckets: z.array(AdminUsageBucket),
+  /** Top rooms by session-minutes in the window (cost attribution). */
+  topRooms: z.array(
+    z.object({
+      roomId: RoomId,
+      roomName: z.string().nullable(),
+      sessionMinutes: z.number().finite().nonnegative(),
+    }),
+  ),
+});
+export type AdminUsageResponse = z.infer<typeof AdminUsageResponse>;
+
 // ---------- gifs ----------
 
 export const SearchGifsQuery = z.object({
@@ -606,5 +739,14 @@ export const rest = {
   gdpr: {
     exportMe: { response: MeExportResponse },
     deleteMe: { response: DeleteMeResponse },
+  },
+  admin: {
+    overview: { response: AdminOverviewResponse },
+    metrics: { response: AdminMetricsResponse },
+    reports: { response: AdminReportsResponse },
+    resolveReport: { body: AdminResolveReportBody, response: AdminResolveReportResponse },
+    rooms: { response: AdminRoomsResponse },
+    users: { response: AdminUsersResponse },
+    usage: { response: AdminUsageResponse },
   },
 } as const;

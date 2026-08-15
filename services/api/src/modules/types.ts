@@ -69,6 +69,8 @@ export interface HubApi {
   /** Distinct userIds with ≥1 open socket in the room on THIS instance. */
   localUserIds(roomId: RoomId): UserId[];
   localConnectionCount(roomId: RoomId): number;
+  /** Instance-local live gauges (ops/admin surface). */
+  stats(): { connections: number; rooms: number };
   /** Close every socket this user has in the room on THIS instance
    *  (kick/ban flows must also revoke membership via the store). */
   disconnectUser(roomId: RoomId, userId: UserId, code?: number, reason?: string): void;

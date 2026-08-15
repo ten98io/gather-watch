@@ -16,4 +16,5 @@ export const modules: ModulePlugin[] = [
   (await import('./rtc/index')).default,
   (await import('./compliance/index')).default,
   (await import('./rooms/index')).default,
+  (await import('./admin/index')).default,
 ];

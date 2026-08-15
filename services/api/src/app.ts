@@ -13,6 +13,7 @@ import { createBus, createStore } from './adapters/index';
 import type { BusPort, StorePort } from './adapters/ports';
 import { registerErrorMapper } from './plugins/error-mapper';
 import { registerAuth } from './plugins/auth';
+import { registerMetrics } from './plugins/metrics';
 import { registerRateLimit } from './plugins/rate-limit';
 import { createEventWriter } from './ws/events';
 import { RoomHub, registerWs } from './ws/hub';
@@ -63,6 +64,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   registerErrorMapper(app);
   registerAuth(app);
+  registerMetrics(app);
   await registerRateLimit(app);
 
   registerWs(app, hub);

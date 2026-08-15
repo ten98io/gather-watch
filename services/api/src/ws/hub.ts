@@ -15,6 +15,7 @@ import type { RoomBusMessage } from '../adapters/ports';
 import { AppError, isAppError } from '../lib/errors';
 import { verifyAccessToken } from '../lib/tokens';
 import { requireAuth } from '../plugins/auth';
+import { countWsEvent } from '../plugins/metrics';
 import { parseWith } from '../plugins/error-mapper';
 import type {
   AuthContext,
@@ -139,6 +140,13 @@ export class RoomHub implements HubApi {
 
   localConnectionCount(roomId: RoomId): number {
     return this.rooms.get(roomId)?.size ?? 0;
+  }
+
+  /** Instance-local gauges for the ops surface (/admin/overview). */
+  stats(): { connections: number; rooms: number } {
+    let connections = 0;
+    for (const conns of this.rooms.values()) connections += conns.size;
+    return { connections, rooms: this.rooms.size };
   }
 
   disconnectUser(roomId: RoomId, userId: UserId, code = 4403, reason = 'removed'): void {
@@ -358,6 +366,7 @@ export class RoomHub implements HubApi {
       sendError(socket, roomId, makeApiError('VALIDATION', `unsupported event type: ${event.type}`));
       return;
     }
+    countWsEvent(event.type);
 
     const reply: HandlerContext['reply'] = (type, payload) => {
       if (socket.readyState !== WebSocket.OPEN) return;

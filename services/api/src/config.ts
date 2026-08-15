@@ -85,6 +85,9 @@ export const configSchema = z.object({
       authMax: z.coerce.number().int().min(1).default(20),
     })
     .default({}),
+  /** Platform-owner inboxes. Users whose verified email is listed here get the
+   *  /admin ops surface (REST + web panel). Guests can never be admin. */
+  adminEmails: z.array(z.string().email()).default([]),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -173,6 +176,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       windowMs: envStr(env, 'RATE_LIMIT_WINDOW_MS'),
       authMax: envStr(env, 'RATE_LIMIT_AUTH_MAX'),
     },
+    adminEmails: envStr(env, 'ADMIN_EMAILS')
+      ?.split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => e.length > 0),
   };
 
   const parsed = configSchema.safeParse(input);
