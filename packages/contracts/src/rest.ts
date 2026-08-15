@@ -7,6 +7,7 @@ import {
   InviteCode,
   MediaAsset,
   Member,
+  MediaRef,
   Message,
   MessageId,
   Playlist,
@@ -44,10 +45,20 @@ export type RequestMagicLinkResponse = z.infer<typeof RequestMagicLinkResponse>;
 export const VerifyTokenBody = z.object({ token: z.string().min(1) });
 export type VerifyTokenBody = z.infer<typeof VerifyTokenBody>;
 
-export const VerifyTokenResponse = z.object({ user: User });
+/** Short-lived access JWT; servers return it alongside the httpOnly refresh
+ *  cookie. Optional so cookie-only deployments stay conformant. */
+export const VerifyTokenResponse = z.object({
+  user: User,
+  accessToken: z.string().min(1).optional(),
+  accessTokenExpiresAt: Timestamp.optional(),
+});
 export type VerifyTokenResponse = z.infer<typeof VerifyTokenResponse>;
 
-export const RefreshResponse = z.object({ user: User });
+export const RefreshResponse = z.object({
+  user: User,
+  accessToken: z.string().min(1).optional(),
+  accessTokenExpiresAt: Timestamp.optional(),
+});
 export type RefreshResponse = z.infer<typeof RefreshResponse>;
 
 export const MeResponse = z.object({ user: User });
@@ -76,6 +87,8 @@ export const GuestJoinResponse = z.object({
   /** Room's current event-stream tip; seed RoomSocket so late joiners
    *  start at the live position instead of gap-replaying full history. */
   lastEventSeq: z.number().int().nonnegative().optional(),
+  accessToken: z.string().min(1).optional(),
+  accessTokenExpiresAt: Timestamp.optional(),
 });
 export type GuestJoinResponse = z.infer<typeof GuestJoinResponse>;
 
@@ -93,6 +106,10 @@ export type LogoutResponse = z.infer<typeof LogoutResponse>;
 
 export const ListSessionsResponse = z.object({ sessions: z.array(Session) });
 export type ListSessionsResponse = z.infer<typeof ListSessionsResponse>;
+
+/** Revoke ONE session by id (DELETE /auth/sessions/:sessionId). */
+export const RevokeSessionResponse = Ok;
+export type RevokeSessionResponse = z.infer<typeof RevokeSessionResponse>;
 
 /** "Sign out everywhere": revokes every session except the current one. */
 export const RevokeAllSessionsResponse = z.object({
@@ -279,6 +296,20 @@ export type CompleteUploadBody = z.infer<typeof CompleteUploadBody>;
 export const CompleteUploadResponse = z.object({ asset: MediaAsset });
 export type CompleteUploadResponse = z.infer<typeof CompleteUploadResponse>;
 
+/**
+ * Re-presign the part URLs of an in-flight ('uploading') multipart session
+ * (POST /uploads/:id/parts). Presigned part URLs are short-lived by design;
+ * uploads that outlive the TTL refresh their remaining URLs here instead of
+ * the server minting day-long signatures up front.
+ */
+export const RefreshUploadPartsBody = z.object({ uploadId: z.string().min(1) });
+export type RefreshUploadPartsBody = z.infer<typeof RefreshUploadPartsBody>;
+
+export const RefreshUploadPartsResponse = z.object({
+  parts: CreateUploadResponse.shape.parts,
+});
+export type RefreshUploadPartsResponse = z.infer<typeof RefreshUploadPartsResponse>;
+
 export const ListLibraryQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -438,6 +469,22 @@ export type ReportBody = z.infer<typeof ReportBody>;
 export const ReportResponse = z.object({ ok: z.literal(true), reportId: z.string().min(1) });
 export type ReportResponse = z.infer<typeof ReportResponse>;
 
+/** One playback transition the user caused (GDPR export). */
+export const PlaybackHistoryEntry = z.object({
+  roomId: RoomId,
+  mediaRef: MediaRef,
+  positionMs: z.number().finite().nonnegative(),
+  at: Timestamp,
+});
+export type PlaybackHistoryEntry = z.infer<typeof PlaybackHistoryEntry>;
+
+/** Monthly TURN relay usage aggregate; month is UTC 'YYYY-MM'. */
+export const RelayUsageMonth = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+  relayGb: z.number().finite().nonnegative(),
+});
+export type RelayUsageMonth = z.infer<typeof RelayUsageMonth>;
+
 /** GDPR full JSON export (GET /me/export). */
 export const MeExportResponse = z.object({
   exportedAt: Timestamp,
@@ -446,6 +493,8 @@ export const MeExportResponse = z.object({
   messages: z.array(Message),
   playlists: z.array(Playlist),
   assets: z.array(MediaAsset),
+  playbackHistory: z.array(PlaybackHistoryEntry).optional(),
+  usage: z.array(RelayUsageMonth).optional(),
 });
 export type MeExportResponse = z.infer<typeof MeExportResponse>;
 
@@ -489,6 +538,7 @@ export const rest = {
     upgradeGuest: { body: UpgradeGuestBody, response: UpgradeGuestResponse },
     logout: { response: LogoutResponse },
     listSessions: { response: ListSessionsResponse },
+    revokeSession: { response: RevokeSessionResponse },
     revokeAllSessions: { response: RevokeAllSessionsResponse },
   },
   rooms: {
@@ -515,6 +565,7 @@ export const rest = {
   media: {
     createUpload: { body: CreateUploadBody, response: CreateUploadResponse },
     completeUpload: { body: CompleteUploadBody, response: CompleteUploadResponse },
+    refreshUploadParts: { body: RefreshUploadPartsBody, response: RefreshUploadPartsResponse },
     listLibrary: { query: ListLibraryQuery, response: ListLibraryResponse },
     deleteAsset: { response: DeleteAssetResponse },
     renameAsset: { body: RenameAssetBody, response: RenameAssetResponse },

@@ -61,6 +61,7 @@ function fakeStripe(overrides: Partial<BillingStripe> = {}): BillingStripe {
       sessions: { create: async () => ({ url: 'https://billing.stripe.com/p/session/test' }) },
     },
     webhooks: { constructEvent: (raw, sig, secret) => real.webhooks.constructEvent(raw, sig, secret) },
+    subscriptions: { cancel: async (id) => ({ id }) },
     ...overrides,
   };
 }

@@ -168,9 +168,102 @@ function serializeAsset(doc: AssetDoc): MediaAsset {
   };
 }
 
+// ── Object verification (size cap is enforced against REALITY) ──────────────
+//
+// The presigned PUT is UNSIGNED-PAYLOAD with only `host` signed — S3/MinIO
+// accept an object of ANY size through it, so the create-time sizeBytes check
+// is advisory only. Completion HEADs the object and enforces the plan cap
+// against the actual byte count (deleting oversize objects), then records the
+// actual size. Tests inject fake ops per Deps.
+
+export interface AttachmentObjectOps {
+  /** Object size via HEAD; null when the key does not exist. */
+  stat(key: string): Promise<{ sizeBytes: number } | null>;
+  remove(key: string): Promise<void>;
+}
+
+const objectOpsOverrides = new WeakMap<Deps, AttachmentObjectOps>();
+
+/** Test seam: pin the object ops used for this app's Deps. */
+export function setAttachmentObjectOps(deps: Deps, ops: AttachmentObjectOps | null): void {
+  if (ops === null) {
+    objectOpsOverrides.delete(deps);
+  } else {
+    objectOpsOverrides.set(deps, ops);
+  }
+}
+
+/** Header-signed SigV4 request (HEAD/DELETE control calls, no payload). */
+async function signedS3Request(
+  s3: AppConfig['s3'],
+  method: 'HEAD' | 'DELETE',
+  key: string,
+): Promise<Response> {
+  const host = new URL(s3.endpoint).host;
+  const encodedKey = key.split('/').map(uriEncode).join('/');
+  const canonicalUri = `/${s3.bucket}/${encodedKey}`;
+  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = createHash('sha256').update('').digest('hex');
+
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  const canonicalRequest = [method, canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    `${dateStamp}/us-east-1/s3/aws4_request`,
+    createHash('sha256').update(canonicalRequest).digest('hex'),
+  ].join('\n');
+  const signingKey = hmac(
+    hmac(hmac(hmac(`AWS4${s3.secretKey}`, dateStamp), 'us-east-1'), 's3'),
+    'aws4_request',
+  );
+  const signature = createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+
+  return fetch(`${s3.endpoint}${canonicalUri}`, {
+    method,
+    headers: {
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      authorization: `AWS4-HMAC-SHA256 Credential=${s3.accessKey}/${dateStamp}/us-east-1/s3/aws4_request, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
+function objectOps(deps: Deps): AttachmentObjectOps {
+  const override = objectOpsOverrides.get(deps);
+  if (override !== undefined) {
+    return override;
+  }
+  const { s3 } = deps.config;
+  return {
+    async stat(key: string): Promise<{ sizeBytes: number } | null> {
+      const res = await signedS3Request(s3, 'HEAD', key);
+      await res.arrayBuffer().catch(() => undefined);
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        throw new AppError('INTERNAL', `attachment HEAD failed with ${res.status}`);
+      }
+      const size = Number(res.headers.get('content-length'));
+      if (!Number.isFinite(size) || size < 0) {
+        throw new AppError('INTERNAL', 'attachment HEAD missing content-length');
+      }
+      return { sizeBytes: size };
+    },
+    async remove(key: string): Promise<void> {
+      const res = await signedS3Request(s3, 'DELETE', key);
+      await res.arrayBuffer().catch(() => undefined);
+    },
+  };
+}
+
 /**
  * Mark an upload complete. Owner + uploadId must match; already-'ready' is
- * an idempotent success. Returns the serialized asset and its public URL.
+ * an idempotent success. The plan size cap is enforced HERE against the
+ * actual object (see AttachmentObjectOps above) — oversize objects are
+ * deleted and the ticket fails. Returns the serialized asset + public URL.
  */
 export async function completeAttachment(
   deps: Deps,
@@ -189,7 +282,24 @@ export async function completeAttachment(
   }
   let asset = doc;
   if (doc.status !== 'ready') {
-    const updated = await deps.store.assets.updateOne({ id: doc.id }, { status: 'ready' });
+    const ops = objectOps(deps);
+    const stat = await ops.stat(doc.storageKey ?? '');
+    if (stat === null) {
+      throw new AppError('VALIDATION', 'attachment object was never uploaded');
+    }
+    const cap = await attachmentMaxMb(deps.store, userId);
+    if (stat.sizeBytes > cap * 1024 * 1024) {
+      await ops.remove(doc.storageKey ?? '').catch(() => undefined);
+      await deps.store.assets.updateOne(
+        { id: doc.id },
+        { status: 'failed', sizeBytes: 0, error: `attachment exceeds the ${cap} MB plan limit` },
+      );
+      throw new AppError('QUOTA_EXCEEDED', `attachment exceeds the ${cap} MB plan limit`);
+    }
+    const updated = await deps.store.assets.updateOne(
+      { id: doc.id },
+      { status: 'ready', sizeBytes: stat.sizeBytes },
+    );
     if (updated === null) {
       throw new AppError('NOT_FOUND', 'asset not found');
     }

@@ -244,6 +244,47 @@ describe('ws hub', () => {
 
   // ── handler registry + seq assignment ─────────────────────────────────────
 
+  it('closes live sockets with 4401 when their session is revoked (logout)', async () => {
+    const { roomId } = await seedRoom(store);
+    const account = await makeMember('revokee@example.com', roomId);
+    const sock = await connect(wsUrl(roomId, account.accessToken));
+    const closed = closeCode(sock);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { authorization: `Bearer ${account.accessToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    // The revoke must reach the ALREADY-OPEN socket, not just future accepts.
+    expect(await closed).toBe(4401);
+  });
+
+  it('rate-limits inbound frames: flood gets one RATE_LIMITED error, frames dropped', async () => {
+    const { roomId } = await seedRoom(store);
+    const account = await makeMember('flooder@example.com', roomId);
+    const sock = await connect(wsUrl(roomId, account.accessToken));
+
+    const rateLimited = new Promise<Frame>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no RATE_LIMITED frame')), 5000);
+      sock.on('message', (data: RawData) => {
+        const frame = JSON.parse(data.toString()) as Frame;
+        if (frame.type === 'error' && frame.payload.code === 'RATE_LIMITED') {
+          clearTimeout(timer);
+          resolve(frame);
+        }
+      });
+    });
+    // 300 frames/10s is the ceiling; blow past it inside one window.
+    for (let i = 0; i < 305; i += 1) {
+      sock.send(clientFrame(roomId, 'clock.ping', { clientTs: Date.now() }));
+    }
+    const err = await rateLimited;
+    expect(err.payload.code).toBe('RATE_LIMITED');
+    // The connection survives (drop, not disconnect).
+    expect(sock.readyState).toBe(WebSocket.OPEN);
+  });
+
   it('dispatches registered handlers and assigns monotonic seqs', async () => {
     const { roomId } = await seedRoom(store);
     hub.registerModule({

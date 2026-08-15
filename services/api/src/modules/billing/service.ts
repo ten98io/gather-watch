@@ -37,6 +37,10 @@ export interface BillingStripe {
       create(params: { customer: string; return_url: string }): Promise<{ url: string }>;
     };
   };
+  subscriptions: {
+    /** Immediate cancellation — GDPR erasure must stop billing for good. */
+    cancel(id: string): Promise<{ id: string }>;
+  };
   webhooks: {
     constructEvent(payload: Buffer, signature: string, secret: string): Stripe.Event;
   };

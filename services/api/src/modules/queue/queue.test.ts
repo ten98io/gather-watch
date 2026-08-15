@@ -43,7 +43,7 @@ function makeItem(id: string, votes: string[] = []): FakeItem {
 function makeRoom(items: FakeItem[], policies: Record<string, unknown> = {}): FakeRoom {
   return {
     id: 'r1',
-    policies: { skipVoteThreshold: 0.5, voteSkipThreshold: 0.5, queueControl: 'everyone', ...policies },
+    policies: { skipVoteThreshold: 0.5, queueControl: 'everyone', ...policies },
     queue: { items, version: 0 },
     playback: null,
   };

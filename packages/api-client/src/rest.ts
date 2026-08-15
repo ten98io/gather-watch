@@ -30,8 +30,10 @@ import {
   ListMessagesResponse,
   ListMyRoomsResponse,
   ListPlaylistsResponse,
+  ListSessionsResponse,
   LivekitTokenBody,
   LivekitTokenResponse,
+  LogoutResponse,
   MeResponse,
   PinMessageBody,
   PinMessageResponse,
@@ -45,10 +47,13 @@ import {
   ReplayEventsResponse,
   RequestMagicLinkBody,
   RequestMagicLinkResponse,
+  RevokeAllSessionsResponse,
+  RevokeSessionResponse,
   SearchGifsResponse,
   SearchMessagesResponse,
   TransferHostBody,
   TransferHostResponse,
+  TurnCredentialsResponse,
   UnfurlBody,
   UnfurlResponse,
   UpdatePlaylistBody,
@@ -57,10 +62,12 @@ import {
   UpdatePoliciesResponse,
   UpdateProfileBody,
   UpdateProfileResponse,
+  UpgradeGuestBody,
+  UpgradeGuestResponse,
   VerifyTokenBody,
   VerifyTokenResponse,
 } from '@playin/contracts';
-import type { AssetId, PlaylistId, RoomId } from '@playin/contracts';
+import type { AssetId, PlaylistId, RoomId, SessionId } from '@playin/contracts';
 import { ApiError, apiErrorFromStatus } from './errors';
 import { defaultFetch } from './types';
 import type { FetchInitLike, FetchLike } from './types';
@@ -103,6 +110,11 @@ export class RestClient {
     me(): Promise<MeResponse>;
     updateProfile(body: UpdateProfileBody): Promise<UpdateProfileResponse>;
     guestJoin(body: GuestJoinBody): Promise<GuestJoinResponse>;
+    logout(): Promise<LogoutResponse>;
+    listSessions(): Promise<ListSessionsResponse>;
+    revokeSession(sessionId: SessionId): Promise<RevokeSessionResponse>;
+    revokeAllSessions(): Promise<RevokeAllSessionsResponse>;
+    upgradeGuest(body: UpgradeGuestBody): Promise<UpgradeGuestResponse>;
   };
   /** Room management endpoints. */
   readonly rooms: {
@@ -158,6 +170,10 @@ export class RestClient {
   /** LiveKit token endpoint. */
   readonly livekit: {
     token(body: LivekitTokenBody): Promise<LivekitTokenResponse>;
+  };
+  /** WebRTC mesh support endpoints (TURN credentials etc.). */
+  readonly rtc: {
+    turnCredentials(): Promise<TurnCredentialsResponse>;
   };
   /** Web push subscription endpoints. */
   readonly push: {
@@ -228,6 +244,42 @@ export class RestClient {
           schema: GuestJoinResponse,
           body,
           authExempt: true,
+        }),
+      logout: () =>
+        this.request({
+          label: 'auth.logout',
+          method: 'POST',
+          path: '/auth/logout',
+          schema: LogoutResponse,
+        }),
+      listSessions: () =>
+        this.request({
+          label: 'auth.listSessions',
+          method: 'GET',
+          path: '/auth/sessions',
+          schema: ListSessionsResponse,
+        }),
+      revokeSession: (sessionId) =>
+        this.request({
+          label: 'auth.revokeSession',
+          method: 'DELETE',
+          path: `/auth/sessions/${encodeURIComponent(sessionId)}`,
+          schema: RevokeSessionResponse,
+        }),
+      revokeAllSessions: () =>
+        this.request({
+          label: 'auth.revokeAllSessions',
+          method: 'POST',
+          path: '/auth/sessions/revoke-all',
+          schema: RevokeAllSessionsResponse,
+        }),
+      upgradeGuest: (body) =>
+        this.request({
+          label: 'auth.upgradeGuest',
+          method: 'POST',
+          path: '/auth/upgrade',
+          schema: UpgradeGuestResponse,
+          body,
         }),
     };
 
@@ -462,6 +514,16 @@ export class RestClient {
           path: '/livekit/token',
           schema: LivekitTokenResponse,
           body,
+        }),
+    };
+
+    this.rtc = {
+      turnCredentials: () =>
+        this.request({
+          label: 'rtc.turnCredentials',
+          method: 'GET',
+          path: '/rtc/turn-credentials',
+          schema: TurnCredentialsResponse,
         }),
     };
 

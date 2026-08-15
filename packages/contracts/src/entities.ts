@@ -53,9 +53,6 @@ export const RoomPolicies = z.object({
   chat: RoomPolicyLevel,
   maxPublishers: z.number().int().min(1).max(12),
   waitForAll: z.boolean(),
-  /** Fraction of non-abstaining members whose votes skip the current track
-   *  ("majority configurable"). Defaults to a simple majority. */
-  voteSkipThreshold: z.number().min(0.01).max(1).default(0.5),
   /** Fraction of members that must vote to skip before the track is skipped
    *  automatically; 0 disables the auto-skip vote. */
   skipVoteThreshold: z.number().min(0).max(1).default(0.5),

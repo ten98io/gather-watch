@@ -175,6 +175,11 @@ export interface SubscriptionDoc {
   /** ISO datetime, mirrors contracts Subscription.currentPeriodEnd. */
   currentPeriodEnd: string | null;
   updatedAt: number;
+  /** Stripe `event.created` (epoch SECONDS) of the last applied webhook —
+   *  ordering guard: Stripe does not guarantee delivery order, and a delayed
+   *  retry of subscription.updated(active) must not resurrect a canceled
+   *  plan. Absent on rows written before this guard existed. */
+  lastStripeEventTs?: number;
 }
 
 export interface ReportDoc {

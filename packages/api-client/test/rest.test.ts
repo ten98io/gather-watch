@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SessionId } from '@playin/contracts';
 import { ApiError, RestClient } from '../src';
 import type { FetchResponseLike } from '../src';
 import { FetchMock, demoUser, jsonResponse, rid, tick } from './helpers';
@@ -128,5 +129,120 @@ describe('RestClient', () => {
     expect(fetch.calls[0]!.url).toBe(
       'http://api.test/rooms/r%20one/messages?beforeSeq=7&limit=10',
     );
+  });
+});
+
+describe('RestClient session + rtc endpoints', () => {
+  it('logout posts /auth/logout', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url, init) =>
+      url.includes('/auth/logout') && init?.method === 'POST'
+        ? jsonResponse(200, { ok: true })
+        : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    const res = await client.auth.logout();
+    expect(res).toEqual({ ok: true });
+    expect(fetch.count('/auth/logout', 'POST')).toBe(1);
+  });
+
+  it('listSessions gets /auth/sessions and parses the device list', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url, init) =>
+      url.endsWith('/auth/sessions') && init?.method === 'GET'
+        ? jsonResponse(200, {
+            sessions: [
+              { id: 's1', device: 'Safari on macOS', createdAt: 1, lastSeenAt: 2, current: true },
+            ],
+          })
+        : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    const res = await client.auth.listSessions();
+    expect(res.sessions[0]!.id).toBe('s1');
+    expect(fetch.calls[0]!.init?.method).toBe('GET');
+  });
+
+  it('revokeSession DELETEs /auth/sessions/:id with the id URL-encoded', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url) =>
+      url.includes('/auth/sessions/') ? jsonResponse(200, { ok: true }) : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    await client.auth.revokeSession('s 1' as SessionId);
+    expect(fetch.calls[0]!.url).toBe('http://api.test/auth/sessions/s%201');
+    expect(fetch.calls[0]!.init?.method).toBe('DELETE');
+  });
+
+  it('revokeAllSessions posts and returns the revoked count', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url, init) =>
+      url.includes('/auth/sessions/revoke-all') && init?.method === 'POST'
+        ? jsonResponse(200, { revoked: 2 })
+        : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    const res = await client.auth.revokeAllSessions();
+    expect(res.revoked).toBe(2);
+    expect(fetch.calls[0]!.url).toBe('http://api.test/auth/sessions/revoke-all');
+    expect(fetch.calls[0]!.init?.method).toBe('POST');
+  });
+
+  it('upgradeGuest posts the email body to /auth/upgrade', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url, init) =>
+      url.includes('/auth/upgrade') && init?.method === 'POST'
+        ? jsonResponse(200, { ok: true })
+        : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    await client.auth.upgradeGuest({ email: 'g@example.com' });
+    expect(JSON.parse(fetch.calls[0]!.init!.body as string)).toEqual({
+      email: 'g@example.com',
+    });
+  });
+
+  it('turnCredentials gets /rtc/turn-credentials and validates the schema', async () => {
+    const payload = {
+      iceServers: [
+        { urls: ['turn:relay.test:3478?transport=udp'], username: 'u', credential: 'c' },
+      ],
+      ttlSeconds: 21600,
+      fairUseRemainingGb: 4.2,
+    };
+    const fetch = new FetchMock();
+    fetch.handlers.push((url, init) =>
+      url.includes('/rtc/turn-credentials') && init?.method === 'GET'
+        ? jsonResponse(200, payload)
+        : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    const res = await client.rtc.turnCredentials();
+    expect(res).toEqual(payload);
+    expect(fetch.calls[0]!.init?.method).toBe('GET');
+  });
+
+  it('turnCredentials rejects an invalid payload with VALIDATION', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url) =>
+      url.includes('/rtc/turn-credentials') ? jsonResponse(200, { iceServers: 'nope' }) : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    const p = client.rtc.turnCredentials();
+    await expect(p).rejects.toBeInstanceOf(ApiError);
+    await expect(p).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+
+  it('verifyToken surfaces typed accessToken fields', async () => {
+    const fetch = new FetchMock();
+    fetch.handlers.push((url, init) =>
+      url.includes('/auth/verify') && init?.method === 'POST'
+        ? jsonResponse(200, { user: demoUser('u1'), accessToken: 'jwt-a', accessTokenExpiresAt: 123 })
+        : null,
+    );
+    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
+    const res = await client.auth.verifyToken({ token: 't' });
+    expect(res.accessToken).toBe('jwt-a');
+    expect(res.accessTokenExpiresAt).toBe(123);
   });
 });

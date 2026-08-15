@@ -47,8 +47,16 @@ export const roomsWsHandlers: HandlerMap = {
     );
     if (created || wantsSnapshot) {
       // Late joiner (or explicit snapshot request): reply the full roster to
-      // THIS socket — everyone else already received the diff.
+      // THIS socket — everyone else already received the diff. Playback and
+      // queue snapshots ride along: event replay is ascending-from-`since`
+      // and capped, so in a long-lived room the latest sync.state is NOT
+      // guaranteed within the first replay page — this is the reliable path
+      // to the current position for a joiner.
       ctx.reply('presence.state', { entries: presence.entries(ctx.roomId) });
+      if (room.playback !== null) {
+        ctx.reply('sync.state', room.playback);
+      }
+      ctx.reply('queue.state', { items: room.queue.items, version: room.queue.version });
     }
   },
 };

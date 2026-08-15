@@ -39,6 +39,14 @@ export const configSchema = z.object({
   uploadPartSizeMb: z.coerce.number().int().min(5).max(5 * 1024).default(8),
   /** Lifetime of the presigned part URLs handed to clients. */
   presignTtlSec: z.coerce.number().int().min(60).max(60 * 60 * 24).default(900),
+  /** v3.1 pivot: the HLS pipeline is an OPTIONAL module, default OFF. When
+   *  false the service boots healthy but answers the upload/library surface
+   *  with 501 — P2P file streaming is the default watch path. */
+  enableMediaPipeline: z.boolean().default(false),
+  /** Per-user (fallback per-IP) request ceiling — every POST /uploads mints
+   *  a real S3 multipart session, so the surface must not be free to spam. */
+  rateLimitMax: z.coerce.number().int().min(1).default(120),
+  rateLimitWindowMs: z.coerce.number().int().min(1000).default(60_000),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -47,6 +55,14 @@ export type AppConfig = z.infer<typeof configSchema>;
 function envStr(env: Record<string, string | undefined>, key: string): string | undefined {
   const value = env[key];
   return value === undefined || value.trim() === '' ? undefined : value;
+}
+
+/** Boolean env: 'true'/'1' (any case) ⇒ true; everything else ⇒ false. */
+function envBool(env: Record<string, string | undefined>, key: string): boolean | undefined {
+  const value = envStr(env, key);
+  if (value === undefined) return undefined;
+  const lowered = value.toLowerCase();
+  return lowered === 'true' || lowered === '1';
 }
 
 /**
@@ -78,6 +94,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxFileSizeGb: envStr(env, 'MAX_FILE_SIZE_GB'),
     uploadPartSizeMb: envStr(env, 'UPLOAD_PART_SIZE_MB'),
     presignTtlSec: envStr(env, 'UPLOAD_PRESIGN_TTL_SEC'),
+    enableMediaPipeline: envBool(env, 'ENABLE_MEDIA_PIPELINE'),
+    rateLimitMax: envStr(env, 'RATE_LIMIT_MAX'),
+    rateLimitWindowMs: envStr(env, 'RATE_LIMIT_WINDOW_MS'),
   };
 
   const parsed = configSchema.safeParse(input);

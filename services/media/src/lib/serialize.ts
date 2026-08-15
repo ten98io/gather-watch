@@ -47,7 +47,18 @@ export function planParts(
   return parts;
 }
 
-/** Object-key root for everything belonging to one asset. */
+/** Object-key root for an asset's PRIVATE data (the raw source upload). */
 export function assetKeyPrefix(userId: string, assetId: string): string {
   return `u/${userId}/${assetId}`;
+}
+
+/**
+ * Object-key root for an asset's published artifacts (HLS tree, thumbnail,
+ * waveform). Lives under the bucket's `public/` prefix because that is the
+ * ONLY prefix infra grants anonymous download on (infra minio-init policy);
+ * artifact URLs handed to clients must be fetchable without credentials.
+ * Raw sources stay private under u/.
+ */
+export function artifactKeyPrefix(userId: string, assetId: string): string {
+  return `public/u/${userId}/${assetId}`;
 }

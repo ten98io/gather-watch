@@ -9,9 +9,9 @@ import { z } from 'zod';
 import { AssetId, ListLibraryQuery, RenameAssetBody } from '@playin/contracts';
 import type { MediaAsset } from '@playin/contracts';
 import { AppError } from '../lib/errors';
-import { assetKeyPrefix, serializeAsset } from '../lib/serialize';
+import { artifactKeyPrefix, assetKeyPrefix, serializeAsset } from '../lib/serialize';
 import type { AssetDoc } from '../store/ports';
-import { requireAuth } from '../plugins/auth';
+import { requireUser } from '../plugins/auth';
 import { parseWith } from '../plugins/error-mapper';
 import type { AuthContext } from '../deps';
 
@@ -35,7 +35,7 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
   app.get(
     '/library',
     async (request): Promise<{ items: MediaAsset[]; nextCursor: string | null }> => {
-      const auth = requireAuth(request);
+      const auth = requireUser(request);
       const query = parseWith(ListLibraryQuery, request.query);
       const page = await app.deps.store.listByOwner(
         auth.userId,
@@ -47,7 +47,7 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.patch('/library/:id', async (request): Promise<{ asset: MediaAsset }> => {
-    const auth = requireAuth(request);
+    const auth = requireUser(request);
     const params = parseWith(z.object({ id: AssetId }), request.params);
     const body = parseWith(RenameAssetBody, request.body);
     const doc = await ownedAsset(app.deps.store, auth, params.id);
@@ -59,10 +59,17 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.delete('/library/:id', async (request): Promise<{ ok: true }> => {
-    const auth = requireAuth(request);
+    const auth = requireUser(request);
     const params = parseWith(z.object({ id: AssetId }), request.params);
     const { store, storage } = app.deps;
     const doc = await ownedAsset(store, auth, params.id);
+    // The pipeline may still be writing artifacts under this prefix; deleting
+    // now would orphan whatever it PUTs after our prefix listing. Processing
+    // always settles (boot reconciliation re-kicks zombies), so make the
+    // caller retry rather than leak unreachable objects.
+    if (doc.status === 'processing') {
+      throw new AppError('CONFLICT', 'asset is processing; retry once it settles');
+    }
 
     // Best-effort storage cleanup; the doc delete is authoritative.
     if (doc.status === 'uploading' && doc.storageKey !== null && doc.uploadId !== null) {
@@ -72,6 +79,9 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
     }
     await storage.deletePrefix(assetKeyPrefix(doc.ownerId, doc.id)).catch((err: unknown) => {
       request.log.warn({ err, assetId: doc.id }, 'failed to delete asset objects');
+    });
+    await storage.deletePrefix(artifactKeyPrefix(doc.ownerId, doc.id)).catch((err: unknown) => {
+      request.log.warn({ err, assetId: doc.id }, 'failed to delete asset artifacts');
     });
     await store.remove(doc.id);
     return { ok: true };

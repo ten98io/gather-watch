@@ -9,6 +9,11 @@
  * regex-level and XML escaping is defensive only.
  */
 import { createHash, createHmac } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { AppConfig } from '../config';
 import { AppError } from '../lib/errors';
 import type { CompletedPart, ObjectStorage } from './ports';
@@ -106,6 +111,7 @@ export class S3Storage implements ObjectStorage {
     query: Record<string, string>,
     body: string | Buffer,
     extraHeaders: Record<string, string> = {},
+    timeoutMs: number = REQUEST_TIMEOUT_MS,
   ): Promise<Response> {
     const [amzDate, dateStamp] = S3Storage.dates(new Date());
     const payloadHash = sha256Hex(body);
@@ -157,7 +163,7 @@ export class S3Storage implements ObjectStorage {
         )}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
       },
       body: body === '' ? null : body,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   }
 
@@ -276,6 +282,34 @@ export class S3Storage implements ObjectStorage {
   async getObject(key: string): Promise<Buffer> {
     const res = await S3Storage.expectOk(await this.signedRequest('GET', key, {}, ''), 'getObject');
     return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** GB-scale sources stream straight to disk (an hour-long timeout instead
+   *  of the 60 s control-call budget; never buffered). */
+  async getObjectToFile(key: string, destPath: string): Promise<void> {
+    const res = await S3Storage.expectOk(
+      await this.signedRequest('GET', key, {}, '', {}, 60 * 60 * 1000),
+      'getObjectToFile',
+    );
+    if (res.body === null) {
+      await writeFile(destPath, Buffer.alloc(0));
+      return;
+    }
+    await pipeline(Readable.fromWeb(res.body as WebReadableStream), createWriteStream(destPath));
+  }
+
+  async headObject(key: string): Promise<{ sizeBytes: number } | null> {
+    const res = await this.signedRequest('HEAD', key, {}, '');
+    await res.arrayBuffer().catch(() => undefined);
+    if (res.status === 404) return null;
+    if (res.status < 200 || res.status >= 300) {
+      throw new AppError('INTERNAL', `s3 headObject failed with ${res.status}`);
+    }
+    const size = Number(res.headers.get('content-length'));
+    if (!Number.isFinite(size) || size < 0) {
+      throw new AppError('INTERNAL', 's3 headObject: missing content-length');
+    }
+    return { sizeBytes: size };
   }
 
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {

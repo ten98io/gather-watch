@@ -45,12 +45,16 @@ export class MongoAssetStore implements AssetStore {
   private readonly client: MongoClient;
   private readonly dbName: string;
   private readonly col: Collection;
+  /** The api's billing collection (id = userId) — read-only here, for
+   *  entitlement-aware quotas. */
+  private readonly subs: Collection;
 
   constructor(url: string, dbName?: string) {
     this.client = new MongoClient(url);
     this.dbName = dbName ?? dbNameFromUrl(url);
     // client.db() is usable before connect(); operations queue until init().
     this.col = this.client.db(this.dbName).collection('assets');
+    this.subs = this.client.db(this.dbName).collection('subscriptions');
   }
 
   async init(): Promise<void> {
@@ -133,5 +137,24 @@ export class MongoAssetStore implements AssetStore {
       .toArray();
     const first = rows[0] as { total?: unknown } | undefined;
     return typeof first?.total === 'number' ? first.total : 0;
+  }
+
+  async listByStatus(status: AssetDoc['status']): Promise<AssetDoc[]> {
+    const rows = await this.col.find({ status }).toArray();
+    return rows
+      .map((row) => fromMongoDoc(row))
+      .filter((doc): doc is AssetDoc => doc !== null);
+  }
+
+  /** Premium only while Stripe reports the sub active — the exact rule the
+   *  api's billing/entitlements.ts effectivePlan applies to the same row. */
+  async planFor(userId: string): Promise<'free' | 'premium'> {
+    const sub = (await this.subs.findOne(byId(userId))) as {
+      plan?: unknown;
+      status?: unknown;
+    } | null;
+    return sub !== null && sub.plan === 'premium' && sub.status === 'active'
+      ? 'premium'
+      : 'free';
   }
 }

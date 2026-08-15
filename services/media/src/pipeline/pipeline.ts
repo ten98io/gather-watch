@@ -11,7 +11,7 @@
  * `assets` collection only; the api's WS `media.status` fanout is an
  * orchestrator TODO (no hook exists in services/api today).
  */
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
@@ -19,7 +19,7 @@ import type { AppConfig } from '../config';
 import type { AssetStore } from '../store/ports';
 import type { ObjectStorage } from '../storage/ports';
 import type { PipelineRunner } from './ports';
-import { assetKeyPrefix } from '../lib/serialize';
+import { artifactKeyPrefix } from '../lib/serialize';
 
 export interface MediaPipeline {
   /** Queue processing for a just-completed asset. Fire-and-forget; failures
@@ -96,13 +96,16 @@ export class SerialMediaPipeline implements MediaPipeline {
     const workDir = await mkdtemp(join(tmpdir(), 'playin-media-'));
     try {
       const inputPath = join(workDir, 'source');
-      await writeFile(inputPath, await storage.getObject(doc.storageKey));
+      // Stream, never buffer: sources run to 4 GB (config.maxFileSizeGb).
+      await storage.getObjectToFile(doc.storageKey, inputPath);
 
       const probe = await runner.probe(inputPath);
       const outputDir = join(workDir, 'out');
       await runner.transcode({ assetId, inputPath, outputDir }, probe);
 
-      const prefix = `${assetKeyPrefix(doc.ownerId, doc.id)}/hls`;
+      // Artifacts publish under the anonymous-readable public/ prefix —
+      // hlsUrl/thumbnailUrl must be fetchable without credentials.
+      const prefix = `${artifactKeyPrefix(doc.ownerId, doc.id)}/hls`;
       const files = await walkFiles(outputDir);
       for (const rel of files) {
         await storage.putObject(`${prefix}/${rel}`, await readFile(join(outputDir, rel)), contentTypeFor(rel));

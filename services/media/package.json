@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^10.0.0",
     "@playin/contracts": "workspace:*",
     "fastify": "^5.2.0",
     "jose": "^5.9.0",

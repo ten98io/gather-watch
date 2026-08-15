@@ -70,15 +70,50 @@ export class SyncService {
     await this.mutate(roomId, userId, 'setTrack', { track: payload });
   }
 
-  /** The mesh elects; the server arbitrates: any non-banned member may claim
-   *  master at a strictly newer epoch. Equal or older epochs are stale. */
+  /**
+   * The mesh elects; the server arbitrates. Any non-banned member may take a
+   * DEAD master's seat (re-election is the whole point of the mesh protocol),
+   * but displacing a still-connected master requires the room's
+   * playbackControl policy — the master seat drives playback unconditionally,
+   * so an ungated claim would be a trivial bypass of that policy.
+   *
+   * The claimed epoch must be newer than the stored one, but the SERVER owns
+   * the stored value: the seat advances to stored+1 via compare-and-set on
+   * the previous master (same CAS pattern as rooms/master.ts — adapters match
+   * embedded docs structurally, key order { userId, epoch } kept exact). An
+   * injected Number.MAX_SAFE_INTEGER therefore cannot lock the seat forever,
+   * and a lost CAS race means exactly one winner per epoch — no split-brain.
+   */
   async claimMaster(roomId: RoomId, userId: UserId, epoch: number): Promise<void> {
-    const { room } = await this.loadContext(roomId, userId);
-    if (room.master !== null && epoch <= room.master.epoch) {
+    const { room, member } = await this.loadContext(roomId, userId);
+    const stored = room.master;
+    const storedEpoch = stored?.epoch ?? 0;
+    if (stored !== null && epoch <= storedEpoch) {
       throw new AppError('CONFLICT', 'stale master epoch');
     }
-    await this.deps.store.rooms.updateOne({ id: roomId }, { master: { userId, epoch } });
-    await this.deps.events.emit(roomId, 'sync.masterChanged', { masterUserId: userId, epoch });
+    // Liveness approximation: this instance's sockets (same source
+    // prunedBuffering trusts). A master connected elsewhere in a multi-
+    // instance deploy re-wins the seat via a newer-epoch re-claim.
+    const masterConnected =
+      stored !== null &&
+      stored.userId !== userId &&
+      this.deps.hub.localUserIds(roomId).includes(stored.userId as UserId);
+    if (masterConnected && !policyAllows(room.policies.playbackControl, member.role)) {
+      throw new AppError('ROOM_POLICY', 'cannot displace a connected master');
+    }
+    const next = { userId, epoch: storedEpoch + 1 };
+    const updated = await this.deps.store.rooms.updateOne(
+      { id: roomId, master: stored ?? null },
+      { master: next },
+    );
+    if (updated === null) {
+      // Lost the CAS race — someone else claimed this epoch first.
+      throw new AppError('CONFLICT', 'stale master epoch');
+    }
+    await this.deps.events.emit(roomId, 'sync.masterChanged', {
+      masterUserId: userId,
+      epoch: next.epoch,
+    });
   }
 
   /** Host/mods toggle the wait-for-all policy; the room broadcast carries the

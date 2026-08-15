@@ -18,7 +18,14 @@ import { newId, signAccessToken } from '../src/lib/tokens';
 export const TEST_SECRET = 'test-secret-at-least-32-characters-long!';
 
 export function testConfig(env: Record<string, string> = {}): AppConfig {
-  return loadConfig({ NODE_ENV: 'test', JWT_SECRET: TEST_SECRET, ...env });
+  // The pipeline defaults OFF in production config; tests exercise it ON
+  // unless a test explicitly overrides the flag.
+  return loadConfig({
+    NODE_ENV: 'test',
+    JWT_SECRET: TEST_SECRET,
+    ENABLE_MEDIA_PIPELINE: 'true',
+    ...env,
+  });
 }
 
 export class FakeStorage implements ObjectStorage {
@@ -45,6 +52,11 @@ export class FakeStorage implements ObjectStorage {
     return `http://minio.test/media/${key}?uploadId=${uploadId}&partNumber=${partNumber}`;
   }
 
+  /** headObject size override: simulates a client that PUT more (or fewer)
+   *  bytes through the unsigned-payload part URLs than it declared — without
+   *  actually allocating that many bytes in the fake. */
+  finalizedSizeBytes: number | null = null;
+
   async completeMultipartUpload(
     key: string,
     uploadId: string,
@@ -63,6 +75,16 @@ export class FakeStorage implements ObjectStorage {
     const body = this.objects.get(key);
     if (body === undefined) throw new Error(`fake storage: no object at ${key}`);
     return body;
+  }
+
+  async getObjectToFile(key: string, destPath: string): Promise<void> {
+    await writeFile(destPath, await this.getObject(key));
+  }
+
+  async headObject(key: string): Promise<{ sizeBytes: number } | null> {
+    const body = this.objects.get(key);
+    if (body === undefined) return null;
+    return { sizeBytes: this.finalizedSizeBytes ?? body.length };
   }
 
   async putObject(key: string, body: Buffer, _contentType: string): Promise<void> {
@@ -128,6 +150,7 @@ export interface TestRig {
   storage: FakeStorage;
   runner: FakeRunner;
   tokenFor(userId: string): Promise<string>;
+  guestTokenFor(userId: string, roomId?: string): Promise<string>;
 }
 
 export async function makeRig(env: Record<string, string> = {}): Promise<TestRig> {
@@ -138,7 +161,9 @@ export async function makeRig(env: Record<string, string> = {}): Promise<TestRig
   const built = await buildApp({ config, store, storage, runner });
   const tokenFor = (userId: string): Promise<string> =>
     signAccessToken(config, { userId, sessionId: newId(), guest: false, guestRoomId: null });
-  return { built, config, store, storage, runner, tokenFor };
+  const guestTokenFor = (userId: string, roomId = 'room-1'): Promise<string> =>
+    signAccessToken(config, { userId, sessionId: newId(), guest: true, guestRoomId: roomId });
+  return { built, config, store, storage, runner, tokenFor, guestTokenFor };
 }
 
 /** Create + complete an upload end-to-end, then drain the pipeline. */

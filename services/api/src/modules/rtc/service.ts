@@ -116,7 +116,20 @@ export class RtcService {
     };
   }
 
-  /** Sum of this user's `turn-bytes` usage in the current UTC calendar month. */
+  /**
+   * Sum of this user's `turn-bytes` usage in the current UTC calendar month.
+   *
+   * METERING POSTURE (recorded decision): per BUILD_PROMPT's billing section,
+   * fair-use metering is fed by client getStats samples (POST /billing/usage)
+   * — a client that never reports under-counts itself. Two server-side
+   * mitigations exist: (1) Cloudflare credentials are minted with
+   * `customIdentifier: userId`, so relay bytes ARE attributable per user in
+   * Cloudflare's own analytics for out-of-band reconciliation/abuse review;
+   * (2) the ledger is only self-affecting (userId comes from auth — nobody
+   * can inflate another user). True server-side byte attribution requires
+   * polling Cloudflare's usage API — orchestrator-level integration, tracked
+   * in the module report.
+   */
   private async turnUsageGbThisMonth(userId: string): Promise<number> {
     const now = new Date(this.now());
     const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
@@ -133,7 +146,11 @@ export class RtcService {
   private async iceServersFromStrategies(userId: string): Promise<IceServer[]> {
     const { cloudflare, turnStaticAuthSecret } = this.deps.config;
     if (cloudflare.turnKeyId !== null && cloudflare.turnApiToken !== null) {
-      const servers = await this.cloudflareIceServers(cloudflare.turnKeyId, cloudflare.turnApiToken);
+      const servers = await this.cloudflareIceServers(
+        cloudflare.turnKeyId,
+        cloudflare.turnApiToken,
+        userId,
+      );
       if (servers !== null) {
         return servers;
       }
@@ -149,7 +166,11 @@ export class RtcService {
    * TURN key. Returns null on ANY network/API/payload failure (logged) so the
    * caller falls through to the next strategy.
    */
-  private async cloudflareIceServers(keyId: string, apiToken: string): Promise<IceServer[] | null> {
+  private async cloudflareIceServers(
+    keyId: string,
+    apiToken: string,
+    userId: string,
+  ): Promise<IceServer[] | null> {
     try {
       const response = await fetch(`${CF_TURN_ENDPOINT}/${keyId}/credentials`, {
         method: 'POST',
@@ -157,7 +178,10 @@ export class RtcService {
           authorization: `Bearer ${apiToken}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ ttl: TOKEN_TTL_SECONDS }),
+        // customIdentifier tags the credential with the requesting user so
+        // relay usage is attributable per user in Cloudflare analytics (the
+        // server-side check against a client that never self-reports).
+        body: JSON.stringify({ ttl: TOKEN_TTL_SECONDS, customIdentifier: userId }),
         signal: AbortSignal.timeout(CF_FETCH_TIMEOUT_MS),
       });
       if (!response.ok) {

@@ -85,7 +85,16 @@ export class AuthService {
     if (doc === null || doc.usedAt !== null || doc.expiresAt < now) {
       throw new AppError('UNAUTHORIZED', 'invalid or expired token');
     }
-    await store.authTokens.updateOne({ id: doc.id }, { usedAt: now });
+    // Atomic burn: the usedAt CHECK above is advisory only — two concurrent
+    // redemptions both pass it, so the conditional write is what enforces
+    // single use. Losing the claim means someone else already redeemed.
+    const burned = await store.authTokens.updateOne(
+      { id: doc.id, usedAt: null },
+      { usedAt: now },
+    );
+    if (burned === null) {
+      throw new AppError('UNAUTHORIZED', 'invalid or expired token');
+    }
 
     let user: UserDoc;
     if (doc.kind === 'magic-link') {
@@ -249,12 +258,22 @@ export class AuthService {
     );
     if (reused !== undefined) {
       await store.sessions.updateOne({ id: reused.id }, { revokedAt: now });
+      this.deps.hub.disconnectSession(reused.id);
       throw new AppError('UNAUTHORIZED', 'refresh token reuse detected - session revoked');
     }
     throw new AppError('UNAUTHORIZED', 'invalid refresh token');
   }
 
-  /** Join a room as a guest via its built-in invite code or an extra invite. */
+  /**
+   * Join a room as a guest via its built-in invite code or an extra invite.
+   *
+   * KNOWN LIMITATION (recorded decision): guest identity is minted fresh on
+   * every join, so a guest ban does not survive re-joining through the same
+   * invite — the banned row belongs to the OLD throwaway identity. Durable
+   * guest bans need a device fingerprint or invite rotation (moderators can
+   * already rotate/expire invites, which is the supported recourse today);
+   * carrying a fingerprint into the ban is an orchestrator-level decision.
+   */
   async guestJoin(
     inviteCode: string,
     displayName: string,
@@ -322,21 +341,37 @@ export class AuthService {
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   }
 
-  /** Revoke one of the user's sessions; false when not found/already revoked. */
+  /** Revoke one of the user's sessions; false when not found/already revoked.
+   *  Live sockets carrying the session are closed immediately (this
+   *  instance; others converge via the hub sweep). */
   async revokeSession(userId: string, sessionId: string): Promise<boolean> {
     const updated = await this.deps.store.sessions.updateOne(
       { id: sessionId, userId, revokedAt: null },
       { revokedAt: this.now() },
     );
+    if (updated !== null) {
+      this.deps.hub.disconnectSession(sessionId);
+    }
     return updated !== null;
   }
 
-  /** Revoke every OTHER live session of the user; returns how many. */
+  /** Revoke every OTHER live session of the user; returns how many. Live
+   *  sockets on those sessions are closed immediately (this instance). */
   async revokeAllSessions(userId: string, exceptSessionId: string): Promise<number> {
-    return this.deps.store.sessions.updateMany(
+    const { store, hub } = this.deps;
+    const doomed = await store.sessions.findMany({
+      userId,
+      revokedAt: null,
+      id: { $ne: exceptSessionId },
+    });
+    const revoked = await store.sessions.updateMany(
       { userId, revokedAt: null, id: { $ne: exceptSessionId } },
       { revokedAt: this.now() },
     );
+    for (const session of doomed) {
+      hub.disconnectSession(session.id);
+    }
+    return revoked;
   }
 
   /** Apply a profile patch; NOT_FOUND when the user is gone. */

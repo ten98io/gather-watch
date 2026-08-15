@@ -40,6 +40,14 @@ export interface AssetStore {
    *  Failed/orphaned rows count too (conservative: abuse via repeatedly
    *  created-then-failed uploads still consumes quota until deleted). */
   usageBytes(ownerId: string): Promise<number>;
+  /** Every asset currently in `status` — boot reconciliation re-enqueues
+   *  assets stranded in 'processing' by a crash/redeploy. */
+  listByStatus(status: AssetDoc['status']): Promise<AssetDoc[]>;
+  /** Billing plan for entitlement-aware quotas: the Mongo store reads the
+   *  api's shared `subscriptions` collection (id = userId, premium only
+   *  while status is 'active' — same rule as the api's effectivePlan); the
+   *  memory store defaults everyone to 'free'. */
+  planFor(userId: string): Promise<'free' | 'premium'>;
 }
 
 export function encodeCursor(doc: AssetDoc): string {

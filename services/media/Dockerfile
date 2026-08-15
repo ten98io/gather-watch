@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-# ── Playin media worker (BullMQ + ffmpeg → HLS ladder → MinIO) ───────────────
+# ── Playin media worker (in-process serial queue + ffmpeg → HLS → MinIO) ─────
+# NOTE: processing is an in-process promise chain — run ONE replica per deploy.
+# Scaling replicas breaks the serial-execution premise (no distributed lock).
 # Build context MUST be the REPO ROOT (infra/docker-compose.yml sets
 # `context: ..`), because this is a full-workspace pnpm build:
 #

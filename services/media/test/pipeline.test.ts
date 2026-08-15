@@ -13,7 +13,7 @@ describe('processing pipeline (fake runner)', () => {
     rig = await makeRig();
     const assetId = await completeUpload(rig, 'user-a');
     const doc = await rig.store.findById(assetId);
-    const prefix = `u/user-a/${assetId}/hls`;
+    const prefix = `public/u/user-a/${assetId}/hls`;
     expect(doc).toMatchObject({
       status: 'ready',
       durationMs: 1234,
@@ -41,7 +41,7 @@ describe('processing pipeline (fake runner)', () => {
     };
     const assetId = await completeUpload(rig, 'user-a');
     const doc = await rig.store.findById(assetId);
-    const prefix = `u/user-a/${assetId}/hls`;
+    const prefix = `public/u/user-a/${assetId}/hls`;
     expect(doc).toMatchObject({
       status: 'ready',
       durationMs: 65_000,

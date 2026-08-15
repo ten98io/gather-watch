@@ -40,3 +40,16 @@ export function requireAuth(request: FastifyRequest): AuthContext {
   }
   return auth;
 }
+
+/**
+ * Verified NON-GUEST identity (mirrors services/api's account-scoped helper).
+ * The media library is an account surface: guests are room-scoped throwaway
+ * identities and must not mint quota-bearing uploads or persistent libraries.
+ */
+export function requireUser(request: FastifyRequest): AuthContext {
+  const auth = requireAuth(request);
+  if (auth.guest) {
+    throw new AppError('FORBIDDEN', 'guests cannot use the media library');
+  }
+  return auth;
+}

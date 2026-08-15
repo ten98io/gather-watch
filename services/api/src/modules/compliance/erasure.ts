@@ -22,6 +22,7 @@
  */
 import type { UserId } from '@playin/contracts';
 import { AppError } from '../../lib/errors';
+import { getStripe, stripeConfigured } from '../billing/service';
 import { RoomsService } from '../rooms/service';
 import type { Deps } from '../types';
 
@@ -98,6 +99,23 @@ export async function eraseAccount(deps: Deps, userId: UserId): Promise<{ purgeA
   //    report).
   await store.pushSubs.deleteMany({ userId });
   await store.sessions.deleteMany({ userId });
+  // Cancel the REAL Stripe subscription BEFORE deleting the local row —
+  // otherwise Stripe keeps billing a deleted account forever, and with the
+  // row gone webhooks can no longer even reconcile it. Best-effort + logged:
+  // an unreachable Stripe must not block the GDPR cascade (this is a
+  // request-time REST route, not a WS hot path, so a Stripe call is allowed).
+  const sub = await store.subscriptions.findById(userId);
+  if (sub?.stripeSubscriptionId != null && stripeConfigured(deps)) {
+    try {
+      const stripe = await getStripe(deps);
+      await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
+    } catch (err) {
+      deps.log.warn(
+        { err, userId, stripeSubscriptionId: sub.stripeSubscriptionId },
+        'erasure: stripe subscription cancel failed',
+      );
+    }
+  }
   await store.subscriptions.deleteOne({ id: userId });
   await store.playlists.deleteMany({ ownerId: userId });
 

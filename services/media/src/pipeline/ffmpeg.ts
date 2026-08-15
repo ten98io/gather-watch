@@ -14,6 +14,9 @@ import type { AppConfig } from '../config';
 import { AppError } from '../lib/errors';
 import type { PipelineRunner, ProbeResult, TranscodeJob } from './ports';
 
+/** Exec seam: tests inject a recorder to assert argument construction. */
+export type ExecFn = (bin: string, args: readonly string[]) => Promise<string>;
+
 /** Run a binary to completion; reject with the tail of stderr on failure. */
 function run(bin: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -56,14 +59,16 @@ const LADDER_HEIGHTS = [1080, 720] as const;
 export class FfmpegRunner implements PipelineRunner {
   private readonly ffmpeg: string;
   private readonly ffprobe: string;
+  private readonly exec: ExecFn;
 
-  constructor(config: Pick<AppConfig, 'ffmpegPath' | 'ffprobePath'>) {
+  constructor(config: Pick<AppConfig, 'ffmpegPath' | 'ffprobePath'>, exec: ExecFn = run) {
     this.ffmpeg = config.ffmpegPath;
     this.ffprobe = config.ffprobePath;
+    this.exec = exec;
   }
 
   async probe(inputPath: string): Promise<ProbeResult> {
-    const stdout = await run(this.ffprobe, [
+    const stdout = await this.exec(this.ffprobe, [
       '-v',
       'error',
       '-print_format',
@@ -90,7 +95,14 @@ export class FfmpegRunner implements PipelineRunner {
     await mkdir(job.outputDir, { recursive: true });
     if (probe.hasVideo) {
       await this.transcodeVideo(job, probe);
-      await this.thumbnail(job, probe);
+      // Thumbnail/waveform are OPTIONAL artifacts: a seek/decode hiccup on
+      // them must not fail an asset whose HLS ladder already succeeded (the
+      // pipeline publishes null URLs for whatever is absent).
+      await this.thumbnail(job, probe).catch(() => undefined);
+      if (probe.hasAudio) {
+        // Listen-mode's waveform seek bar applies to video files too.
+        await this.waveform(job).catch(() => undefined);
+      }
     } else if (probe.hasAudio) {
       await this.transcodeAudioOnly(job);
       await this.waveform(job);
@@ -99,7 +111,10 @@ export class FfmpegRunner implements PipelineRunner {
     }
   }
 
-  /** 1080p/720p (+ audio-only rendition) HLS ladder with a master playlist. */
+  /** 1080p/720p (+ audio-only rendition when the source HAS audio) HLS
+   *  ladder with a master playlist. Silent sources (muted screen recordings,
+   *  GoPro clips) get video-only variants — mapping 0:a:0 unconditionally
+   *  would make ffmpeg exit non-zero on them. */
   private async transcodeVideo(job: TranscodeJob, probe: ProbeResult): Promise<void> {
     const sourceHeight = probe.height ?? 720;
     let heights: number[] = LADDER_HEIGHTS.filter((h) => sourceHeight >= h);
@@ -130,15 +145,20 @@ export class FfmpegRunner implements PipelineRunner {
         `${bitrateK * 2}k`,
       );
     });
-    // One audio output stream PER VARIANT (video variants + audio-only).
-    const variantCount = heights.length + 1;
-    for (let i = 0; i < variantCount; i += 1) {
-      args.push('-map', '0:a:0', `-c:a:${i}`, 'aac', `-b:a:${i}`, '128k');
+    // One audio output stream PER VARIANT (video variants + audio-only) —
+    // only when the source actually has an audio stream.
+    const variantCount = probe.hasAudio ? heights.length + 1 : heights.length;
+    if (probe.hasAudio) {
+      for (let i = 0; i < variantCount; i += 1) {
+        args.push('-map', '0:a:0', `-c:a:${i}`, 'aac', `-b:a:${i}`, '128k');
+      }
     }
-    const varStreamMap = [
-      ...heights.map((_h, i) => `v:${i},a:${i}`),
-      `a:${heights.length}`, // audio-only rendition
-    ].join(' ');
+    const varStreamMap = probe.hasAudio
+      ? [
+          ...heights.map((_h, i) => `v:${i},a:${i}`),
+          `a:${heights.length}`, // audio-only rendition
+        ].join(' ')
+      : heights.map((_h, i) => `v:${i}`).join(' ');
     args.push(
       '-f',
       'hls',
@@ -158,14 +178,14 @@ export class FfmpegRunner implements PipelineRunner {
     for (let i = 0; i < variantCount; i += 1) {
       await mkdir(join(job.outputDir, `vs${i}`), { recursive: true });
     }
-    await run(this.ffmpeg, args);
+    await this.exec(this.ffmpeg, args);
   }
 
   /** Audio-only source: one AAC HLS rendition + a hand-written master. */
   private async transcodeAudioOnly(job: TranscodeJob): Promise<void> {
     const audioDir = join(job.outputDir, 'audio');
     await mkdir(audioDir, { recursive: true });
-    await run(this.ffmpeg, [
+    await this.exec(this.ffmpeg, [
       '-y',
       '-i',
       job.inputPath,
@@ -191,13 +211,18 @@ export class FfmpegRunner implements PipelineRunner {
     );
   }
 
-  /** JPEG thumbnail at 10% of duration, max width 640. */
+  /** JPEG thumbnail at 10% of duration, max width 640. The seek clamps to
+   *  [0, duration) — a >=1s floor would seek past EOF on sub-second clips. */
   private async thumbnail(job: TranscodeJob, probe: ProbeResult): Promise<void> {
-    const atSec = Math.max(1, Math.round(((probe.durationMs ?? 10_000) / 1000) * 0.1));
-    await run(this.ffmpeg, [
+    const durationSec = probe.durationMs === null ? null : probe.durationMs / 1000;
+    const atSec =
+      durationSec === null
+        ? 0
+        : Math.min(durationSec * 0.1, Math.max(durationSec - 0.1, 0));
+    await this.exec(this.ffmpeg, [
       '-y',
       '-ss',
-      String(atSec),
+      atSec.toFixed(3),
       '-i',
       job.inputPath,
       '-frames:v',
@@ -211,7 +236,7 @@ export class FfmpegRunner implements PipelineRunner {
   /** Mono 8 kHz PCM bucketed into ~1000 normalized peaks → waveform.json. */
   private async waveform(job: TranscodeJob): Promise<void> {
     const pcmPath = join(job.outputDir, '.waveform.pcm');
-    await run(this.ffmpeg, [
+    await this.exec(this.ffmpeg, [
       '-y',
       '-i',
       job.inputPath,

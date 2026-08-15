@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError } from '@playin/api-client';
+import { ApiError, ChunkedUploader } from '@playin/api-client';
 import {
   CreateCheckoutSessionResponse,
   CreatePortalSessionResponse,
@@ -88,27 +88,38 @@ function ProfileSection() {
 
   const uploadAvatar = async (file: File) => {
     try {
-      const session = await api.media.createUpload({
+      // ChunkedUploader owns the multipart mechanics: it forwards the REAL
+      // per-part ETags to completeUpload (a hand-rolled loop with fake etags
+      // is rejected by MinIO/S3) and handles the CORS ExposeHeaders:ETag
+      // failure mode with a readable error.
+      const uploader = new ChunkedUploader(api);
+      const asset = await uploader.upload({
         filename: file.name,
         mime: file.type || 'image/png',
         sizeBytes: file.size,
+        readPart: async (start, end) => new Uint8Array(await file.slice(start, end).arrayBuffer()),
       });
-      for (const part of session.parts) {
-        const start = part.startByte ?? 0;
-        const end = part.endByte ?? file.size;
-        const res = await fetch(part.url, {
-          method: 'PUT',
-          body: file.slice(start, end),
-          headers: { 'content-type': file.type || 'application/octet-stream' },
-        });
-        if (!res.ok) throw new Error(`part ${part.partNumber} failed`);
+      toast.success('Avatar uploaded — processing…');
+      // The media pipeline processes async; its thumbnail (source scaled to
+      // 640w) is the public URL we can persist. Poll briefly, then save.
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const page = await api.media.listLibrary({ limit: 50 });
+        const processed = page.items.find((item) => item.id === asset.id);
+        if (processed === undefined || processed.status === 'failed') break;
+        if (processed.status === 'ready') {
+          const url = processed.thumbnailUrl;
+          if (url !== null) {
+            setAvatarUrl(url);
+            const { user: updated } = await api.auth.updateProfile({ avatarUrl: url });
+            setUser(updated);
+            toast.success('Avatar saved');
+            return;
+          }
+          break;
+        }
       }
-      await api.media.completeUpload({
-        assetId: session.assetId,
-        uploadId: session.uploadId,
-        parts: session.parts.map((p) => ({ partNumber: p.partNumber, etag: 'etag' })),
-      });
-      toast.success('Avatar uploaded — saving…');
+      toast.error('Could not process that image — paste an image URL instead.');
     } catch {
       toast.error('Uploads are offline on this server — paste an image URL instead.');
     }

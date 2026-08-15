@@ -2,8 +2,9 @@
  * Auth REST endpoints. Registered WITHOUT a prefix — the paths below are full
  * and must match @playin/api-client exactly. Refresh tokens travel in the
  * httpOnly `playin_rt` cookie scoped to /auth; access tokens are returned in
- * the body alongside their absolute expiry (extra keys the web app reads —
- * the contracts response schemas strip them client-side).
+ * the body alongside their absolute expiry (typed optional accessToken /
+ * accessTokenExpiresAt fields on the contracts verify/refresh/guest-join
+ * responses).
  */
 import '@fastify/cookie';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';

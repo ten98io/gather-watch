@@ -31,9 +31,21 @@ interface Conn {
   auth: AuthContext;
   member: Member;
   alive: boolean;
+  /** Inbound-frame rate limiting (sliding window). */
+  frameWindowStart: number;
+  frameCount: number;
 }
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
+/**
+ * Per-socket inbound frame ceiling: @fastify/rate-limit only guards REST, so
+ * WS floods (webrtc.* signaling spam, sync churn) need their own gate — every
+ * persisted event a flood triggers is a DB write. 300 frames / 10 s is ~30
+ * msg/s sustained, far above any legitimate client (typing + clock pings +
+ * signaling bursts), far below a flood.
+ */
+const WS_FRAME_WINDOW_MS = 10_000;
+const WS_FRAME_LIMIT = 300;
 
 /** First zod issue rendered as "path.to.field: message". */
 function firstIssueMessage(err: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }): string {
@@ -137,6 +149,16 @@ export class RoomHub implements HubApi {
     }
   }
 
+  disconnectSession(sessionId: string, code = 4401, reason = 'session revoked'): void {
+    for (const conns of this.rooms.values()) {
+      for (const conn of conns) {
+        if (conn.auth.sessionId === sessionId) {
+          conn.socket.close(code, reason);
+        }
+      }
+    }
+  }
+
   /** Full connection handshake, then frame dispatch until close. */
   async accept(socket: WebSocket, request: FastifyRequest): Promise<void> {
     const { config, store, log } = this.baseDeps;
@@ -185,7 +207,14 @@ export class RoomHub implements HubApi {
         guest: claims.guest,
         guestRoomId: claims.guestRoomId as RoomId | null,
       };
-      const conn: Conn = { socket, auth, member, alive: true };
+      const conn: Conn = {
+        socket,
+        auth,
+        member,
+        alive: true,
+        frameWindowStart: Date.now(),
+        frameCount: 0,
+      };
       this.addConn(roomId, conn);
       await this.ensureBusSub(roomId);
 
@@ -281,6 +310,21 @@ export class RoomHub implements HubApi {
   /** Parse, validate, and dispatch one inbound frame. */
   private async onFrame(conn: Conn, roomId: RoomId, data: unknown, isBinary: boolean): Promise<void> {
     const { socket } = conn;
+    // Sliding-window frame limiter: drop excess frames (error sent once per
+    // window) BEFORE parse/dispatch so a flood cannot amplify into handler
+    // work or persisted-event writes.
+    const nowMs = Date.now();
+    if (nowMs - conn.frameWindowStart >= WS_FRAME_WINDOW_MS) {
+      conn.frameWindowStart = nowMs;
+      conn.frameCount = 0;
+    }
+    conn.frameCount += 1;
+    if (conn.frameCount > WS_FRAME_LIMIT) {
+      if (conn.frameCount === WS_FRAME_LIMIT + 1) {
+        sendError(socket, roomId, makeApiError('RATE_LIMITED', 'too many messages'));
+      }
+      return;
+    }
     if (isBinary) {
       sendError(socket, roomId, makeApiError('VALIDATION', 'binary frames are not supported'));
       return;
@@ -345,7 +389,11 @@ export class RoomHub implements HubApi {
     return this.deps;
   }
 
-  /** Terminate sockets that failed to answer the previous ws-level ping. */
+  /** Terminate sockets that failed to answer the previous ws-level ping, and
+   *  re-validate each live session so revocation (logout everywhere, refresh
+   *  reuse) reaches sockets opened before the revoke — including sockets on
+   *  OTHER instances, where the revoking instance's disconnectSession can't
+   *  see them. Exposure is bounded by the sweep interval. */
   private sweep(): void {
     for (const conns of this.rooms.values()) {
       for (const conn of conns) {
@@ -356,6 +404,35 @@ export class RoomHub implements HubApi {
         }
         conn.alive = false;
         conn.socket.ping();
+      }
+    }
+    void this.sweepRevokedSessions();
+  }
+
+  private async sweepRevokedSessions(): Promise<void> {
+    // One store read per distinct live session per sweep.
+    const bySession = new Map<string, Conn[]>();
+    for (const conns of this.rooms.values()) {
+      for (const conn of conns) {
+        if (conn.socket.readyState !== WebSocket.OPEN) continue;
+        const list = bySession.get(conn.auth.sessionId);
+        if (list === undefined) {
+          bySession.set(conn.auth.sessionId, [conn]);
+        } else {
+          list.push(conn);
+        }
+      }
+    }
+    for (const [sessionId, conns] of bySession) {
+      try {
+        const session = await this.baseDeps.store.sessions.findById(sessionId);
+        if (session === null || session.revokedAt !== null) {
+          for (const conn of conns) {
+            conn.socket.close(4401, 'session revoked');
+          }
+        }
+      } catch (err) {
+        this.baseDeps.log.warn({ err, sessionId }, 'session sweep check failed');
       }
     }
   }

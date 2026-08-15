@@ -77,7 +77,6 @@ export async function seedRoom(store: StorePort, ownerId?: string): Promise<Seed
       chat: 'everyone',
       maxPublishers: 6,
       waitForAll: false,
-      voteSkipThreshold: 0.5,
       skipVoteThreshold: 0.5,
     },
     relayMode: 'mesh',

@@ -289,7 +289,13 @@ export class ChatService {
     emoji: string,
     op: 'add' | 'remove',
   ): Promise<void> {
-    await this.freshMember(roomId, auth.userId);
+    const member = await this.freshMember(roomId, auth.userId);
+    // Chat policy gates ALL persisted chat writes: in a 'mods'-chat room a
+    // plain member must not broadcast via reactions either. Typing signals
+    // and read/delivered cursors stay ungated on purpose — they are
+    // ephemeral/private-ish state, not content (documented decision).
+    const room = await this.getRoom(roomId);
+    this.requireChatPolicy(room, member.role);
     const message = await this.getMessage(roomId, messageId);
     if (message.deletedAt !== null) {
       throw new AppError('CONFLICT', 'message was deleted');

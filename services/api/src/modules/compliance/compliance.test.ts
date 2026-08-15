@@ -21,6 +21,7 @@ import type {
 import { newId } from '../../lib/tokens';
 import type { AssetDoc, StorePort } from '../../adapters/ports';
 import type { Deps } from '../types';
+import { setStripeClientForDeps } from '../billing/service';
 import { addMember, makeApp, seedRoom, signupUser } from '../../../test/helpers';
 import type { SignedUpUser } from '../../../test/helpers';
 import {
@@ -242,6 +243,34 @@ describe('compliance', () => {
       await seedMessage(store, room.id, account.user.id, 'my own words');
       await seedAccountData(store, account.user.id);
       await seedAsset(store, account.user.id);
+      // Metering rows the export surfaces: one playback transition and one
+      // TURN relay sample. seedAccountData's session-minutes row must NOT
+      // leak into the relay aggregate.
+      const historyAt = Date.UTC(2026, 7, 15, 12, 0, 0);
+      await store.usage.insertOne({
+        id: newId(),
+        userId: account.user.id,
+        roomId: room.id,
+        kind: 'playback.history',
+        amount: 4200,
+        unit: 'ms',
+        at: historyAt,
+        meta: {
+          mediaRef: { kind: 'youtube', videoId: 'dQw4w9WgXcQ' },
+          startedAt: historyAt,
+          positionMs: 4200,
+        },
+      });
+      await store.usage.insertOne({
+        id: newId(),
+        userId: account.user.id,
+        roomId: room.id,
+        kind: 'turn-bytes',
+        amount: 2_500_000_000,
+        unit: 'bytes',
+        at: historyAt,
+        meta: null,
+      });
 
       const res = await app.inject({
         method: 'GET',
@@ -250,10 +279,19 @@ describe('compliance', () => {
       });
       expect(res.statusCode).toBe(200);
       const raw = res.json() as Record<string, unknown>;
-      // EXACT contract key set — sessions/subscription/pushSubs/usage are not
-      // part of MeExportResponse and must not be bolted on.
+      // EXACT contract key set — sessions/subscription/pushSubs are not part
+      // of MeExportResponse and must not be bolted on.
       expect(Object.keys(raw).sort()).toEqual(
-        ['assets', 'exportedAt', 'messages', 'playlists', 'rooms', 'user'].sort(),
+        [
+          'assets',
+          'exportedAt',
+          'messages',
+          'playbackHistory',
+          'playlists',
+          'rooms',
+          'usage',
+          'user',
+        ].sort(),
       );
       const body = MeExportResponse.parse(raw);
       expect(body.user.id).toBe(account.user.id);
@@ -266,6 +304,16 @@ describe('compliance', () => {
       expect(body.assets).toHaveLength(1);
       expect(body.assets[0]).not.toHaveProperty('storageKey');
       expect(body.assets[0]).not.toHaveProperty('uploadId');
+      expect(body.playbackHistory).toEqual([
+        {
+          roomId: room.id,
+          mediaRef: { kind: 'youtube', videoId: 'dQw4w9WgXcQ' },
+          positionMs: 4200,
+          at: historyAt,
+        },
+      ]);
+      // Only relay kinds aggregate into usage; session-minutes is ignored.
+      expect(body.usage).toEqual([{ month: '2026-08', relayGb: 2.5 }]);
 
       const json = JSON.stringify(raw);
       expect(json).not.toContain('refreshHash');
@@ -423,6 +471,46 @@ describe('compliance', () => {
 
       // Registry entry consumed — a second sweep does nothing for this user.
       expect(await purgeDueUsers(deps, purgeAt + 1000)).not.toContain(account.user.id);
+    });
+
+    it('cancels the live Stripe subscription before deleting the billing row', async () => {
+      const account = await signupUser(app, 'paying-erasure@example.com');
+      await store.subscriptions.insertOne({
+        id: account.user.id,
+        userId: account.user.id,
+        plan: 'premium',
+        status: 'active',
+        stripeCustomerId: 'cus_erase_1',
+        stripeSubscriptionId: 'sub_erase_1',
+        currentPeriodEnd: null,
+        updatedAt: Date.now(),
+      });
+      const canceled: string[] = [];
+      setStripeClientForDeps(deps, {
+        customers: { create: async () => ({ id: 'cus_x' }) },
+        checkout: { sessions: { create: async () => ({ url: null }) } },
+        billingPortal: { sessions: { create: async () => ({ url: 'https://x' }) } },
+        webhooks: {
+          constructEvent: () => {
+            throw new Error('unused');
+          },
+        },
+        subscriptions: {
+          cancel: async (id) => {
+            canceled.push(id);
+            return { id };
+          },
+        },
+      });
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/me',
+        headers: bearer(account.accessToken),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(canceled).toEqual(['sub_erase_1']);
+      expect(await store.subscriptions.findById(account.user.id)).toBeNull();
     });
 
     it('rejects guest tokens with 403 (no account to erase)', async () => {

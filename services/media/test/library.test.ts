@@ -103,9 +103,11 @@ describe('library', () => {
     expect(res.json()).toEqual({ ok: true });
     expect(await rig.store.findById(assetId)).toBeNull();
     expect(rig.storage.deletedPrefixes).toContain(`u/user-a/${assetId}`);
-    // The HLS tree uploaded by the pipeline is gone from storage.
+    expect(rig.storage.deletedPrefixes).toContain(`public/u/user-a/${assetId}`);
+    // Source AND published HLS tree are gone from storage.
     for (const key of rig.storage.objects.keys()) {
       expect(key.startsWith(`u/user-a/${assetId}`)).toBe(false);
+      expect(key.startsWith(`public/u/user-a/${assetId}`)).toBe(false);
     }
   });
 });

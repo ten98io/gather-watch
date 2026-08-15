@@ -339,6 +339,9 @@ importers:
       '@fastify/cors':
         specifier: ^10.0.0
         version: 10.1.0
+      '@fastify/rate-limit':
+        specifier: ^10.0.0
+        version: 10.3.0
       '@playin/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

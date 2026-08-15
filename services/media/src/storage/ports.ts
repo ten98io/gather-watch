@@ -31,6 +31,12 @@ export interface ObjectStorage {
   abortMultipartUpload(key: string, uploadId: string): Promise<void>;
 
   getObject(key: string): Promise<Buffer>;
+  /** Stream an object to a local file — sources can be GBs and MUST NOT be
+   *  buffered in memory (the pipeline downloads via this, never getObject). */
+  getObjectToFile(key: string, destPath: string): Promise<void>;
+  /** Object metadata via HEAD; null when the key does not exist. Complete
+   *  verifies the ACTUAL uploaded size against quota with this. */
+  headObject(key: string): Promise<{ sizeBytes: number } | null>;
   putObject(key: string, body: Buffer, contentType: string): Promise<void>;
   deleteObject(key: string): Promise<void>;
   /** Delete every object under `prefix` (paginated). */

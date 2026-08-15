@@ -4,8 +4,14 @@
  * server.ts owns the listen/shutdown lifecycle.
  */
 import fastify from 'fastify';
-import type { FastifyInstance } from 'fastify';
+import type {
+  FastifyInstance,
+  FastifyPluginAsync,
+  FastifyReply,
+  FastifyRequest,
+} from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import type { AppConfig } from './config';
 import type { Deps } from './deps';
 import type { AssetStore } from './store/ports';
@@ -60,8 +66,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   registerErrorMapper(app);
   registerAuth(app);
-  await app.register(uploadRoutes);
-  await app.register(libraryRoutes);
+  // Same convention as services/api: keyed by authenticated user, IP for
+  // anonymous traffic. Ops endpoints are cheap; the cap mainly guards
+  // POST /uploads (each call creates a real S3 multipart session).
+  await app.register(rateLimit, {
+    max: config.rateLimitMax,
+    timeWindow: config.rateLimitWindowMs,
+    keyGenerator: (request) => request.auth?.userId ?? request.ip,
+  });
+  if (config.enableMediaPipeline) {
+    await app.register(uploadRoutes);
+    await app.register(libraryRoutes);
+  } else {
+    // v3.1 pivot: the HLS pipeline is an optional module, DEFAULT OFF. The
+    // service still boots green (healthz/readyz) but the whole upload/library
+    // surface answers 501 so deployers get an honest signal, not a 404.
+    await app.register(disabledPipelineRoutes);
+  }
 
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/readyz', async (_request, reply) => {
@@ -75,5 +96,31 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     await store.close();
   });
 
+  if (config.enableMediaPipeline) {
+    // Boot reconciliation: a crash/redeploy mid-job strands assets in
+    // 'processing' forever (the queue is in-process and the idempotent
+    // complete route never re-enqueues). Re-kick them now.
+    const stranded = await store.listByStatus('processing');
+    for (const doc of stranded) {
+      app.log.warn({ assetId: doc.id }, 'media pipeline: re-enqueueing stranded asset');
+      pipeline.enqueue(doc.id);
+    }
+  }
+
   return { app, deps };
 }
+
+/** 501 stubs for the media surface when ENABLE_MEDIA_PIPELINE is off. */
+const disabledPipelineRoutes: FastifyPluginAsync = async (app) => {
+  const disabled = async (_request: FastifyRequest, reply: FastifyReply) =>
+    reply.status(501).send({
+      code: 'INTERNAL',
+      message: 'media pipeline disabled — set ENABLE_MEDIA_PIPELINE=true to enable uploads',
+    });
+  app.post('/uploads', disabled);
+  app.post('/uploads/:id/parts', disabled);
+  app.post('/uploads/:id/complete', disabled);
+  app.get('/library', disabled);
+  app.patch('/library/:id', disabled);
+  app.delete('/library/:id', disabled);
+};

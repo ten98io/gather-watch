@@ -198,6 +198,55 @@ describe('sync module', () => {
     });
   });
 
+  it('server owns the epoch: a huge injected epoch cannot lock the seat', async () => {
+    const { roomId } = await seedRoom(store);
+    const host = await join('host@example.com', roomId, 'host');
+    const member = await join('member@example.com', roomId, 'member');
+
+    // Claim with an absurd epoch: accepted (no master yet) but STORED as 1 —
+    // the server assigns stored+1, never the client's number.
+    const pChanged = nextOfType(host.sock, 'sync.masterChanged');
+    const pChangedMember = nextOfType(member.sock, 'sync.masterChanged');
+    member.sock.send(
+      clientFrame(roomId, 'sync.claimMaster', { epoch: Number.MAX_SAFE_INTEGER }),
+    );
+    const changed = await pChanged;
+    await pChangedMember; // drain the member's copy so the next wait is clean
+    expect(changed.payload).toEqual({ masterUserId: member.account.user.id, epoch: 1 });
+    expect((await store.rooms.findById(roomId))!.master).toEqual({
+      userId: member.account.user.id,
+      epoch: 1,
+    });
+
+    // The seat is NOT locked: the host re-claims at the next epoch.
+    const pChanged2 = nextOfType(member.sock, 'sync.masterChanged');
+    host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 2 }));
+    expect((await pChanged2).payload).toEqual({
+      masterUserId: host.account.user.id,
+      epoch: 2,
+    });
+  });
+
+  it('a plain member cannot displace a CONNECTED master under host playbackControl', async () => {
+    const { roomId } = await seedRoom(store);
+    const host = await join('host@example.com', roomId, 'host');
+    const member = await join('member@example.com', roomId, 'member');
+
+    const pChanged = nextOfType(member.sock, 'sync.masterChanged');
+    host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 1 }));
+    await pChanged;
+
+    // The host's socket is live, so the member's grab is a policy violation,
+    // not a re-election.
+    const pErr = nextOfType(member.sock, 'error');
+    member.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 5 }));
+    expect((await pErr).payload.code).toBe('ROOM_POLICY');
+    expect((await store.rooms.findById(roomId))!.master).toEqual({
+      userId: host.account.user.id,
+      epoch: 1,
+    });
+  });
+
   // ── late joiner convergence ────────────────────────────────────────────────
 
   it('persists sync.state events so late joiners replay them in seq order', async () => {

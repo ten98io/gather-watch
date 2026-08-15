@@ -1,4 +1,5 @@
 import { ApiError, RestClient } from '@playin/api-client';
+import type { FetchInitLike, FetchLike } from '@playin/api-client';
 import {
   ApiError as ApiErrorPayload,
   GuestJoinResponse,
@@ -198,9 +199,50 @@ function emitAuthExpired(): void {
   }
 }
 
+/* ── captureFetch: makes RestClient's 401→refresh→replay path actually work.
+   The frozen RestClient's doRefresh POSTs /auth/refresh but DISCARDS the
+   rotated access token in the body (packages/api-client rest.ts doRefresh
+   returns res.ok only), and the replay re-asks getAccessToken — which would
+   return the same stale in-memory token because its local expiry still looks
+   fresh. Intercepting the refresh response here (mirror of mobile's
+   captureFetch) stashes the fresh token BEFORE the replay asks for it, so
+   server-side rejections of a locally-"fresh" token (sign-out-everywhere,
+   secret rotation, clock skew) recover instead of failing until natural
+   expiry. ── */
+
+const captureFetch: FetchLike = async (url, init?: FetchInitLike) => {
+  const res = await fetch(url, init as RequestInit);
+  if (res.ok && url.startsWith(API_URL)) {
+    let pathname: string | null = null;
+    try {
+      pathname = new URL(url).pathname;
+    } catch {
+      // Relative/odd URL — RestClient always passes absolute ones.
+    }
+    if (pathname === '/auth/refresh') {
+      try {
+        const data = (await res.clone().json()) as {
+          accessToken?: unknown;
+          accessTokenExpiresAt?: unknown;
+        };
+        if (
+          typeof data.accessToken === 'string' &&
+          typeof data.accessTokenExpiresAt === 'number'
+        ) {
+          setAccessToken(data.accessToken, data.accessTokenExpiresAt);
+        }
+      } catch {
+        // Non-JSON refresh response — nothing to capture.
+      }
+    }
+  }
+  return res;
+};
+
 /** The shared REST client. Auth travels via the httpOnly cookie + the
  *  in-memory access token above; nothing is persisted to web storage. */
 export const api = new RestClient(API_URL, {
+  fetchImpl: captureFetch,
   getAccessToken: ensureAccessToken,
   onAuthExpired: emitAuthExpired,
 });
@@ -211,6 +253,7 @@ export const api = new RestClient(API_URL, {
 export async function apiFetch<T>(
   path: string,
   opts: { method?: string; body?: unknown; schema: { parse(v: unknown): T } },
+  retried = false,
 ): Promise<T> {
   const method = opts.method ?? 'GET';
   const headers: Record<string, string> = { accept: 'application/json' };
@@ -231,12 +274,19 @@ export async function apiFetch<T>(
   }
 
   if (res.status === 401) {
+    // One replay only (matches RestClient's `retried` flag): a route-level
+    // authz bug must not loop refresh→retry forever, burning refresh
+    // rotations on every pass.
+    if (retried) {
+      emitAuthExpired();
+      throw new ApiError('UNAUTHORIZED', 'session expired', 401);
+    }
     const session = await refreshSession();
     if (session === null) {
       emitAuthExpired();
       throw new ApiError('UNAUTHORIZED', 'session expired', 401);
     }
-    return apiFetch(path, opts);
+    return apiFetch(path, opts, true);
   }
 
   const text = await res.text();

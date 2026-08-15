@@ -44,6 +44,10 @@ export function registerErrorMapper(app: FastifyInstance): void {
     if (statusCode === 400) {
       return reply.status(400).send({ code: 'VALIDATION', message: 'invalid request body' });
     }
+    // @fastify/rate-limit rejections surface as contracts RATE_LIMITED.
+    if (statusCode === 429) {
+      return reply.status(429).send({ code: 'RATE_LIMITED', message: 'rate limit exceeded' });
+    }
     request.log.error({ err }, 'unhandled request error');
     return reply.status(500).send({ code: 'INTERNAL', message: 'internal error' });
   });

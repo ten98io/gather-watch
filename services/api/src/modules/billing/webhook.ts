@@ -102,10 +102,27 @@ async function upsertSubscription(
   deps: Deps,
   userId: string,
   patch: Partial<SubscriptionDoc>,
+  eventTs: number,
 ): Promise<void> {
+  // Ordering guard: Stripe does not guarantee delivery order. A stale event
+  // (older `created` than the last applied one) must not clobber newer state
+  // — e.g. a retried updated(active) arriving after deleted would resurrect
+  // premium for a canceled account. Equal timestamps still apply (same-second
+  // sequences are common: checkout.completed → subscription.updated).
+  const existing = await deps.store.subscriptions.findById(userId);
+  if (
+    existing?.lastStripeEventTs !== undefined &&
+    eventTs < existing.lastStripeEventTs
+  ) {
+    deps.log.info(
+      { userId, eventTs, lastApplied: existing.lastStripeEventTs },
+      'stripe webhook: ignoring out-of-order event',
+    );
+    return;
+  }
   const updated = await deps.store.subscriptions.updateOne(
     { id: userId },
-    { ...patch, updatedAt: Date.now() },
+    { ...patch, updatedAt: Date.now(), lastStripeEventTs: eventTs },
   );
   if (updated === null) {
     await deps.store.subscriptions.insertOne({
@@ -117,6 +134,7 @@ async function upsertSubscription(
       stripeSubscriptionId: patch.stripeSubscriptionId ?? null,
       currentPeriodEnd: patch.currentPeriodEnd ?? null,
       updatedAt: Date.now(),
+      lastStripeEventTs: eventTs,
     });
   }
 }
@@ -129,7 +147,11 @@ async function userIdForCustomer(deps: Deps, customerId: string | null): Promise
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-async function onCheckoutCompleted(deps: Deps, session: CheckoutSessionLike): Promise<void> {
+async function onCheckoutCompleted(
+  deps: Deps,
+  session: CheckoutSessionLike,
+  eventTs: number,
+): Promise<void> {
   const customerId = idOf(session.customer);
   const userId =
     session.client_reference_id ??
@@ -147,10 +169,14 @@ async function onCheckoutCompleted(deps: Deps, session: CheckoutSessionLike): Pr
     stripeCustomerId: customerId,
     stripeSubscriptionId: idOf(session.subscription),
     currentPeriodEnd: null,
-  });
+  }, eventTs);
 }
 
-async function onSubscriptionUpdated(deps: Deps, sub: SubscriptionLike): Promise<void> {
+async function onSubscriptionUpdated(
+  deps: Deps,
+  sub: SubscriptionLike,
+  eventTs: number,
+): Promise<void> {
   const customerId = idOf(sub.customer);
   const userId = sub.metadata?.userId ?? (await userIdForCustomer(deps, customerId));
   if (userId === null) {
@@ -164,10 +190,14 @@ async function onSubscriptionUpdated(deps: Deps, sub: SubscriptionLike): Promise
     stripeCustomerId: customerId,
     stripeSubscriptionId: sub.id,
     currentPeriodEnd: periodEndIso(sub),
-  });
+  }, eventTs);
 }
 
-async function onSubscriptionDeleted(deps: Deps, sub: SubscriptionLike): Promise<void> {
+async function onSubscriptionDeleted(
+  deps: Deps,
+  sub: SubscriptionLike,
+  eventTs: number,
+): Promise<void> {
   const customerId = idOf(sub.customer);
   const userId = sub.metadata?.userId ?? (await userIdForCustomer(deps, customerId));
   if (userId === null) {
@@ -180,7 +210,7 @@ async function onSubscriptionDeleted(deps: Deps, sub: SubscriptionLike): Promise
     stripeCustomerId: customerId,
     stripeSubscriptionId: sub.id,
     currentPeriodEnd: null,
-  });
+  }, eventTs);
 }
 
 /**
@@ -190,13 +220,13 @@ async function onSubscriptionDeleted(deps: Deps, sub: SubscriptionLike): Promise
 export async function handleStripeEvent(deps: Deps, event: Stripe.Event): Promise<void> {
   switch (event.type) {
     case 'checkout.session.completed':
-      await onCheckoutCompleted(deps, event.data.object as unknown as CheckoutSessionLike);
+      await onCheckoutCompleted(deps, event.data.object as unknown as CheckoutSessionLike, event.created);
       return;
     case 'customer.subscription.updated':
-      await onSubscriptionUpdated(deps, event.data.object as unknown as SubscriptionLike);
+      await onSubscriptionUpdated(deps, event.data.object as unknown as SubscriptionLike, event.created);
       return;
     case 'customer.subscription.deleted':
-      await onSubscriptionDeleted(deps, event.data.object as unknown as SubscriptionLike);
+      await onSubscriptionDeleted(deps, event.data.object as unknown as SubscriptionLike, event.created);
       return;
     default:
       deps.log.debug({ type: event.type }, 'stripe webhook: ignoring unhandled event type');

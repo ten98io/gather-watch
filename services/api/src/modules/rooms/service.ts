@@ -140,7 +140,6 @@ export class RoomsService {
           chat: 'everyone',
           maxPublishers: 6,
           waitForAll: false,
-          voteSkipThreshold: 0.5,
           skipVoteThreshold: 0.5,
         },
         relayMode: 'mesh',
@@ -334,9 +333,6 @@ export class RoomsService {
       ...(patch.chat !== undefined ? { chat: patch.chat } : {}),
       ...(patch.maxPublishers !== undefined ? { maxPublishers: patch.maxPublishers } : {}),
       ...(patch.waitForAll !== undefined ? { waitForAll: patch.waitForAll } : {}),
-      ...(patch.voteSkipThreshold !== undefined
-        ? { voteSkipThreshold: patch.voteSkipThreshold }
-        : {}),
       ...(patch.skipVoteThreshold !== undefined
         ? { skipVoteThreshold: patch.skipVoteThreshold }
         : {}),

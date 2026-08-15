@@ -14,6 +14,8 @@ function compareDocs(a: AssetDoc, b: AssetDoc): number {
 
 export class MemoryAssetStore implements AssetStore {
   private readonly docs = new Map<string, AssetDoc>();
+  /** Test seam for planFor — no subscriptions collection in memory mode. */
+  readonly plans = new Map<string, 'free' | 'premium'>();
 
   async init(): Promise<void> {}
   async close(): Promise<void> {}
@@ -72,5 +74,15 @@ export class MemoryAssetStore implements AssetStore {
       if (doc.ownerId === ownerId) total += doc.sizeBytes;
     }
     return total;
+  }
+
+  async listByStatus(status: AssetDoc['status']): Promise<AssetDoc[]> {
+    return [...this.docs.values()]
+      .filter((doc) => doc.status === status)
+      .map((doc) => ({ ...doc }));
+  }
+
+  async planFor(userId: string): Promise<'free' | 'premium'> {
+    return this.plans.get(userId) ?? 'free';
   }
 }

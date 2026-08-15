@@ -74,9 +74,13 @@ import {
   Ok,
   paginated,
   RequestMagicLinkBody,
+  VerifyTokenResponse,
+  RefreshResponse,
   GuestJoinBody,
+  GuestJoinResponse,
   UpgradeGuestBody,
   ListSessionsResponse,
+  RevokeSessionResponse,
   RevokeAllSessionsResponse,
   UpdateProfileBody,
   CreateRoomBody,
@@ -134,7 +138,6 @@ const policies = {
   chat: 'everyone',
   maxPublishers: 6,
   waitForAll: false,
-  voteSkipThreshold: 0.5,
   skipVoteThreshold: 0.5,
 };
 
@@ -334,16 +337,6 @@ describe('entities', () => {
 
   it('RoomPolicies rejects maxPublishers 0', () => {
     expect(RoomPolicies.safeParse({ ...policies, maxPublishers: 0 }).success).toBe(false);
-  });
-
-  it('RoomPolicies defaults voteSkipThreshold to 0.5 when missing', () => {
-    const { voteSkipThreshold: _omitted, ...withoutThreshold } = policies;
-    expect(RoomPolicies.parse(withoutThreshold)).toEqual(policies);
-  });
-
-  it('RoomPolicies rejects voteSkipThreshold 0 and 1.5', () => {
-    expect(RoomPolicies.safeParse({ ...policies, voteSkipThreshold: 0 }).success).toBe(false);
-    expect(RoomPolicies.safeParse({ ...policies, voteSkipThreshold: 1.5 }).success).toBe(false);
   });
 
   it('RoomPolicies defaults skipVoteThreshold to 0.5 when missing', () => {
@@ -1141,6 +1134,35 @@ describe('rest.auth', () => {
     expect(RevokeAllSessionsResponse.parse({ revoked: 3 })).toEqual({ revoked: 3 });
     expect(RevokeAllSessionsResponse.safeParse({ revoked: -1 }).success).toBe(false);
   });
+
+  it('VerifyTokenResponse roundtrips with and without access-token fields', () => {
+    const bare = { user };
+    expect(VerifyTokenResponse.parse(bare)).toEqual(bare);
+    const withToken = { user, accessToken: 'jwt-a', accessTokenExpiresAt: TS };
+    expect(VerifyTokenResponse.parse(withToken)).toEqual(withToken);
+    expect(VerifyTokenResponse.safeParse({ user, accessToken: '' }).success).toBe(false);
+  });
+
+  it('RefreshResponse accepts the optional access-token fields', () => {
+    const res = { user, accessToken: 'jwt-b', accessTokenExpiresAt: TS };
+    expect(RefreshResponse.parse(res)).toEqual(res);
+  });
+
+  it('GuestJoinResponse roundtrips with access-token fields', () => {
+    const res = {
+      user: guestUser,
+      room,
+      member,
+      lastEventSeq: 7,
+      accessToken: 'jwt-g',
+      accessTokenExpiresAt: TS,
+    };
+    expect(GuestJoinResponse.parse(res)).toEqual(res);
+  });
+
+  it('RevokeSessionResponse roundtrips', () => {
+    expect(RevokeSessionResponse.parse({ ok: true })).toEqual({ ok: true });
+  });
 });
 
 describe('rest.rooms', () => {
@@ -1455,6 +1477,44 @@ describe('rest.report + rest.gdpr', () => {
       assets: [assetReady],
     };
     expect(MeExportResponse.parse(res)).toEqual(res);
+  });
+
+  it('MeExportResponse roundtrips playbackHistory and usage', () => {
+    const res = {
+      exportedAt: TS,
+      user,
+      rooms: [room],
+      messages: [message],
+      playlists: [playlist],
+      assets: [assetReady],
+      playbackHistory: [
+        {
+          roomId: 'room_1',
+          mediaRef: { kind: 'youtube', videoId: 'dQw4w9WgXcQ' },
+          positionMs: 4200,
+          at: TS,
+        },
+      ],
+      usage: [{ month: '2026-08', relayGb: 1.25 }],
+    };
+    expect(MeExportResponse.parse(res)).toEqual(res);
+  });
+
+  it('MeExportResponse rejects a malformed usage month', () => {
+    const base = {
+      exportedAt: TS,
+      user,
+      rooms: [room],
+      messages: [message],
+      playlists: [playlist],
+      assets: [assetReady],
+    };
+    expect(
+      MeExportResponse.safeParse({ ...base, usage: [{ month: '2026-13', relayGb: 1 }] }).success,
+    ).toBe(false);
+    expect(
+      MeExportResponse.safeParse({ ...base, usage: [{ month: '08-2026', relayGb: 1 }] }).success,
+    ).toBe(false);
   });
 
   it('DeleteMeResponse requires a purgeAt grace deadline', () => {

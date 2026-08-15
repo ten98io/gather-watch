@@ -72,6 +72,11 @@ export interface HubApi {
   /** Close every socket this user has in the room on THIS instance
    *  (kick/ban flows must also revoke membership via the store). */
   disconnectUser(roomId: RoomId, userId: UserId, code?: number, reason?: string): void;
+  /** Close every socket carrying this session on THIS instance — session
+   *  revocation (logout / sign-out-everywhere / refresh-reuse) must not
+   *  leave a compromised device with live realtime access. Other instances
+   *  converge via the hub sweep's session re-validation. */
+  disconnectSession(sessionId: string, code?: number, reason?: string): void;
 }
 
 // ── Shared dependencies ──────────────────────────────────────────────────────
