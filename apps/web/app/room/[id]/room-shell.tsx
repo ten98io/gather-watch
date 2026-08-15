@@ -5,9 +5,11 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '@playin/api-client';
+import { SetTheaterResponse } from '@playin/contracts';
 import type { RoomId } from '@playin/contracts';
-import { api } from '@/lib/api';
+import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { toast } from '@/components/ui/toast';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -125,6 +127,19 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
   const [tab, setTab] = useState<RailTab>('chat');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  /** Theater layout: rail hidden by default, opens as a glass overlay. */
+  const [railOpen, setRailOpen] = useState(false);
+  const canToggleTheater = member.role === 'host' || member.role === 'moderator';
+
+  const toggleTheater = (): void => {
+    void apiFetch(`/rooms/${roomId}/theater`, {
+      method: 'POST',
+      body: { enabled: !room.theater },
+      schema: SetTheaterResponse,
+    })
+      .then(() => toast.success(room.theater ? 'Theater off' : 'Theater on'))
+      .catch(() => toast.error('Could not toggle theater mode'));
+  };
 
   const shortcuts = useMemo(
     () => [
@@ -151,6 +166,16 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
         </Badge>
         <Badge variant="muted" className="font-mono">{room.inviteCode}</Badge>
         {member.role !== 'member' && <Badge variant="default">{member.role}</Badge>}
+        {canToggleTheater && (
+          <Button
+            variant={room.theater ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={room.theater}
+            onClick={toggleTheater}
+          >
+            🎭 Theater
+          </Button>
+        )}
         {!isDesktop && (
           <Button
             variant="secondary"
@@ -165,12 +190,31 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
       </header>
 
       {isDesktop ? (
-        <div className="flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 flex-1">
           <main className="relative min-w-0 flex-1" aria-label="Stage area">
             <ConnectionPill />
             <StagePane roomId={roomId} />
           </main>
-          <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
+          {room.theater ? (
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="absolute bottom-4 right-4 z-30"
+                onClick={() => setRailOpen((v) => !v)}
+                aria-expanded={railOpen}
+              >
+                {railOpen ? 'Hide panel' : 'Chat & queue'}
+              </Button>
+              {railOpen && (
+                <div className="absolute inset-y-0 right-0 z-20 w-[392px]">
+                  <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
+                </div>
+              )}
+            </>
+          ) : (
+            <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
+          )}
         </div>
       ) : (
         <>

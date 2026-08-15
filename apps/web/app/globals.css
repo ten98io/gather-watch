@@ -170,6 +170,12 @@
   to   { transform: rotate(360deg) scale(1.4); }
 }
 
+/* Sync pulse (DESIGN.md §5.4): one soft ring expands on seek/track-change. */
+@keyframes sync-pulse {
+  from { opacity: 0.7; transform: scale(0.4); }
+  to   { opacity: 0;   transform: scale(6); }
+}
+
 /* ── Accessibility fallbacks (DESIGN.md §9, non-negotiable) ── */
 @media (prefers-reduced-motion: reduce) {
   .void-aurora {

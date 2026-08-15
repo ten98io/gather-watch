@@ -23,7 +23,7 @@ export interface RoomContextValue {
 const RoomContext = createContext<RoomContextValue | null>(null);
 
 export function RoomProvider({
-  room,
+  room: initialRoom,
   member,
   lastEventSeq,
   children,
@@ -34,11 +34,12 @@ export function RoomProvider({
   lastEventSeq: number | undefined;
   children: ReactNode;
 }) {
+  const [room, setRoom] = useState(initialRoom);
   const [connection] = useState(
     () =>
       new RoomConnection({
         api,
-        roomId: room.id,
+        roomId: initialRoom.id,
         ...(lastEventSeq === undefined ? {} : { initialSeq: lastEventSeq }),
         onGapLoss: () => {
           // A gap could not be backfilled: chat/queue/sync should refetch.
@@ -48,10 +49,19 @@ export function RoomProvider({
   );
 
   useEffect(() => {
+    setRoom(initialRoom);
+    connection.seedRoom(initialRoom);
+  }, [connection, initialRoom]);
+
+  useEffect(() => {
     connection.connect().catch(() => {
       toast.error('Could not connect to the room. Sign in again if this persists.');
     });
+    void connection.loadRecentMessages().catch(() => undefined);
+    // Live room entity: theater toggle / policy edits arrive as room.updated.
+    const off = connection.on('room.updated', (ev) => setRoom(ev.payload));
     return () => {
+      off();
       connection.close();
     };
   }, [connection]);
