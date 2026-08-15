@@ -156,7 +156,7 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
 
   return (
     <div className="flex h-dvh flex-col">
-      <header className="flex items-center gap-3 px-4 py-3">
+      <header className="flex flex-wrap items-center gap-3 px-4 py-3">
         <Link href="/home" aria-label="Leave room" className="text-low transition-colors hover:text-hi">
           ←
         </Link>

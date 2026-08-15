@@ -99,7 +99,7 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
               </div>
               {m.role === 'host' && <Badge variant="aurora">host</Badge>}
               {actionable && (
-                <div className="flex gap-1">
+                <div className="flex flex-wrap justify-end gap-1">
                   {iAmHost && (
                     <Button
                       variant="ghost"

@@ -113,7 +113,7 @@ function QueueRow({
   return (
     <li
       className={cn(
-        'flex items-center gap-2 rounded-card border border-border-glass bg-glass p-2.5',
+        'flex flex-wrap items-center gap-2 rounded-card border border-border-glass bg-glass p-2.5',
         isCurrent && 'border-aurora-1 bg-[rgba(149,91,254,0.12)]',
       )}
     >
@@ -135,7 +135,7 @@ function QueueRow({
           {item.votesToSkip.length > 0 ? ` · skip ${item.votesToSkip.length}/${needed}` : ''}
         </p>
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center justify-end gap-1">
         {canQueue && (
           <>
             <Button

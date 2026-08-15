@@ -182,7 +182,7 @@ export function CallStrip({ roomId }: { roomId: RoomId }) {
 
   return (
     <section aria-label="Call" data-room={roomId} className="flex flex-col gap-2 p-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {/* PiP presence orbs */}
         <div className="flex -space-x-2">
           {inCall.slice(0, 6).map((p) => (

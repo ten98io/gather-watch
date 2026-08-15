@@ -118,8 +118,8 @@ function MetricsPanel() {
         <Badge variant={m.total4xx > 0 ? 'default' : 'muted'}>{m.total4xx} × 4xx</Badge>
         <span className="text-low">in-process since {new Date(m.since).toLocaleTimeString()} — resets on restart</span>
       </div>
-      <div className="max-h-56 overflow-y-auto">
-        <table className="w-full text-left text-xs">
+      <div className="max-h-56 overflow-auto">
+        <table className="w-full min-w-[420px] text-left text-xs">
           <thead className="sticky top-0 bg-deep text-low">
             <tr>
               <th className="py-1 pr-2">Route</th>
@@ -257,7 +257,7 @@ function UsagePanel() {
         ))}
       </div>
       {u.topRooms.length > 0 && (
-        <table className="w-full text-left text-xs">
+        <table className="w-full min-w-[420px] text-left text-xs">
           <thead className="text-low">
             <tr>
               <th className="py-1 pr-2">Room</th>
@@ -283,8 +283,8 @@ function RoomsPanel() {
   if (q.isPending) return <Skeleton className="h-32 w-full" />;
   if (q.isError) return <p className="text-sm text-danger">Rooms failed to load.</p>;
   return (
-    <div className="max-h-64 overflow-y-auto">
-      <table className="w-full text-left text-xs">
+    <div className="max-h-64 overflow-auto">
+      <table className="w-full min-w-[420px] text-left text-xs">
         <thead className="sticky top-0 bg-deep text-low">
           <tr>
             <th className="py-1 pr-2">Name</th>
@@ -319,8 +319,8 @@ function UsersPanel() {
   if (q.isPending) return <Skeleton className="h-32 w-full" />;
   if (q.isError) return <p className="text-sm text-danger">Users failed to load.</p>;
   return (
-    <div className="max-h-64 overflow-y-auto">
-      <table className="w-full text-left text-xs">
+    <div className="max-h-64 overflow-auto">
+      <table className="w-full min-w-[420px] text-left text-xs">
         <thead className="sticky top-0 bg-deep text-low">
           <tr>
             <th className="py-1 pr-2">Name</th>

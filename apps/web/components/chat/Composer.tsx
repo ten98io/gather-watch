@@ -255,7 +255,7 @@ export function Composer({
 
       <div className="flex items-end gap-1.5 p-2">
         <div className="flex flex-col gap-1">
-          <div className="flex gap-0.5">
+          <div className="flex max-w-[150px] gap-0.5 overflow-x-auto sm:max-w-none sm:flex-wrap">
             {EMOJI_ROW.map((emoji) => (
               <button
                 key={emoji}

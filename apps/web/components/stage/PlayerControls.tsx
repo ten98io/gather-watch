@@ -89,7 +89,7 @@ export function PlayerControls({
 
   return (
     <div className="glass-raised flex flex-col gap-2 rounded-ctl px-3 py-2">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
           size="sm"
@@ -100,7 +100,7 @@ export function PlayerControls({
           {playback.playing ? '❚❚' : '▶'}
         </Button>
 
-        <span className="w-12 text-right font-mono text-xs text-mid tabular-nums">
+        <span className="hidden w-12 text-right font-mono text-xs text-mid tabular-nums sm:inline">
           {formatMs(expected)}
         </span>
         <Slider
@@ -132,7 +132,7 @@ export function PlayerControls({
         </Button>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="ghost"
           size="sm"
