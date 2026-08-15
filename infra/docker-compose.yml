@@ -1,0 +1,247 @@
+# ── Playin — self-hosted production stack ────────────────────────────────────
+#
+# Run from the REPO ROOT so compose interpolation (${VAR}) reads the root .env:
+#
+#   docker compose -f infra/docker-compose.yml --env-file .env up -d --build
+#
+# (Compose's default interpolation .env is looked up in the project directory —
+#  infra/ — so the explicit --env-file flag is required. Container runtime env
+#  is injected separately via `env_file: ../.env` on each app service.)
+#
+# Secrets live ONLY in the root .env (never in this file). Values pinned in
+# `environment:` blocks below are in-network topology facts, not secrets; they
+# deliberately override the empty dev defaults in .env.example (empty MONGO_URL/
+# REDIS_URL means "in-memory adapters", which must never happen in prod).
+
+name: playin
+
+services:
+  # ── Edge: TLS termination + reverse proxy ──────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+      # Plain-HTTP dev block in Caddyfile — loopback only by default: it serves
+      # the full app (auth cookies included) over cleartext, bypassing TLS.
+      # Override the binding explicitly if you really need remote plain HTTP.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data     # ACME certificates — persist or you re-issue on boot
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_started
+      api:
+        condition: service_healthy
+
+  # ── Next.js web client ─────────────────────────────────────────────────────
+  web:
+    build:
+      # Context is the repo root: the Dockerfile does a full-workspace pnpm
+      # build and needs pnpm-workspace.yaml, packages/*, and the lockfile.
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* values are baked at build time — pass them as build args
+      # here if the web app needs any beyond same-origin defaults.
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    expose:
+      - "3000" # fronted by caddy; not published on the host
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Fastify API (REST + room WebSocket) ────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      # In-network endpoints (override the empty/localhost dev values in .env):
+      MONGO_URL: mongodb://mongo:27017/playin
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      # Server-side LiveKit admin/token calls go over the docker network.
+      # The PUBLIC client URL (wss://…) stays in .env as LIVEKIT_URL — see README.
+      LIVEKIT_INTERNAL_URL: http://livekit:7880
+    expose:
+      - "4000" # fronted by caddy; not published on the host
+    healthcheck:
+      # Contract: the API serves GET /healthz → 200 (see infra/README.md).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      livekit:
+        condition: service_started
+
+  # ── Media pipeline worker (ffmpeg → HLS → MinIO) ──────────────────────────
+  media:
+    build:
+      context: ..
+      dockerfile: services/media/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      MONGO_URL: mongodb://mongo:27017/playin
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      MEDIA_PORT: "4500" # minimal health endpoint only — not proxied
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  # ── Data stores ────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    # Not published on the host by design. For debugging, add: "27017:27017".
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── LiveKit SFU (calls + Mode B re-stream) ─────────────────────────────────
+  livekit:
+    image: livekit/livekit-server:v1
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      # Takes precedence over the dev placeholder keys in livekit.yaml, so
+      # production keys live only in the root .env. Format: "key: secret".
+      # :? = REQUIRED — a missing/empty var fails the deploy instead of
+      # silently booting an internet-reachable SFU on publicly-known dev keys.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}"
+    ports:
+      - "7880:7880"                     # WS/HTTP signalling (proxy or open — see README)
+      - "7881:7881"                     # ICE/TCP fallback
+      - "50000-50200:50000-50200/udp"   # WebRTC media — MUST match rtc.port_range_* in livekit.yaml
+
+  # ── coturn (TURN relay for clients behind hostile NATs) ───────────────────
+  coturn:
+    image: instrumentisto/coturn:latest
+    restart: unless-stopped
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    # turnserver.conf cannot read env vars, so the shared secret is injected as
+    # a CLI flag (CLI overrides the config file). Set TURN_STATIC_AUTH_SECRET
+    # in the root .env — see infra/README.md. :? = REQUIRED: a missing secret
+    # fails the deploy; it must never fall back to a value printed in a public
+    # repo (anyone could mint valid TURN credentials and relay through you).
+    command:
+      - -c
+      - /etc/coturn/turnserver.conf
+      - --static-auth-secret=${TURN_STATIC_AUTH_SECRET:?set TURN_STATIC_AUTH_SECRET in .env}
+    # Alternative (Linux hosts only, better for large relay ranges): comment the
+    # `ports:` block out and use host networking instead:
+    #   network_mode: host
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "5349:5349/udp"
+      - "49160-49200:49160-49200/udp"   # relay range — MUST match min-port/max-port in coturn/turnserver.conf
+
+  # ── MinIO object storage (S3 API) ──────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      # :? = REQUIRED — no silent fallback to the dev credentials printed in
+      # .env.example for an internet-reachable object store.
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+    volumes:
+      - minio_data:/data
+    ports:
+      # S3 API. Published (not loopback) because browsers PUT presigned upload
+      # URLs directly against it unless you proxy uploads too; public media
+      # reads are proxied at /media/* via caddy. Firewall 9000 if your presigned
+      # URLs point at a proxied path instead.
+      - "9000:9000"
+      # Admin web console — loopback only; use an SSH tunnel for remote access.
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # One-shot bucket bootstrap: creates the bucket and makes the public/ prefix
+  # anonymously downloadable (HLS segments, avatars). Everything else stays
+  # private behind presigned URLs.
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    env_file:
+      - ../.env
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}" "$${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}"
+        mc mb --ignore-existing "local/$${S3_BUCKET:-playin-media}"
+        mc anonymous set download "local/$${S3_BUCKET:-playin-media}/public"
+        echo "minio-init: bucket + public prefix policy ready"
+
+volumes:
+  mongo_data:
+  redis_data:
+  minio_data:
+  caddy_data:
+  caddy_config:
