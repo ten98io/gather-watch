@@ -1,0 +1,193 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Playin design tokens — DESIGN.md §2 (BINDING).
+   OKLCH custom properties; dark is the primary theme, light ("Daylight") a
+   first-class variant. Components reference these vars via tailwind.config.ts.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+:root[data-theme='dark'] {
+  --bg-void:        oklch(0.13 0.02 285);   /* near-black indigo */
+  --bg-deep:        oklch(0.17 0.03 290);
+  --surface-glass:  color-mix(in oklch, white 5%, transparent);  /* + blur(20px) */
+  --surface-raised: color-mix(in oklch, white 8%, transparent);
+  --border-glass:   color-mix(in oklch, white 9%, transparent);
+  --text-hi:        oklch(0.97 0.005 285);
+  --text-mid:       oklch(0.78 0.015 285);
+  --text-low:       oklch(0.58 0.02 285);
+  --aurora-1:       oklch(0.62 0.23 295);   /* electric violet  */
+  --aurora-2:       oklch(0.66 0.26 340);   /* fuchsia          */
+  --aurora-3:       oklch(0.80 0.16 75);    /* solar amber      */
+  --accent:         var(--aurora-1);
+  --accent-ink:     oklch(0.98 0.01 295);
+  --success:        oklch(0.75 0.17 160);
+  --danger:         oklch(0.68 0.21 25);
+  --warn:           oklch(0.82 0.16 85);
+  --focus-ring:     oklch(0.72 0.20 295);
+}
+
+:root[data-theme='light'] {
+  --bg-void:        oklch(0.97 0.006 290);
+  --bg-deep:        oklch(0.94 0.01 290);
+  --surface-glass:  color-mix(in oklch, white 65%, transparent);
+  --surface-raised: color-mix(in oklch, white 80%, transparent);
+  --border-glass:   color-mix(in oklch, oklch(0.30 0.03 285) 14%, transparent);
+  --text-hi:        oklch(0.22 0.02 285);
+  --text-mid:       oklch(0.42 0.02 285);
+  --text-low:       oklch(0.55 0.02 285);
+  /* Aurora hues persist — chroma dialed down ~15% for WCAG AA on light. */
+  --aurora-1:       oklch(0.55 0.20 295);
+  --aurora-2:       oklch(0.58 0.22 340);
+  --aurora-3:       oklch(0.70 0.14 75);
+  --accent:         var(--aurora-1);
+  --accent-ink:     oklch(0.98 0.01 295);
+  --success:        oklch(0.55 0.15 160);
+  --danger:         oklch(0.55 0.19 25);
+  --warn:           oklch(0.62 0.14 85);
+  --focus-ring:     oklch(0.58 0.18 295);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  html[data-theme='light'] {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-void text-hi font-sans antialiased;
+    font-size: clamp(15px, 0.94rem + 0.15vw, 17px);
+    /* Grain overlay (2% SVG noise) kills gradient banding on the void. */
+    background-image: var(--grain);
+    background-repeat: repeat;
+    background-size: 180px 180px;
+  }
+  :root {
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
+  }
+  h1, h2, h3, h4 {
+    @apply font-display;
+    letter-spacing: -0.01em;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--aurora-1) 35%, transparent);
+  }
+  /* Every interactive element gets a visible aurora focus ring (DESIGN.md §9). */
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--text-low) 35%, transparent) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--text-low) 35%, transparent);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Disciplined glass: max two layers over the void (DESIGN.md §4). */
+  .glass-panel {
+    background: var(--surface-glass);
+    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+    backdrop-filter: blur(20px) saturate(1.3);
+    border: 1px solid var(--border-glass);
+    border-radius: 24px;
+  }
+  .glass-raised {
+    background: var(--surface-raised);
+    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+    backdrop-filter: blur(20px) saturate(1.3);
+    border: 1px solid var(--border-glass);
+    border-radius: 16px;
+  }
+  /* The ONLY gradient in the system: aurora 135deg, primary actions + brand. */
+  .aurora-gradient {
+    background-image: linear-gradient(135deg, var(--aurora-1), var(--aurora-2), var(--aurora-3));
+  }
+  /* Elevation is glow, not shadow. */
+  .glow {
+    box-shadow: 0 0 40px -12px color-mix(in oklch, var(--aurora-1) 22%, transparent);
+  }
+  .skeleton-shimmer {
+    background: linear-gradient(
+      100deg,
+      var(--surface-glass) 40%,
+      color-mix(in oklch, var(--aurora-1) 8%, var(--surface-glass)) 50%,
+      var(--surface-glass) 60%
+    );
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
+}
+
+@layer utilities {
+  .text-display {
+    font-size: clamp(1.75rem, 1rem + 2.5vw, 3.5rem);
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ── Ambient void: ultra-slow conic aurora at 6% opacity (DESIGN.md §5.5) ── */
+.void-aurora {
+  position: fixed;
+  inset: -25%;
+  z-index: -1;
+  pointer-events: none;
+  background: conic-gradient(
+    from 0deg at 50% 50%,
+    color-mix(in oklch, var(--aurora-1) 55%, transparent),
+    color-mix(in oklch, var(--aurora-2) 45%, transparent),
+    transparent 32%,
+    color-mix(in oklch, var(--aurora-3) 35%, transparent),
+    transparent 68%,
+    color-mix(in oklch, var(--aurora-1) 55%, transparent)
+  );
+  opacity: 0.06;
+  filter: blur(60px);
+  animation: aurora-drift 60s linear infinite;
+  will-change: transform;
+}
+
+@keyframes aurora-drift {
+  from { transform: rotate(0deg) scale(1.4); }
+  to   { transform: rotate(360deg) scale(1.4); }
+}
+
+/* ── Accessibility fallbacks (DESIGN.md §9, non-negotiable) ── */
+@media (prefers-reduced-motion: reduce) {
+  .void-aurora {
+    animation: none;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 150ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass-panel,
+  .glass-raised {
+    background: var(--bg-deep);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

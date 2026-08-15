@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Playin",
+    "slug": "playin",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "playin",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#07060f",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.playin.mobile",
+      "infoPlist": {
+        "UIBackgroundModes": ["audio", "voip"]
+      }
+    },
+    "android": {
+      "package": "app.playin.mobile",
+      "permissions": [
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "FOREGROUND_SERVICE_MICROPHONE",
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-video"
+    ],
+    "extra": {
+      "apiUrl": "http://localhost:4000"
+    }
+  }
+}

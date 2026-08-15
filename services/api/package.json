@@ -1,0 +1,43 @@
+{
+  "name": "playin-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/server.ts --format esm --clean",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@playin/contracts": "workspace:*",
+    "@playin/sync-core": "workspace:*",
+    "fastify": "^5.2.0",
+    "ioredis": "^5.4.0",
+    "jose": "^5.9.0",
+    "livekit-server-sdk": "^2.9.0",
+    "mongodb": "^6.12.0",
+    "nodemailer": "^6.9.0",
+    "pino": "^9.5.0",
+    "stripe": "^17.0.0",
+    "web-push": "^3.6.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^6.4.17",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.13",
+    "tsup": "^8.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -9,10 +9,26 @@ export default tseslint.config(
       "**/.next/**",
       "**/node_modules/**",
       "**/coverage/**",
+      "**/next-env.d.ts",
     ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    // Plain-JS tool configs (babel/metro/next) run in Node's CJS scope.
+    files: ["**/*.config.js", "**/*.config.cjs"],
+    languageOptions: {
+      globals: {
+        module: "writable",
+        require: "writable",
+        __dirname: "writable",
+        process: "writable",
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
   {
     rules: {
       // Standard convention: names prefixed with "_" are intentionally unused
