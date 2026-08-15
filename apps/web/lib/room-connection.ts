@@ -109,6 +109,9 @@ export interface RoomState {
   presence: Record<UserId, PresenceEntry>;
   /** Chat window, ascending by seq, capped at MAX_MESSAGES. */
   messages: Message[];
+  /** True once the server returned a short (< 50) oldest page — nothing
+   *  earlier exists, so the "Load earlier" affordance should hide. */
+  chatHistoryExhausted: boolean;
   /** userId → typing-expiry timestamp (ms). */
   typing: Record<UserId, number>;
   readCursors: Record<UserId, number>;
@@ -135,6 +138,7 @@ function initialRoomState(): RoomState {
     queue: initialQueueState(),
     presence: {},
     messages: [],
+    chatHistoryExhausted: false,
     typing: {},
     readCursors: {},
     deliveredCursors: {},
@@ -339,7 +343,11 @@ export class RoomConnection {
     this.useRoomState.setState((s) => {
       let messages = s.messages;
       for (const msg of ascending) messages = insertMessage(messages, msg);
-      return { messages: messages.slice(-MAX_MESSAGES) };
+      return {
+        messages: messages.slice(-MAX_MESSAGES),
+        // A short newest page means the window already holds everything.
+        chatHistoryExhausted: ascending.length < 50,
+      };
     });
   }
 

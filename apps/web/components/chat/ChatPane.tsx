@@ -84,7 +84,7 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
   const me = member.userId;
 
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  const [hasMore, setHasMore] = useState(true);
+  const historyExhausted = connection.useRoomState((s) => s.chatHistoryExhausted);
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchQ, setSearchQ] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -156,8 +156,10 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
         limit: 50,
       });
       const ascending = [...page.items].sort((a, b) => a.seq - b.seq);
+      if (ascending.length < 50) {
+        connection.useRoomState.setState({ chatHistoryExhausted: true });
+      }
       if (ascending.length === 0) {
-        setHasMore(false);
         return;
       }
       connection.useRoomState.setState((s) => {
@@ -167,7 +169,6 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
         }
         return { messages: next };
       });
-      if (ascending.length < 50) setHasMore(false);
     } catch {
       // A failed page is retried by the next click.
     } finally {
@@ -267,7 +268,7 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
         aria-live="polite"
         className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2"
       >
-        {hasMore && messages.length > 0 && (
+        {!historyExhausted && messages.length > 0 && (
           <Button
             variant="ghost"
             size="sm"

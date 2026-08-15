@@ -172,7 +172,7 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
         <Badge variant={room.kind === 'watch' ? 'aurora' : 'default'}>
           {room.kind === 'watch' ? 'Watch' : 'Listen'}
         </Badge>
-        <Badge variant="muted" className="font-mono">{room.inviteCode}</Badge>
+        <Badge variant="muted" className="hidden font-mono sm:inline-flex">{room.inviteCode}</Badge>
         {member.role !== 'member' && <Badge variant="default">{member.role}</Badge>}
         {canToggleTheater && (
           <Button

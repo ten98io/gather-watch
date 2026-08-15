@@ -60,11 +60,21 @@ export function RoomProvider({
     void connection.loadRecentMessages().catch(() => undefined);
     // Live room entity: theater toggle / policy edits arrive as room.updated.
     const off = connection.on('room.updated', (ev) => setRoom(ev.payload));
+    // Announce presence whenever the socket (re)connects — the hub's default
+    // entry is 'offline' until a client says otherwise, and peers render it.
+    const offStatus = connection.useStatus.subscribe((status) => {
+      if (status === 'live') {
+        connection.presenceUpdate({
+          state: initialRoom.kind === 'listen' ? 'listening' : 'watching',
+        });
+      }
+    });
     return () => {
+      offStatus();
       off();
       connection.close();
     };
-  }, [connection]);
+  }, [connection, initialRoom.kind]);
 
   return (
     <RoomContext.Provider value={{ room, member, connection }}>{children}</RoomContext.Provider>

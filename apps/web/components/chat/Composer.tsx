@@ -253,57 +253,58 @@ export function Composer({
         </div>
       )}
 
-      <div className="flex items-end gap-1.5 p-2">
-        <div className="flex flex-col gap-1">
-          <div className="flex max-w-[150px] gap-0.5 overflow-x-auto sm:max-w-none sm:flex-wrap">
-            {EMOJI_ROW.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                aria-label={`Insert ${emoji}`}
-                className="rounded px-0.5 text-base hover:bg-glass"
-                onClick={() => {
-                  setDraft((d) => d + emoji);
-                  signalTyping();
-                }}
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-0.5">
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Send a GIF"
-              disabled={disabled}
-              onClick={() => setGifOpen(true)}
-            >
-              GIF
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Attach a file"
-              disabled={disabled || uploadPct !== null}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              📎
-            </Button>
-            <VoiceButton
-              roomId={roomId}
-              disabled={disabled}
-              onRecorded={(attachment) => {
-                connection.chatSend({
-                  kind: 'voice',
-                  body: 'Voice note',
-                  attachment,
-                  replyTo: replyTo?.id ?? null,
-                });
-                onCancelReply();
-              }}
-            />
-          </div>
+      {/* Emoji strip spans the full composer width; the input row below keeps
+          the textarea roomy even in the 380px rail (audit fix). */}
+      <div className="flex gap-0.5 overflow-x-auto px-2 pt-1.5">
+        {EMOJI_ROW.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            aria-label={`Insert ${emoji}`}
+            className="rounded px-0.5 text-base hover:bg-glass"
+            onClick={() => {
+              setDraft((d) => d + emoji);
+              signalTyping();
+            }}
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex items-end gap-1.5 p-2 pt-0">
+        <div className="flex gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Send a GIF"
+            disabled={disabled}
+            onClick={() => setGifOpen(true)}
+          >
+            GIF
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Attach a file"
+            disabled={disabled || uploadPct !== null}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎
+          </Button>
+          <VoiceButton
+            roomId={roomId}
+            disabled={disabled}
+            onRecorded={(attachment) => {
+              connection.chatSend({
+                kind: 'voice',
+                body: 'Voice note',
+                attachment,
+                replyTo: replyTo?.id ?? null,
+              });
+              onCancelReply();
+            }}
+          />
         </div>
 
         <textarea
@@ -318,11 +319,11 @@ export function Composer({
               send();
             }
           }}
-          placeholder={disabled ? 'Chat is restricted' : 'Message the room…'}
+          placeholder={disabled ? 'Chat is restricted' : 'Message…'}
           disabled={disabled}
           rows={Math.min(4, Math.max(1, draft.split('\n').length))}
           aria-label="Message"
-          className="min-h-[40px] flex-1 resize-none rounded-ctl border border-border-glass bg-glass px-3 py-2 text-sm text-hi placeholder:text-low focus:outline-none focus:ring-2 focus:ring-ring"
+          className="min-h-[40px] min-w-0 flex-1 resize-none rounded-ctl border border-border-glass bg-glass px-3 py-2 text-sm text-hi placeholder:text-low focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <Button
           size="icon"
