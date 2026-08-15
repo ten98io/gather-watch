@@ -224,22 +224,13 @@ describe('ws hub', () => {
     expect(err2.payload.code).toBe('VALIDATION');
     expect(err2.payload.message).toContain('type');
 
-    // Syntactically valid ClientEvent whose type has no registered handler:
-    // the error names the offending type.
+    // Syntactically valid ClientEvent whose type has no registered handler
+    // (no module claims restream.* yet): the error names the offending type.
     const p3 = nextMessage(sock);
-    sock.send(
-      clientFrame(roomId, 'chat.send', {
-        kind: 'text',
-        body: 'hi',
-        gifUrl: null,
-        attachment: null,
-        replyTo: null,
-        mentions: [],
-      }),
-    );
+    sock.send(clientFrame(roomId, 'restream.start', {}));
     const err3 = await p3;
     expect(err3.payload.code).toBe('VALIDATION');
-    expect(err3.payload.message).toContain('chat.send');
+    expect(err3.payload.message).toContain('restream.start');
 
     // Valid ClientEvent addressed at a DIFFERENT room than this connection.
     const other = await seedRoom(store);
@@ -258,10 +249,10 @@ describe('ws hub', () => {
     hub.registerModule({
       name: 'test',
       wsHandlers: {
-        'chat.typing': async (ev, ctx) => {
+        'restream.start': async (_ev, ctx) => {
           ctx.deps.events.emitEphemeral(ctx.roomId, 'chat.typing', {
             userId: ctx.auth.userId,
-            typing: ev.payload.typing,
+            typing: true,
           });
           await ctx.deps.events.emit(ctx.roomId, 'sync.waiting', { waitingOn: [] });
         },
@@ -271,7 +262,7 @@ describe('ws hub', () => {
     expect(() =>
       hub.registerModule({
         name: 'test-dup',
-        wsHandlers: { 'chat.typing': () => {} },
+        wsHandlers: { 'restream.start': () => {} },
       }),
     ).toThrow();
 
@@ -284,7 +275,7 @@ describe('ws hub', () => {
     // sync.waiting (seq 1).
     const pa1 = collectMessages(sockA, 2);
     const pb1 = collectMessages(sockB, 2);
-    sockA.send(clientFrame(roomId, 'chat.typing', { typing: true }));
+    sockA.send(clientFrame(roomId, 'restream.start', {}));
     const [msgsA, msgsB] = await Promise.all([pa1, pb1]);
 
     for (const msgs of [msgsA, msgsB]) {
@@ -303,7 +294,7 @@ describe('ws hub', () => {
 
     // Second send: the next persisted event gets seq 2 (monotonic).
     const pb2 = collectMessages(sockB, 2);
-    sockA.send(clientFrame(roomId, 'chat.typing', { typing: false }));
+    sockA.send(clientFrame(roomId, 'restream.start', {}));
     const msgs2 = await pb2;
     const waiting2 = msgs2.find((m) => m.type === 'sync.waiting');
     expect(waiting2).toBeDefined();
@@ -376,7 +367,7 @@ describe('ws hub', () => {
     hub.registerModule({
       name: 'test',
       wsHandlers: {
-        'chat.typing': async (_ev, ctx) => {
+        'restream.start': async (_ev, ctx) => {
           await ctx.deps.events.emit(ctx.roomId, 'sync.waiting', { waitingOn: [] });
         },
       },
@@ -386,8 +377,8 @@ describe('ws hub', () => {
 
     // Emit two persisted events; receiving the seq-2 one proves both landed.
     const p = collectMessages(sockA, 2);
-    sockA.send(clientFrame(roomId, 'chat.typing', { typing: true }));
-    sockA.send(clientFrame(roomId, 'chat.typing', { typing: false }));
+    sockA.send(clientFrame(roomId, 'restream.start', {}));
+    sockA.send(clientFrame(roomId, 'restream.start', {}));
     const msgs = await p;
     expect(msgs.map((m) => m.seq)).toEqual([1, 2]);
 
@@ -433,7 +424,7 @@ describe('ws hub', () => {
     hub.registerModule({
       name: 'test',
       wsHandlers: {
-        'chat.typing': async (_ev, ctx) => {
+        'restream.start': async (_ev, ctx) => {
           await ctx.deps.events.emit(ctx.roomId, 'sync.waiting', { waitingOn: [] });
         },
       },
@@ -457,7 +448,7 @@ describe('ws hub', () => {
 
       const pa = collectMessages(sockA, 1);
       const pc = collectMessages(sockC, 1);
-      sockA.send(clientFrame(roomId, 'chat.typing', { typing: true }));
+      sockA.send(clientFrame(roomId, 'restream.start', {}));
       const [msgsA, msgsC] = await Promise.all([pa, pc]);
 
       // The emit triggered on app 1 reached member C on app 2 via the bus,

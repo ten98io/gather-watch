@@ -9,6 +9,7 @@ import type { ModulePlugin } from './types';
 
 export const modules: ModulePlugin[] = [
   authModule,
+  (await import('./chat/index')).default,
   (await import('./sync/index')).default,
   (await import('./queue/index')).default,
   (await import('./billing/index')).default,

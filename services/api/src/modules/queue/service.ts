@@ -105,14 +105,6 @@ export class QueueService {
     if (!votes.includes(userId)) {
       votes.push(userId);
     }
-    // Repeat vote with nothing pruned away: silent no-op (no bump, no emit).
-    if (
-      hadVoted &&
-      votes.length === item.votesToSkip.length &&
-      votes.every((v, i) => item.votesToSkip[i] === v)
-    ) {
-      return;
-    }
 
     // With no playback snapshot the head of the queue counts as current.
     const qi = room.playback?.queueIndex;
@@ -123,6 +115,19 @@ export class QueueService {
 
     const required = Math.max(1, Math.ceil(fraction * active.size));
     const skips = fraction > 0 && item.id === currentItemId && votes.length >= required;
+
+    // Repeat vote with nothing pruned away and no skip due: silent no-op (no
+    // bump, no emit). The skip check runs FIRST so a vote-set that meets the
+    // threshold only after voters disconnected (shrinking `active`) still
+    // fires on the next (even repeat) vote instead of sticking forever.
+    if (
+      !skips &&
+      hadVoted &&
+      votes.length === item.votesToSkip.length &&
+      votes.every((v, i) => item.votesToSkip[i] === v)
+    ) {
+      return;
+    }
     const items = skips
       ? room.queue.items.filter((it) => it.id !== itemId)
       : room.queue.items.map((it) => (it.id === itemId ? { ...it, votesToSkip: votes } : it));

@@ -5,9 +5,18 @@
  * private-address guard, so a public URL cannot redirect into the internal
  * network. All guard failures surface as AppError('VALIDATION'); the
  * unfurler never throws anything else on purpose.
+ *
+ * DNS-rebinding defence: the guard's vetted addresses are PINNED — the
+ * default fetch dials through an undici Agent whose connect-time lookup only
+ * ever returns what the guard resolved (fail closed on anything else), so an
+ * attacker DNS server cannot answer public-to-the-check and
+ * private-to-the-connect. Injecting fetchImpl bypasses pinning; that option
+ * exists for tests only.
  */
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import type { LookupFunction } from 'node:net';
+import { Agent, fetch as undiciFetch } from 'undici';
 import type { UnfurlResponse } from '@playin/contracts';
 import { AppError } from '../../lib/errors';
 
@@ -29,6 +38,56 @@ export interface UnfurlerOptions {
 export type Unfurler = (url: string) => Promise<UnfurlResponse>;
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * connect-time lookup that ONLY hands out addresses already vetted by the
+ * guard. FAIL CLOSED: a hostname with no pinned entry is a connection error,
+ * never a fresh DNS query. Handles both node lookup callback shapes
+ * (`all: true` -> array, otherwise (address, family)).
+ */
+export type PinnedLookup = (
+  hostname: string,
+  options: { all?: boolean; family?: number | string },
+  callback: (err: NodeJS.ErrnoException | null, address?: unknown, family?: number) => void,
+) => void;
+
+export function createPinnedLookup(
+  pinned: ReadonlyMap<string, readonly ResolvedAddress[]>,
+): PinnedLookup {
+  return (hostname, options, callback) => {
+    const vetted = pinned.get(hostname.toLowerCase()) ?? [];
+    const family = options.family === 4 || options.family === 6 ? options.family : null;
+    const usable = family === null ? vetted : vetted.filter((a) => a.family === family);
+    const first = usable[0];
+    if (first === undefined) {
+      callback(new Error(`unfurl: no vetted address for ${hostname}`));
+      return;
+    }
+    if (options.all === true) {
+      callback(
+        null,
+        usable.map((a) => ({ address: a.address, family: a.family })),
+      );
+      return;
+    }
+    callback(null, first.address, first.family);
+  };
+}
+
+/** A fetch whose sockets resolve exclusively through the `pinned` map. */
+export function createPinningFetch(
+  pinned: ReadonlyMap<string, readonly ResolvedAddress[]>,
+): typeof fetch {
+  const agent = new Agent({
+    connect: { lookup: createPinnedLookup(pinned) as unknown as LookupFunction },
+  });
+  const pinnedFetch = (input: string | URL, init?: RequestInit): Promise<Response> =>
+    undiciFetch(input as never, {
+      ...(init as object),
+      dispatcher: agent,
+    } as never) as unknown as Promise<Response>;
+  return pinnedFetch as unknown as typeof fetch;
+}
 
 function privateAddressError(): AppError {
   return new AppError('VALIDATION', 'url resolves to a private address');
@@ -177,9 +236,21 @@ export function createUnfurler(options: UnfurlerOptions = {}): Unfurler {
   const timeoutMs = options.timeoutMs ?? 3000;
   const maxBytes = options.maxBytes ?? 512 * 1024;
   const maxRedirects = options.maxRedirects ?? 3;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  // hostname (lowercased) -> the exact addresses the guard vetted. The
+  // default fetch dials ONLY through this map (see createPinningFetch);
+  // allowPrivate skips vetting, so it falls back to the plain global fetch
+  // (test-only mode, documented above).
+  const pinned = new Map<string, ResolvedAddress[]>();
+  const fetchImpl =
+    options.fetchImpl ?? (allowPrivate ? globalThis.fetch : createPinningFetch(pinned));
   const lookupImpl: LookupFn =
     options.lookupImpl ?? (async (hostname) => dnsLookup(hostname, { all: true }));
+  const pin = (hostname: string, addresses: readonly ResolvedAddress[]): void => {
+    if (pinned.size > 256 && !pinned.has(hostname.toLowerCase())) {
+      pinned.clear(); // hard bound; every entry is vetted-public anyway
+    }
+    pinned.set(hostname.toLowerCase(), [...addresses]);
+  };
 
   /** Validate one hop: scheme, localhost, and private-address checks. */
   const guard = async (raw: string): Promise<URL> => {
@@ -206,6 +277,7 @@ export function createUnfurler(options: UnfurlerOptions = {}): Unfurler {
       if (isPrivateIp(hostname)) {
         throw privateAddressError();
       }
+      pin(hostname, [{ address: hostname, family: isIP(hostname) }]);
       return url;
     }
     let addresses: ResolvedAddress[];
@@ -222,6 +294,7 @@ export function createUnfurler(options: UnfurlerOptions = {}): Unfurler {
         throw privateAddressError();
       }
     }
+    pin(hostname, addresses);
     return url;
   };
 
