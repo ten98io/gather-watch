@@ -170,6 +170,15 @@ export class RoomHub implements HubApi {
   /** Full connection handshake, then frame dispatch until close. */
   async accept(socket: WebSocket, request: FastifyRequest): Promise<void> {
     const { config, store, log } = this.baseDeps;
+    // Buffer frames from the moment the upgrade lands: the handshake below
+    // (token/session/member loads) is async, and on a real store it takes
+    // tens of ms — a client whose socket is already open (RoomSocket flushes
+    // its send queue on open) would otherwise silently lose those frames.
+    const earlyFrames: Array<[unknown, boolean]> = [];
+    const onEarlyFrame = (data: unknown, isBinary: boolean): void => {
+      earlyFrames.push([data, isBinary]);
+    };
+    socket.on('message', onEarlyFrame);
     try {
       const query = request.query as Record<string, unknown>;
       const roomId = typeof query.roomId === 'string' ? query.roomId : null;
@@ -226,11 +235,16 @@ export class RoomHub implements HubApi {
       this.addConn(roomId, conn);
       await this.ensureBusSub(roomId);
 
-      socket.on('pong', () => {
-        conn.alive = true;
-      });
+      socket.off('message', onEarlyFrame);
       socket.on('message', (data: unknown, isBinary: boolean) => {
         void this.onFrame(conn, roomId as RoomId, data, isBinary);
+      });
+      // Replay handshake-window frames in arrival order.
+      for (const [data, isBinary] of earlyFrames) {
+        await this.onFrame(conn, roomId as RoomId, data, isBinary);
+      }
+      socket.on('pong', () => {
+        conn.alive = true;
       });
       socket.on('close', () => {
         this.removeConn(roomId, conn);

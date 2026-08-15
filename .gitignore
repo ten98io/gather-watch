@@ -15,3 +15,4 @@ mongo-data/
 uploads-tmp/
 playwright-report/
 test-results/
+atlas-credentials.env
