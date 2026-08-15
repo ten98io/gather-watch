@@ -138,7 +138,15 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
       schema: SetTheaterResponse,
     })
       .then(() => toast.success(room.theater ? 'Theater off' : 'Theater on'))
-      .catch(() => toast.error('Could not toggle theater mode'));
+      .catch((err: unknown) => {
+        // Surface the server's reason — premium gate, role policy, etc.
+        const msg = err instanceof ApiError ? err.message : 'Could not toggle theater mode';
+        if (err instanceof ApiError && err.code === 'FORBIDDEN' && /premium/i.test(msg)) {
+          toast.error('Theater mode is a premium feature — upgrade to enable it');
+        } else {
+          toast.error(msg);
+        }
+      });
   };
 
   const shortcuts = useMemo(
