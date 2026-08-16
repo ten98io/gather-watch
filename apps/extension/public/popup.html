@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Playin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --void: oklch(0.13 0.02 285);
+        --glass: color-mix(in oklch, white 6%, transparent);
+        --border: color-mix(in oklch, white 10%, transparent);
+        --hi: oklch(0.97 0.005 285);
+        --mid: oklch(0.78 0.015 285);
+        --low: oklch(0.58 0.02 285);
+        --a1: oklch(0.62 0.23 295);
+        --a2: oklch(0.66 0.26 340);
+        --a3: oklch(0.8 0.16 75);
+      }
+      * { box-sizing: border-box; margin: 0; }
+      body {
+        width: 320px;
+        padding: 16px;
+        background: var(--void);
+        color: var(--hi);
+        font: 14px/1.45 system-ui, sans-serif;
+      }
+      h1 { font-size: 16px; letter-spacing: -0.01em; }
+      .sub { color: var(--low); font-size: 12px; margin-top: 2px; }
+      .card {
+        margin-top: 12px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--glass);
+      }
+      input {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--hi);
+        font: inherit;
+      }
+      input:focus { outline: 2px solid var(--a1); }
+      button {
+        margin-top: 8px;
+        width: 100%;
+        padding: 9px 12px;
+        border: 0;
+        border-radius: 10px;
+        font: 600 13px system-ui, sans-serif;
+        color: oklch(0.98 0.01 295);
+        background: linear-gradient(135deg, var(--a1), var(--a2), var(--a3));
+        cursor: pointer;
+      }
+      button.ghost { background: var(--glass); color: var(--mid); border: 1px solid var(--border); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .row { display: flex; align-items: center; gap: 8px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; }
+      .ok { background: oklch(0.75 0.17 160); }
+      .off { background: oklch(0.58 0.02 285); }
+      #status { font-size: 12px; color: var(--mid); }
+      #error { color: oklch(0.68 0.21 25); font-size: 12px; margin-top: 8px; }
+      .mono { font-family: ui-monospace, monospace; letter-spacing: 0.12em; }
+      label { font-size: 12px; color: var(--mid); display: block; margin-bottom: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Playin</h1>
+    <p class="sub">Sync this tab with a room — or share it.</p>
+
+    <div class="card">
+      <div class="row"><span id="livedot" class="dot off"></span><span id="status">Not connected</span></div>
+      <p id="provider" class="sub"></p>
+    </div>
+
+    <div class="card" id="connect-card">
+      <label for="code">Room code</label>
+      <input id="code" class="mono" placeholder="XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
+      <button id="connect">Connect this tab</button>
+      <p id="error" hidden></p>
+    </div>
+
+    <div class="card" id="live-card" hidden>
+      <p class="sub">Mode A: this tab follows the room. Mode B: share this tab (with audio) to the room.</p>
+      <button id="share">Share this tab to the room</button>
+      <button id="disconnect" class="ghost">Disconnect</button>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
