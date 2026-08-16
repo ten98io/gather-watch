@@ -1,0 +1,790 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *  PlaybackDriver — the one contract — and the extension's elastic corrector
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Two things live here, and they are deliberately separate:
+ *
+ *  1. {@link PlaybackDriver}: the interface EVERY playback surface implements
+ *     (docs/EXTENSION_FIRST.md, Part 2 "One contract, three implementations").
+ *     Web adapters, this extension's content script, and mobile native all
+ *     conform, so "which surface drives playback" becomes a runtime decision
+ *     per item rather than an architectural fork.
+ *
+ *  2. {@link ElasticDriver}: the correction engine that sits ABOVE a driver.
+ *     It owns a sync-core {@link DriftController} seeded with the elastic
+ *     presets, feeds it real observations, and yields play/pause/seek/rate
+ *     commands. It never touches the DOM, chrome.* or Date.now — every input
+ *     arrives as an argument — which is what makes the whole sync policy
+ *     unit-testable.
+ *
+ * ── Why a driver contract and not just an adapter ──────────────────────────
+ * apps/web's `PlayerAdapter` OWNS its player: it created the <video> or the
+ * YouTube iframe, so `load()` and `seekTo()` always mean something. A driver
+ * on a third-party site owns nothing. It observes and corrects someone else's
+ * player, which may refuse a rate change, refuse a seek, swap its media
+ * element mid-playback, or be protected by DRM. So the contract adds:
+ *
+ *   - {@link DriverCapabilities} — canSeek / canSetRate / canControlVolume /
+ *     isDrmProtected, reported honestly and allowed to change at runtime once
+ *     the driver has *evidence* (a rate assignment that was silently ignored).
+ *   - {@link CommandResult} — a command may be refused, not just performed.
+ *   - {@link DriverTelemetry} — one consistent observation, timestamped, so a
+ *     corrector running in another process (this extension's background
+ *     worker) can reason about staleness instead of assuming "now".
+ *
+ * ── The honest stops (docs/EXTENSION_FIRST.md, Parts 1 and 3) ──────────────
+ * Nothing here defeats DRM, captures a protected surface, or re-encodes
+ * anything: the only outputs are transport commands, a seek target and a
+ * playbackRate for a player the *user* is already entitled to play. When a
+ * player refuses rate control, the anchor absorbs the offset — we do not fall
+ * back to seeking repeatedly, because a seek is precisely what wrecks
+ * perceived quality (SoundCloud re-buffers; a DRM player renegotiates its
+ * licence and stalls for seconds).
+ */
+
+import { DriftController, LISTEN_ELASTIC, STRICT_SYNC, WATCH_ELASTIC } from '@playin/sync-core';
+import type { ElasticDriftOptions } from '@playin/sync-core';
+import type { MediaRef } from '@playin/contracts';
+
+/* ═════════════════════════ 1. the shared contract ════════════════════════ */
+
+/** Which surface a driver runs on. */
+export type PlaybackSurface = 'web' | 'extension' | 'native';
+
+/**
+ * Lifecycle events every driver emits. A superset of apps/web's
+ * `AdapterEvent`: the extra three exist only because a driver does not own its
+ * player and therefore has to report things being done *to* it.
+ */
+export type DriverEvent =
+  | 'ready' // position/duration are meaningful
+  | 'playing'
+  | 'paused'
+  | 'ended'
+  | 'buffering' // 'waiting' / 'stalled'
+  | 'buffered' // recovered
+  | 'durationchange'
+  | 'error'
+  /** The player moved itself (the user scrubbed the site's own control). */
+  | 'seeked'
+  /** The player's rate changed under us — including a rate WE set being undone. */
+  | 'ratechange'
+  /** The surface swapped the media out from under us (SPA route, next track). */
+  | 'trackchange';
+
+/**
+ * What a driver can actually do — reported, never assumed. Flags may change at
+ * runtime: `canSetRate` starts optimistic and goes false the first time an
+ * assignment is observed to have been ignored.
+ */
+export interface DriverCapabilities {
+  /** Seeking is possible at all. False for embeds with no position API. */
+  canSeek: boolean;
+  /** `playbackRate` is honoured. DRM players frequently accept and ignore it. */
+  canSetRate: boolean;
+  canControlVolume: boolean;
+  /** EME/protected media: never capture, mirror or re-encode. */
+  isDrmProtected: boolean;
+  /** False when the driver only observes and corrects a player it did not create. */
+  ownsPlayer: boolean;
+  /** False when position readings are absent or approximate (embed players). */
+  canObservePosition: boolean;
+}
+
+/** A command is a request, not a guarantee. */
+export type CommandResult = 'applied' | 'rejected' | 'unsupported';
+
+/** One consistent, timestamped reading of a player. */
+export interface DriverTelemetry {
+  positionMs: number;
+  /** 0 while unknown (pre-metadata, or a live stream). */
+  durationMs: number;
+  playing: boolean;
+  rate: number;
+  /** Client clock at capture. Lets a remote corrector reason about staleness. */
+  atMs: number;
+}
+
+/**
+ * THE CONTRACT. Implemented by:
+ *
+ *   web       apps/web/lib/player/* — already shaped like this; needs
+ *             `capabilities()`, `observe()` and CommandResult returns.
+ *   extension this repo — mediaDriver.ts measures and applies, content.ts is
+ *             the DOM plumbing, and the elected frame is the driver instance.
+ *   native    AVPlayer / ExoPlayer / WebView behind the same methods.
+ *
+ * Method names match apps/web's `PlayerAdapter` on purpose, so conforming is a
+ * widening, not a rewrite.
+ */
+export interface PlaybackDriver {
+  readonly surface: PlaybackSurface;
+  /** Implementation id: 'native' | 'youtube' | 'content-script' | 'exoplayer' … */
+  readonly kind: string;
+
+  /** Current honest capability set. Cheap; may change between calls. */
+  capabilities(): DriverCapabilities;
+
+  /**
+   * Point the surface at a ref. A driver that does not own its player returns
+   * 'unsupported' — the user navigates to their own copy; we never navigate
+   * anybody's browser to paid content on their behalf.
+   */
+  load(ref: MediaRef): CommandResult;
+
+  play(): CommandResult;
+  pause(): CommandResult;
+  seekTo(ms: number): CommandResult;
+  setRate(rate: number): CommandResult;
+  setMuted(muted: boolean): CommandResult;
+  isMuted(): boolean | null;
+  setVolume(volume: number): CommandResult; // 0..1
+
+  positionMs(): number;
+  /** 0 while unknown. */
+  durationMs(): number;
+  /** One atomic reading; null when no player is attached. */
+  observe(): DriverTelemetry | null;
+
+  on(evt: DriverEvent, cb: () => void): () => void;
+  destroy(): void;
+}
+
+/** Neutral starting point: optimistic about rate, honest about ownership. */
+export const OBSERVER_CAPABILITIES: Readonly<DriverCapabilities> = Object.freeze({
+  canSeek: true,
+  canSetRate: true,
+  canControlVolume: true,
+  isDrmProtected: false,
+  ownsPlayer: false,
+  canObservePosition: true,
+});
+
+/* ═════════════════════════ 2. elastic correction ═════════════════════════ */
+
+/** Which comfort band a room plays under. */
+export type SyncProfile = 'strict' | 'watch' | 'listen';
+
+/**
+ * The three bands, straight from sync-core. `strict` is frame-lock and is kept
+ * only for a single device driving two of its own players — it is NOT the
+ * room default any more (docs/EXTENSION_FIRST.md Part 1).
+ */
+export const SYNC_PRESETS: Readonly<Record<SyncProfile, Readonly<ElasticDriftOptions>>> =
+  Object.freeze({
+    strict: STRICT_SYNC,
+    watch: WATCH_ELASTIC,
+    listen: LISTEN_ELASTIC,
+  });
+
+/** Services whose content is music: rate-nudging is audible, so listen bands. */
+const LISTEN_PROVIDER_IDS: readonly string[] = [
+  'soundcloud',
+  'spotify',
+  'applemusic',
+  'tidal',
+  'deezer',
+  'youtubemusic',
+];
+
+/**
+ * Pick the band for what is actually playing. The room's own kind wins when we
+ * know it; otherwise an `<audio>` element or a music service is the tell. When
+ * nothing is known, watch — the wider rate authority is the safer default for
+ * dialogue, and a music room that guesses wrong only converges faster than it
+ * needed to for one track.
+ */
+export function profileForContent(input: {
+  roomKind?: 'watch' | 'listen' | null;
+  providerId?: string | null;
+  mediaTag?: 'audio' | 'video' | null;
+}): SyncProfile {
+  if (input.roomKind === 'listen') return 'listen';
+  if (input.roomKind === 'watch') return 'watch';
+  if (input.mediaTag === 'audio') return 'listen';
+  if (input.providerId !== null && input.providerId !== undefined) {
+    if (LISTEN_PROVIDER_IDS.includes(input.providerId)) return 'listen';
+  }
+  return 'watch';
+}
+
+/** Stable identity for the room's current media. A change is a track change. */
+export function mediaKeyOf(ref: MediaRef | null): string | null {
+  if (ref === null) return null;
+  switch (ref.kind) {
+    case 'hls':
+      return `hls:${ref.assetId}`;
+    case 'youtube':
+      return `youtube:${ref.videoId}`;
+    case 'vimeo':
+      return `vimeo:${ref.videoId}`;
+    case 'soundcloud':
+      return `soundcloud:${ref.url}`;
+    case 'url':
+      return `url:${ref.url}`;
+    case 'embed':
+      return `embed:${ref.provider}:${ref.embedUrl}`;
+  }
+}
+
+/** The presence fields the band cares about. */
+export interface PresenceLike {
+  userId: string;
+  /** PresenceState from contracts; only 'offline' is treated specially. */
+  state: string;
+  micOn: boolean;
+}
+
+/**
+ * Is live voice happening in this room right now?
+ *
+ * docs/EXTENSION_FIRST.md Consequence B: the call does NOT travel the content's
+ * path. Voice is ~50–150ms peer-to-peer while viewers may be 8s apart in the
+ * content, so a live mic is the one spoiler vector media-anchored chat cannot
+ * close. When anybody is on mic the band tightens.
+ *
+ * Note that the local user's OWN mic counts. If I am the only one talking, my
+ * reactions still have to make sense to the people hearing them, so my playback
+ * is the one that has to stay in step. What does NOT count is talking to
+ * nobody: a single member alone in the room has nothing to stay in step with.
+ */
+export function voiceActiveFrom(entries: Iterable<PresenceLike>): boolean {
+  let present = 0;
+  let mics = 0;
+  for (const entry of entries) {
+    if (entry.state === 'offline') continue;
+    present += 1;
+    if (entry.micOn) mics += 1;
+  }
+  return mics > 0 && present > 1;
+}
+
+/* ── the tick contract ── */
+
+/** What the room believes, at the instant of this tick. */
+export interface RoomFrame {
+  /** Room position projected to now, in media time (expectedPositionMs). */
+  expectedMs: number;
+  playing: boolean;
+  rate: number;
+  /** Identity of the room's media; see {@link mediaKeyOf}. */
+  mediaKey: string | null;
+}
+
+/** Why the driver did what it did — for the debug HUD and the room status chip. */
+export type DriveReason =
+  /** Inside the comfort band. Doing nothing is the point. */
+  | 'idle'
+  /** Host intent: play/pause. Never subject to the band. */
+  | 'transport'
+  | 'nudge'
+  | 'seek'
+  /** A seek was warranted but refused (voice live, player can't seek, or too soon). */
+  | 'seek-suppressed'
+  /** The player is buffering. Correcting into a stall makes it worse. */
+  | 'stalled'
+  /** Outside the band, but this player ignores playbackRate — the anchor holds it. */
+  | 'rate-locked'
+  /** Undoing a leftover nudge once we are back inside the band. */
+  | 'restore-rate'
+  /** Nothing observed yet: fall back to plain follow-the-room. */
+  | 'no-telemetry';
+
+/** One tick's prescription. `idle` means: send the player nothing at all. */
+export interface DriveCommand {
+  transport: 'play' | 'pause' | 'none';
+  seekToMs: number | null;
+  /** ABSOLUTE playbackRate to assign (room rate × nudge), or null to leave alone. */
+  setRate: number | null;
+  /**
+   * The position to put on the legacy `{kind:'drive'}` wire message. It equals
+   * `seekToMs` when a seek is prescribed and the player's own current position
+   * otherwise, so a content script running the OLD fixed bands
+   * (mediaDriver.decideDrive, 400ms/2s) reproduces this decision exactly: it
+   * seeks when and only when the elastic decision says seek.
+   */
+  wirePositionMs: number;
+  /** True when nothing should be sent to the player this tick. */
+  idle: boolean;
+  /** Post-anchor drift (positive → this viewer is behind). */
+  driftMs: number;
+  anchorOffsetMs: number;
+  reason: DriveReason;
+}
+
+/** Observable driver state, for HUDs and the honest room-status string. */
+export interface ElasticDriverState {
+  profile: SyncProfile;
+  anchorOffsetMs: number;
+  voiceTightening: boolean;
+  rateControlAvailable: boolean;
+  seekAvailable: boolean;
+  stalled: boolean;
+  driftMs: number;
+}
+
+export interface ElasticDriverOptions {
+  profile?: SyncProfile;
+  /** Merged on top of the preset. For tests and per-provider quirks only. */
+  tuning?: ElasticDriftOptions;
+  capabilities?: Partial<DriverCapabilities>;
+}
+
+/* ── tuned constants (all in ms unless noted) ── */
+
+/** A jump in the ROOM's timeline larger than this is a host seek, not drift. */
+export const HOST_SEEK_EPSILON_MS = 750;
+/** A gap between ticks this large means the worker slept or the tab was frozen. */
+export const WAKE_GAP_MS = 4000;
+/** Telemetry older than this tells us nothing about now. */
+export const TELEMETRY_STALE_MS = 4000;
+/** Shortest sample interval that can prove a stall. */
+const STALL_MIN_ELAPSED_MS = 400;
+/** Advanced less than this fraction of what it should have → stalled. */
+const STALL_ADVANCE_FRACTION = 0.25;
+/** An unexplained move of the player's own position (user scrubbed, ad break). */
+const LOCAL_JUMP_MS = 1500;
+/** playbackRate comparison tolerance. */
+const RATE_EPSILON = 0.005;
+/** Telemetry must be captured at least this long after a rate assignment. */
+const RATE_READBACK_GRACE_MS = 250;
+/** Never seek more often than this. A DRM licence renegotiation is expensive. */
+export const MIN_SEEK_INTERVAL_MS = 5000;
+/** …and twice as rarely on protected players. */
+export const MIN_SEEK_INTERVAL_DRM_MS = 10_000;
+/** A prescribed seek that lands further than this from its target was ignored. */
+const SEEK_MISS_MS = 2000;
+/** Two ignored seeks in a row and we stop asking. */
+const MAX_SEEK_MISSES = 2;
+
+/** Project a telemetry reading forward to `nowMs` at the rate it was running. */
+export function projectedPositionMs(local: DriverTelemetry, nowMs: number): number {
+  if (!local.playing) return local.positionMs;
+  const dt = Math.max(0, nowMs - local.atMs);
+  return local.positionMs + dt * local.rate;
+}
+
+/**
+ * Elastic sync for a player we do not own.
+ *
+ * Owns one {@link DriftController} and does the work the controller cannot do
+ * for itself: turn a stream of room states and player telemetry into
+ * observations (buffering, track change, host seek, rate rejection) and turn
+ * the controller's abstract action into a concrete command.
+ *
+ * Every input is an argument — no clock, no DOM, no chrome.*.
+ */
+export class ElasticDriver {
+  private profileName: SyncProfile;
+  private readonly tuning: ElasticDriftOptions | undefined;
+  private controller: DriftController;
+  private caps: DriverCapabilities;
+
+  private lastTickMs: number | null = null;
+  private lastRoom: RoomFrame | null = null;
+  private lastMediaKey: string | null = null;
+  private lastLocal: DriverTelemetry | null = null;
+
+  /** The rate we last asked for, and what the player had before we asked. */
+  private prescribedRate: number | null = null;
+  private prescribedRateAtMs = 0;
+  private rateBeforePrescription = 1;
+
+  private pendingSeek: { toMs: number; atMs: number } | null = null;
+  private lastSeekAtMs: number | null = null;
+  private seekMisses = 0;
+
+  private voiceActive = false;
+  private stalled = false;
+  private driftMs = 0;
+  /** A host intent (seek / track change) is waiting to be applied verbatim. */
+  private pendingRealign = false;
+
+  constructor(opts?: ElasticDriverOptions) {
+    this.profileName = opts?.profile ?? 'watch';
+    this.tuning = opts?.tuning;
+    this.caps = { ...OBSERVER_CAPABILITIES, ...(opts?.capabilities ?? {}) };
+    this.controller = this.buildController();
+  }
+
+  /* ── configuration ── */
+
+  profile(): SyncProfile {
+    return this.profileName;
+  }
+
+  /** Switching bands rebuilds the controller; the learned anchor does not
+   *  survive, because it was learned under different tolerances. What DOES
+   *  survive is what we learned about the player itself — a player that
+   *  ignores playbackRate goes on ignoring it in any band. */
+  setProfile(profile: SyncProfile): void {
+    if (profile === this.profileName) return;
+    const rateWasAvailable = this.rateAvailable();
+    this.profileName = profile;
+    this.controller = this.buildController();
+    if (!rateWasAvailable) this.controller.noteRateRejected();
+  }
+
+  /** Report what the player can actually do. Partial: unmentioned flags stand. */
+  setCapabilities(caps: Partial<DriverCapabilities>): void {
+    this.caps = { ...this.caps, ...caps };
+    if (caps.canSetRate === false) this.controller.noteRateRejected();
+  }
+
+  capabilities(): DriverCapabilities {
+    return { ...this.caps, canSetRate: this.caps.canSetRate && this.rateAvailable() };
+  }
+
+  /* ── observations the caller can also feed explicitly ── */
+
+  /** 'waiting' / 'stalled' / tab wake / network recovery. The tick loop infers
+   *  these from telemetry too, but a content script that sees the real events
+   *  should call this — it is a whole second earlier. */
+  noteBuffering(): void {
+    this.controller.noteBuffering();
+  }
+
+  noteTrackChange(): void {
+    this.controller.noteTrackChange();
+    this.forgetPlayerBeliefs();
+  }
+
+  noteHostSeek(): void {
+    this.controller.noteHostSeek();
+  }
+
+  /** Live voice in the room — see {@link voiceActiveFrom}. */
+  setVoiceActive(active: boolean): void {
+    this.voiceActive = active;
+    this.controller.setVoiceActive(active);
+  }
+
+  state(): ElasticDriverState {
+    const s = this.controller.state();
+    return {
+      profile: this.profileName,
+      anchorOffsetMs: s.anchorOffsetMs,
+      voiceTightening: this.controller.isVoiceTightening(),
+      rateControlAvailable: s.rateControlAvailable,
+      seekAvailable: this.caps.canSeek && this.seekMisses < MAX_SEEK_MISSES,
+      stalled: this.stalled,
+      driftMs: this.driftMs,
+    };
+  }
+
+  /** Forget everything learned about this player (new tab, new element). */
+  reset(): void {
+    this.controller = this.buildController();
+    this.lastTickMs = null;
+    this.lastRoom = null;
+    this.lastMediaKey = null;
+    this.forgetPlayerBeliefs();
+    this.stalled = false;
+    this.driftMs = 0;
+  }
+
+  /* ── the tick ── */
+
+  /**
+   * Decide what to do with the player right now.
+   *
+   * @param room   the room's projected state (see {@link RoomFrame})
+   * @param local  the player's latest telemetry, or null when none has arrived
+   * @param nowMs  client clock for this tick
+   */
+  tick(room: RoomFrame, local: DriverTelemetry | null, nowMs: number): DriveCommand {
+    const gapMs = this.lastTickMs === null ? 0 : nowMs - this.lastTickMs;
+    const continuous = this.lastTickMs !== null && gapMs >= 0 && gapMs <= WAKE_GAP_MS;
+    this.lastTickMs = nowMs;
+
+    // The worker slept, or the tab was frozen and woke. Wherever the player is
+    // now is a fresh start, not accumulated drift.
+    if (this.lastRoom !== null && !continuous) {
+      this.controller.noteBuffering();
+      this.lastLocal = null;
+    }
+
+    if (room.mediaKey !== this.lastMediaKey) {
+      // The very first media of a session is not a *change*; a fresh controller
+      // is already armed to learn its anchor.
+      if (this.lastMediaKey !== null) this.noteTrackChange();
+      this.lastMediaKey = room.mediaKey;
+    } else if (continuous && this.lastRoom !== null) {
+      // A host seek shows up as a discontinuity in the ROOM's timeline. A
+      // correction WE prescribed moves the player, never the room, so the two
+      // can never be confused.
+      const prev = this.lastRoom;
+      const projected = prev.expectedMs + (prev.playing ? gapMs * prev.rate : 0);
+      if (Math.abs(room.expectedMs - projected) > HOST_SEEK_EPSILON_MS) this.noteHostSeek();
+    }
+    this.lastRoom = room;
+
+    const anchor = this.controller.anchorOffsetMs();
+    const target = room.expectedMs - anchor;
+
+    if (local === null || nowMs - local.atMs > TELEMETRY_STALE_MS) {
+      // Nothing observed: fall back to plain follow-the-room and let the
+      // player's own driver do the correcting. The anchor is still applied —
+      // yanking a viewer who deliberately runs 8s back would be worse than
+      // keeping them there while we are blind.
+      this.lastLocal = null;
+      this.stalled = false;
+      return this.finish({
+        transport: 'none',
+        seekToMs: null,
+        setRate: null,
+        wirePositionMs: target,
+        driftMs: 0,
+        anchorOffsetMs: anchor,
+        reason: 'no-telemetry',
+      });
+    }
+
+    this.checkRateReadback(local);
+    this.stalled = this.observePlayer(room, local);
+    this.lastLocal = local;
+
+    this.driftMs = target - local.positionMs;
+
+    // Never correct into a stall: the player is already fighting the network.
+    if (this.stalled) {
+      return this.finish({
+        transport: 'none',
+        seekToMs: null,
+        setRate: null,
+        wirePositionMs: projectedPositionMs(local, nowMs),
+        driftMs: this.driftMs,
+        anchorOffsetMs: anchor,
+        reason: 'stalled',
+      });
+    }
+
+    // Host intent (play/pause) is never subject to the comfort band.
+    if (room.playing !== local.playing) {
+      // Whatever lag accumulated across a transport gap is not drift.
+      this.controller.noteBuffering();
+      const gap = target - local.positionMs;
+      const realign =
+        room.playing && Math.abs(gap) > this.deadbandMs() && this.canSeekNow(nowMs)
+          ? target
+          : null;
+      if (realign !== null) this.armSeek(realign, nowMs);
+      return this.finish({
+        transport: room.playing ? 'play' : 'pause',
+        seekToMs: realign,
+        setRate: this.rateDiffers(local.rate, room.rate) ? room.rate : null,
+        wirePositionMs: realign ?? projectedPositionMs(local, nowMs),
+        driftMs: gap,
+        anchorOffsetMs: anchor,
+        reason: 'transport',
+      });
+    }
+
+    const action = this.controller.decide(room.expectedMs, local.positionMs, { nowMs });
+    const anchorNow = this.controller.anchorOffsetMs();
+    this.driftMs = room.expectedMs - anchorNow - local.positionMs;
+
+    if (action.action === 'seek') {
+      if (!this.canSeekNow(nowMs)) {
+        // Honest stop. If the player structurally cannot seek there is nothing
+        // left to fight with, so adopt the lag and play smoothly at it rather
+        // than prescribing a correction that will never land.
+        if (!this.seekAvailable()) this.controller.noteSettledLag(this.driftMs);
+        return this.finish({
+          transport: 'none',
+          seekToMs: null,
+          setRate: null,
+          wirePositionMs: projectedPositionMs(local, nowMs),
+          driftMs: this.driftMs,
+          anchorOffsetMs: this.controller.anchorOffsetMs(),
+          reason: 'seek-suppressed',
+        });
+      }
+      this.armSeek(action.toMs, nowMs);
+      return this.finish({
+        transport: 'none',
+        seekToMs: action.toMs,
+        // A seek lands us where we belong; any nudge in flight is over.
+        setRate: this.rateDiffers(local.rate, room.rate) ? room.rate : null,
+        wirePositionMs: action.toMs,
+        driftMs: this.driftMs,
+        anchorOffsetMs: anchorNow,
+        reason: 'seek',
+      });
+    }
+
+    if (action.action === 'nudge') {
+      const rate = room.rate * action.rate;
+      this.prescribeRate(rate, local, nowMs);
+      return this.finish({
+        transport: 'none',
+        seekToMs: null,
+        setRate: rate,
+        wirePositionMs: projectedPositionMs(local, nowMs),
+        driftMs: this.driftMs,
+        anchorOffsetMs: anchorNow,
+        reason: 'nudge',
+      });
+    }
+
+    // action === 'none': inside the band, or holding still because the player
+    // refuses rate control and the anchor is absorbing the offset.
+    const restore = this.rateDiffers(local.rate, room.rate) ? room.rate : null;
+    if (restore !== null) this.prescribeRate(restore, local, nowMs);
+    const rateLocked = !this.rateAvailable() && Math.abs(this.driftMs) > this.deadbandMs();
+    return this.finish({
+      transport: 'none',
+      seekToMs: null,
+      setRate: restore,
+      wirePositionMs: projectedPositionMs(local, nowMs),
+      driftMs: this.driftMs,
+      anchorOffsetMs: anchorNow,
+      reason: restore !== null ? 'restore-rate' : rateLocked ? 'rate-locked' : 'idle',
+    });
+  }
+
+  /* ── internals ── */
+
+  private buildController(): DriftController {
+    const controller = new DriftController({
+      ...SYNC_PRESETS[this.profileName],
+      ...(this.tuning ?? {}),
+    });
+    controller.setVoiceActive(this.voiceActive);
+    if (!this.caps.canSetRate) controller.noteRateRejected();
+    return controller;
+  }
+
+  /** Beliefs about the PLAYER (not the room) that a new element invalidates. */
+  private forgetPlayerBeliefs(): void {
+    this.lastLocal = null;
+    this.prescribedRate = null;
+    this.prescribedRateAtMs = 0;
+    this.rateBeforePrescription = 1;
+    this.pendingSeek = null;
+    this.seekMisses = 0;
+    this.lastSeekAtMs = null;
+  }
+
+  private deadbandMs(): number {
+    const preset = SYNC_PRESETS[this.profileName];
+    return this.tuning?.deadbandMs ?? preset.deadbandMs ?? 60;
+  }
+
+  private rateAvailable(): boolean {
+    return this.controller.state().rateControlAvailable;
+  }
+
+  private seekAvailable(): boolean {
+    return this.caps.canSeek && this.seekMisses < MAX_SEEK_MISSES;
+  }
+
+  private canSeekNow(nowMs: number): boolean {
+    if (!this.seekAvailable()) return false;
+    // While people are actually talking, converge with rate only. A seek is the
+    // one correction guaranteed to wreck a live reaction (Consequence B).
+    if (this.controller.isVoiceTightening()) return false;
+    if (this.lastSeekAtMs === null) return true;
+    const floor = this.caps.isDrmProtected ? MIN_SEEK_INTERVAL_DRM_MS : MIN_SEEK_INTERVAL_MS;
+    return nowMs - this.lastSeekAtMs >= floor;
+  }
+
+  private armSeek(toMs: number, nowMs: number): void {
+    this.lastSeekAtMs = nowMs;
+    this.pendingSeek = { toMs, atMs: nowMs };
+  }
+
+  private rateDiffers(a: number, b: number): boolean {
+    return Math.abs(a - b) > RATE_EPSILON;
+  }
+
+  private prescribeRate(rate: number, local: DriverTelemetry, nowMs: number): void {
+    this.prescribedRate = rate;
+    this.prescribedRateAtMs = nowMs;
+    this.rateBeforePrescription = local.rate;
+  }
+
+  /**
+   * The read-back that matters: a DRM player accepts `playbackRate = 1.03`
+   * without error and keeps playing at 1.0. Assign it, read it back on a later
+   * sample, and conclude "ignored" ONLY when the value did not move at all —
+   * a value that moved somewhere else is the *user* changing speed, not a
+   * refusal.
+   */
+  private checkRateReadback(local: DriverTelemetry): void {
+    const want = this.prescribedRate;
+    if (want === null) return;
+    if (local.atMs < this.prescribedRateAtMs + RATE_READBACK_GRACE_MS) return;
+    this.prescribedRate = null;
+    if (!this.rateDiffers(local.rate, want)) return;
+    if (this.rateDiffers(local.rate, this.rateBeforePrescription)) return;
+    this.controller.noteRateRejected();
+  }
+
+  /**
+   * Compare consecutive samples: did the player advance the way a healthy
+   * player would? Returns true while it is stalled.
+   */
+  private observePlayer(room: RoomFrame, local: DriverTelemetry): boolean {
+    const prev = this.lastLocal;
+    if (prev === null || local.atMs <= prev.atMs) return false;
+
+    const elapsed = local.atMs - prev.atMs;
+    const advanced = local.positionMs - prev.positionMs;
+    const expectedAdvance = prev.playing && local.playing ? elapsed * prev.rate : 0;
+
+    const seek = this.pendingSeek;
+    if (seek !== null && local.atMs >= seek.atMs) {
+      // Our own correction explains this jump — and tells us whether the
+      // player honoured it at all.
+      this.pendingSeek = null;
+      const want = seek.toMs + (local.playing ? (local.atMs - seek.atMs) * local.rate : 0);
+      if (Math.abs(local.positionMs - want) > SEEK_MISS_MS) {
+        this.seekMisses += 1;
+        if (this.seekMisses >= MAX_SEEK_MISSES) this.controller.noteBuffering();
+      } else {
+        this.seekMisses = 0;
+      }
+      return false;
+    }
+
+    if (
+      room.playing &&
+      local.playing &&
+      elapsed >= STALL_MIN_ELAPSED_MS &&
+      expectedAdvance > 0 &&
+      advanced < expectedAdvance * STALL_ADVANCE_FRACTION
+    ) {
+      this.controller.noteBuffering();
+      return true;
+    }
+
+    if (Math.abs(advanced - expectedAdvance) > LOCAL_JUMP_MS) {
+      // The site's own player moved: the user scrubbed, or an ad break ended.
+      // Whatever lag we had learned describes a position that no longer exists.
+      this.controller.noteBuffering();
+    }
+    return false;
+  }
+
+  private finish(cmd: Omit<DriveCommand, 'idle'>): DriveCommand {
+    return {
+      ...cmd,
+      idle: cmd.transport === 'none' && cmd.seekToMs === null && cmd.setRate === null,
+    };
+  }
+}
+
+/**
+ * The room state as a person would say it — docs/EXTENSION_FIRST.md asks for
+ * this to be shown honestly as a room state, never as a technical readout.
+ */
+export function syncStatusLabel(state: ElasticDriverState): string {
+  if (state.stalled) return 'Buffering — holding your place';
+  if (state.voiceTightening) return 'Talking — staying in step';
+  if (Math.abs(state.anchorOffsetMs) >= 1000) {
+    return `Playing smoothly, ${Math.round(Math.abs(state.anchorOffsetMs) / 1000)}s behind the room`;
+  }
+  return 'In sync';
+}

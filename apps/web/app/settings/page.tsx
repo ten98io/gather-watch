@@ -277,7 +277,7 @@ function BillingSection() {
   };
 
   return (
-    <Section title="Plan" description="Free is the full product; Premium adds Theater-mode SFU relay.">
+    <Section title="Plan" description="Free is the full product; Premium adds Theater mode and bigger calls.">
       {entitlementsQuery.isPending ? (
         <Skeleton className="h-16" />
       ) : entitlementsQuery.isError ? (
@@ -288,7 +288,7 @@ function BillingSection() {
             {entitlementsQuery.data.entitlements.plan === 'premium' ? 'Premium' : 'Free'}
           </Badge>
           <span className="text-xs text-low">
-            {entitlementsQuery.data.entitlements.maxPublishers} AV publishers ·{' '}
+            {entitlementsQuery.data.entitlements.maxPublishers} people on camera or mic ·{' '}
             {formatBytes(entitlementsQuery.data.entitlements.uploadQuotaGb * 1_073_741_824)} upload quota
             {entitlementsQuery.data.entitlements.relayAllowed ? ' · Theater mode' : ''}
           </span>

@@ -5,6 +5,7 @@ import type { ApiError, ErrorCode } from '@playin/contracts';
 export const ERROR_STATUS: Record<ErrorCode, number> = {
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
+  PAYMENT_REQUIRED: 402,
   NOT_FOUND: 404,
   RATE_LIMITED: 429,
   ROOM_POLICY: 403,

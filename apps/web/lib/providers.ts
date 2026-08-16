@@ -26,23 +26,23 @@ export interface Provider {
 }
 
 export const PROVIDERS: readonly Provider[] = [
-  { id: 'youtube', name: 'YouTube', icon: '▶', capability: 'full-sync', note: 'Frame-accurate sync' },
-  { id: 'youtubemusic', name: 'YouTube Music', icon: '♫', capability: 'full-sync', note: 'Frame-accurate sync' },
-  { id: 'soundcloud', name: 'SoundCloud', icon: '☁', capability: 'full-sync', note: 'Frame-accurate sync' },
-  { id: 'vimeo', name: 'Vimeo', icon: 'Ⓥ', capability: 'full-sync', note: 'Frame-accurate sync' },
-  { id: 'spotify', name: 'Spotify', icon: '●', capability: 'approximate', note: 'Official embed · approximate sync' },
-  { id: 'applemusic', name: 'Apple Music', icon: '◆', capability: 'approximate', note: 'Official embed · approximate sync' },
-  { id: 'tidal', name: 'Tidal', icon: '≈', capability: 'approximate', note: 'Official embed · approximate sync' },
-  { id: 'deezer', name: 'Deezer', icon: '▤', capability: 'approximate', note: 'Official embed · approximate sync' },
-  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: 'DRM — browser extension (everyone’s own account)' },
-  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'DRM — browser extension' },
-  { id: 'direct', name: 'Direct URL / upload', icon: '🔗', capability: 'full-sync', note: 'mp4/mp3/m3u8 — frame-accurate' },
+  { id: 'youtube', name: 'YouTube', icon: '▶', capability: 'full-sync', note: 'Plays in sync for everyone' },
+  { id: 'youtubemusic', name: 'YouTube Music', icon: '♫', capability: 'full-sync', note: 'Plays in sync for everyone' },
+  { id: 'soundcloud', name: 'SoundCloud', icon: '☁', capability: 'full-sync', note: 'Plays in sync for everyone' },
+  { id: 'vimeo', name: 'Vimeo', icon: 'Ⓥ', capability: 'full-sync', note: 'Plays in sync for everyone' },
+  { id: 'spotify', name: 'Spotify', icon: '●', capability: 'approximate', note: 'Starts together — may drift slightly' },
+  { id: 'applemusic', name: 'Apple Music', icon: '◆', capability: 'approximate', note: 'Starts together — may drift slightly' },
+  { id: 'tidal', name: 'Tidal', icon: '≈', capability: 'approximate', note: 'Starts together — may drift slightly' },
+  { id: 'deezer', name: 'Deezer', icon: '▤', capability: 'approximate', note: 'Starts together — may drift slightly' },
+  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: 'Needs the Playin browser extension — everyone uses their own account' },
+  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'direct', name: 'Direct link or upload', icon: '🔗', capability: 'full-sync', note: 'Plays in sync for everyone' },
 ] as const;
 
 export function providerById(id: string): Provider | undefined {
@@ -77,10 +77,11 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
     const yt = /(?:youtube\.com\/(?:watch\?[^#]*v=|shorts\/|music\/)|youtu\.be\/)([\w-]{6,})/.exec(url);
     const videoId = yt?.[1] ?? (/[?&]v=([\w-]{6,})/.exec(url)?.[1]);
     if (videoId === undefined) return null;
+    // Title hints are user-visible queue titles: never surface the raw id.
     return found(
       host === 'music.youtube.com' ? 'youtubemusic' : 'youtube',
       { kind: 'youtube', videoId },
-      `YouTube · ${videoId}`,
+      host === 'music.youtube.com' ? 'YouTube Music track' : 'YouTube video',
     );
   }
 
@@ -90,7 +91,7 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
 
   const vimeo = /vimeo\.com\/(?:video\/)?(\d{6,})/.exec(url);
   if (vimeo?.[1] !== undefined) {
-    return found('vimeo', { kind: 'vimeo', videoId: vimeo[1] }, `Vimeo · ${vimeo[1]}`);
+    return found('vimeo', { kind: 'vimeo', videoId: vimeo[1] }, 'Vimeo video');
   }
 
   const spotify = /open\.spotify\.com\/(track|album|playlist|episode|show)\/([\w]+)/.exec(url);

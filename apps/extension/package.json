@@ -12,7 +12,8 @@
   "dependencies": {
     "@playin/api-client": "workspace:*",
     "@playin/contracts": "workspace:*",
-    "@playin/p2p": "workspace:*"
+    "@playin/p2p": "workspace:*",
+    "@playin/sync-core": "workspace:*"
   },
   "devDependencies": {
     "@types/chrome": "^0.2.6",

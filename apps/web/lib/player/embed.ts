@@ -28,12 +28,16 @@ export class EmbedAdapter implements PlayerAdapter {
     this.container.replaceChildren(iframe);
   }
 
-  /** No cross-origin transport API exists — honest no-op. */
+  /** No cross-origin transport API exists — honest no-op. This tier is also
+   *  the ONE case the stage leaves interactive (no click shield): the embed's
+   *  own controls are the only controls that exist for it. It can never emit
+   *  'playing'/'ended'/'blocked' either, so no auto-advance and no
+   *  autoplay-recovery prompt apply here. */
   play(): void {}
   pause(): void {}
   seekTo(): void {}
   setRate(): void {}
-  /** Unknown by design: position is never reported. */
+  /** Unknown by design (milliseconds elsewhere): position is never reported. */
   positionMs(): number {
     return 0;
   }

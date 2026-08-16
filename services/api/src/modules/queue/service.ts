@@ -7,12 +7,19 @@
  * persisted on the room doc and emitted as `queue.state` so late joiners and
  * WS-fallback clients converge via event replay.
  *
+ * Metadata: what the client sends with an add is a HINT (a URL-derived title,
+ * usually no artwork and no duration). It is sanitized, stored immediately so
+ * the WS round-trip is never blocked on a third party, and then the real
+ * title/artwork/duration are resolved in the BACKGROUND and patched in with a
+ * second `queue.state` broadcast. Resolution failures are silent by design.
+ *
  * Pure logic over Deps — the module's wsHandlers are a thin dispatch layer.
  */
 import type {
   QueueItem,
   QueueItemId,
   QueueItemInput,
+  ResolvedMedia,
   RoomId,
   UserId,
 } from '@playin/contracts';
@@ -23,26 +30,97 @@ import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { Deps } from '../types';
+import {
+  getMetadataResolver,
+  sanitizeArtworkUrl,
+  sanitizeDurationMs,
+  sanitizeTitle,
+} from '../metadata/resolver';
 import { policyAllows } from '../sync/policy';
 
 export class QueueService {
+  /** In-flight background enrichments; awaited by tests via settleEnrichment. */
+  private readonly enriching = new Set<Promise<void>>();
+
   constructor(private readonly deps: Deps) {}
 
-  /** Append a track to the shared queue (policy-gated). */
+  /** Append a track to the shared queue (policy-gated). Returns as soon as
+   *  the item is stored and broadcast; metadata lands later. */
   async add(roomId: RoomId, userId: UserId, input: QueueItemInput): Promise<void> {
     const { room, member } = await this.loadContext(roomId, userId);
     this.assertQueueControl(room, member);
     const item: QueueItem = {
       id: newId() as QueueItemId,
       mediaRef: input.mediaRef,
-      title: input.title,
-      durationMs: input.durationMs,
-      artworkUrl: input.artworkUrl,
+      // Client-supplied display data is never trusted verbatim: a title that
+      // is only whitespace/control characters, an http (mixed-content) or
+      // unparseable artwork URL, or an absurd duration is dropped here.
+      title: sanitizeTitle(input.title) ?? 'Untitled',
+      durationMs: sanitizeDurationMs(input.durationMs),
+      artworkUrl: sanitizeArtworkUrl(input.artworkUrl),
       addedBy: userId,
       votesToSkip: [],
     };
     const next = queueReducer(this.stateOf(room), { type: 'add', item });
     await this.persist(roomId, next);
+    this.enrichInBackground(roomId, item);
+  }
+
+  /** Resolve the item's real metadata off the critical path and patch it in.
+   *  Fire-and-forget: the WS handler never waits on a third-party service. */
+  private enrichInBackground(roomId: RoomId, item: QueueItem): void {
+    const task = this.enrich(roomId, item)
+      .catch((err: unknown) => {
+        this.deps.log.debug({ err, roomId, itemId: item.id }, 'queue metadata enrich failed');
+      })
+      .finally(() => {
+        this.enriching.delete(task);
+      });
+    this.enriching.add(task);
+  }
+
+  /** Await every background enrichment started so far (tests only). */
+  async settleEnrichment(): Promise<void> {
+    while (this.enriching.size > 0) {
+      await Promise.all([...this.enriching]);
+    }
+  }
+
+  private async enrich(roomId: RoomId, item: QueueItem): Promise<void> {
+    const resolved: ResolvedMedia | null = await getMetadataResolver(this.deps).resolve({
+      mediaRef: item.mediaRef,
+    });
+    // source 'link' means nothing was fetched (library assets, an offline
+    // resolver, a provider we cannot read) — the client's own data stands.
+    if (resolved === null || resolved.source === 'link') {
+      return;
+    }
+    // Re-read: the item may have been skipped, removed or reordered while the
+    // lookup was in flight, and the queue version has moved on either way.
+    const room = await this.deps.store.rooms.findById(roomId);
+    if (room === null) {
+      return;
+    }
+    const current = room.queue.items.find((it) => it.id === item.id);
+    if (current === undefined) {
+      return;
+    }
+    // Resolved values win over the client's hint; anything the lookup could
+    // not determine leaves the stored value alone.
+    const title = resolved.title ?? current.title;
+    const artworkUrl = resolved.artworkUrl ?? current.artworkUrl;
+    const durationMs = resolved.durationMs ?? current.durationMs;
+    if (
+      current.title === title &&
+      current.artworkUrl === artworkUrl &&
+      current.durationMs === durationMs
+    ) {
+      return; // nothing better to say — no bump, no broadcast
+    }
+    const items = room.queue.items.map((it) =>
+      it.id === item.id ? { ...it, title, artworkUrl, durationMs } : it,
+    );
+    await this.persist(roomId, { items, version: room.queue.version + 1 });
   }
 
   /** Remove by id: policy holders may remove anything; anyone may retract

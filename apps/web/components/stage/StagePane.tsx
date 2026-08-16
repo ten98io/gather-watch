@@ -11,11 +11,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RoomId } from '@playin/contracts';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
+import { RELAY_LABEL } from '@/lib/labels';
 import { canAct } from '@/lib/permissions';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
-import { adapterKindFor, isFullSyncKind, mediaKey } from '@/lib/player/adapter';
-import type { PlayerAdapter } from '@/lib/player/adapter';
+import { adapterKindFor, isFullSyncKind, mediaKey, stageGate } from '@/lib/player/adapter';
+import type { PlayerAdapter, StageGate } from '@/lib/player/adapter';
 import { NativeAdapter } from '@/lib/player/native';
 import { YouTubeAdapter } from '@/lib/player/youtube';
 import { SoundCloudAdapter } from '@/lib/player/soundcloud';
@@ -24,6 +25,7 @@ import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PlayIcon } from '@/components/ui/icons';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 import { EmoteOverlay } from './EmoteOverlay';
@@ -100,6 +102,90 @@ function SyncPulse({ pulseKey }: { pulseKey: number }) {
   );
 }
 
+/**
+ * StageShield — the single control surface over a full-sync provider
+ * (UX_OVERHAUL B2). It always covers the whole stage so the provider's own
+ * chrome (YouTube's centre play overlay in the unstarted AND paused states,
+ * SoundCloud's transport, Vimeo's big button) can never be clicked; while the
+ * room is paused or this browser refused to start, it also covers it visually
+ * with our own backdrop.
+ *
+ * Exactly one play affordance is ever offered here — the centre ring — and it
+ * only exists while playback is not running. It sits BELOW the room's own
+ * chrome (badges/transport z-20, call overlay z-30), so nothing above it is
+ * blocked.
+ */
+function StageShield({
+  gate,
+  title,
+  listen,
+  canControl,
+  onActivate,
+}: {
+  gate: StageGate;
+  title: string | null;
+  listen: boolean;
+  /** Room policy: may this member drive playback? */
+  canControl: boolean;
+  onActivate(): void;
+}) {
+  const reduced = useReducedMotion();
+  // Starting your own blocked player is a local act — never policy-gated.
+  const actionable = canControl || gate === 'blocked';
+  const verb = listen ? 'listening' : 'watching';
+  const label =
+    gate === 'blocked'
+      ? `Start ${verb} together`
+      : gate === 'paused'
+        ? 'Play'
+        : 'Pause';
+  const hint =
+    gate === 'blocked'
+      ? `Tap to start ${verb} together`
+      : actionable
+        ? 'Press play — everyone starts together'
+        : 'Waiting for the host to press play';
+
+  const backdrop =
+    gate === 'none' ? null : (
+      <span
+        className={cn(
+          'absolute inset-0 flex flex-col items-center justify-center gap-4 bg-surface-0 px-6 text-center',
+          !reduced && 'animate-fade-in',
+        )}
+      >
+        {title !== null && title !== '' && (
+          <span className="line-clamp-2 max-w-lg text-title text-hi">{title}</span>
+        )}
+        {actionable && (
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-2 text-hi shadow-glow">
+            <PlayIcon size={24} />
+          </span>
+        )}
+        <span className="text-label text-low">{hint}</span>
+      </span>
+    );
+
+  return (
+    <button
+      type="button"
+      // Transparent (or view-only) state: a pointer trap, not an affordance.
+      // Keeping it out of the a11y tree and the tab order leaves the transport
+      // bar as the single play control; when the backdrop is up and this
+      // member may act, the centre ring becomes that control instead.
+      {...(gate !== 'none' && actionable ? {} : { 'aria-hidden': true, tabIndex: -1 })}
+      aria-label={label}
+      className={cn(
+        'absolute inset-0 z-10 h-full w-full',
+        actionable ? 'cursor-pointer' : 'cursor-default',
+      )}
+      onClick={onActivate}
+    >
+      {backdrop}
+    </button>
+  );
+}
+
 function EmptyStage({ listen }: { listen: boolean }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
@@ -125,6 +211,9 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const mediaRef = playback?.mediaRef ?? null;
   const adapterKind = adapterKindFor(mediaRef);
   const listen = room.kind === 'listen';
+  const showModeB = restream?.active === true;
+  /** Room policy: may this member drive playback? */
+  const controlEnabled = canAct(room.policies.playbackControl, member.role);
 
   const mediaElRef = useRef<HTMLVideoElement | null>(null);
   const embedContainerRef = useRef<HTMLDivElement | null>(null);
@@ -135,6 +224,17 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const [chromeAwake, setChromeAwake] = useState(true);
   const [driftMs, setDriftMs] = useState(0);
   const [shareOpen, setShareOpen] = useState(false);
+  // What THIS device's player is actually doing — the room's playback state
+  // says what it should be doing, and the two disagree when the browser
+  // refuses to start (autoplay policy).
+  const [localPlaying, setLocalPlaying] = useState(false);
+  const [localBuffering, setLocalBuffering] = useState(false);
+  const [localReady, setLocalReady] = useState(false);
+  const [playRefused, setPlayRefused] = useState(false);
+  const [startStalled, setStartStalled] = useState(false);
+  /** Bumped by every start gesture so the "did it actually start?" watchdog
+   *  re-arms; without it a second refusal would go unnoticed. */
+  const [startAttempt, setStartAttempt] = useState(0);
 
   const debug = useMemo(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug'),
@@ -176,6 +276,57 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     return mediaKey(mediaRef, undefined);
   }, [mediaRef]);
 
+  // These two run FIRST on purpose: the subscribe/load pair below fires real
+  // adapter events during the same commit, and a reset scheduled after them
+  // would wipe the state those events just reported. A fresh player starts
+  // un-ready ('ready' fires once per YouTube player, not once per video), and
+  // every new track starts from "nothing is running here".
+  useEffect(() => {
+    setLocalReady(false);
+    setLocalBuffering(false);
+  }, [adapter]);
+  useEffect(() => {
+    setLocalPlaying(false);
+    setPlayRefused(false);
+    setStartStalled(false);
+  }, [adapter, mediaIdentity]);
+
+  // Subscribed BEFORE the load below, or the adapters' first buffering edge
+  // fires into an empty room and the server's wait-for-all never hears it.
+  // Buffering reports drive that coordination; the same subscription tracks
+  // what this device's player is really doing.
+  useEffect(() => {
+    if (adapter === null) return;
+    const offs = [
+      adapter.on('buffering', () => {
+        setLocalBuffering(true);
+        connection.syncBuffering(true);
+      }),
+      adapter.on('buffered', () => {
+        setLocalBuffering(false);
+        connection.syncBuffering(false);
+      }),
+      adapter.on('playing', () => {
+        setLocalPlaying(true);
+        setLocalBuffering(false);
+        setPlayRefused(false);
+      }),
+      adapter.on('paused', () => setLocalPlaying(false)),
+      adapter.on('ended', () => setLocalPlaying(false)),
+      adapter.on('blocked', () => setPlayRefused(true)),
+      adapter.on('ready', () => {
+        setLocalReady(true);
+        if (adapter.kind === 'native') {
+          const el = (adapter as NativeAdapter).mediaElement;
+          setCaptionsAvailable(el.textTracks.length > 0);
+        }
+      }),
+    ];
+    return () => {
+      for (const off of offs) off();
+    };
+  }, [adapter, connection]);
+
   useEffect(() => {
     if (adapter === null || mediaRef === null) return;
     adapter.load(mediaRef);
@@ -188,23 +339,69 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     onDriftSample: debug ? setDriftMs : undefined,
   });
 
-  // Buffering reports drive the server's wait-for-all coordination.
+  const wantsPlay = playback?.playing === true;
+  /** Transport exists for this media at all (approximate-tier embeds have no
+   *  play/pause we can drive, so none of the recovery below applies to them). */
+  const fullSync = isFullSyncKind(adapterKind);
+
+  // The sync engine snaps play/pause once per track change — but iframe player
+  // APIs load asynchronously, so that snap can land while the player is still
+  // a stub and be silently dropped. That is what leaves YouTube sitting in its
+  // unstarted state behind its own centre overlay. Re-assert once the player
+  // is genuinely usable.
   useEffect(() => {
-    if (adapter === null) return;
-    const offBuf = adapter.on('buffering', () => connection.syncBuffering(true));
-    const offReady = adapter.on('buffered', () => connection.syncBuffering(false));
-    const offCap = adapter.on('ready', () => {
-      if (adapter.kind === 'native') {
-        const el = (adapter as NativeAdapter).mediaElement;
-        setCaptionsAvailable(el.textTracks.length > 0);
-      }
-    });
-    return () => {
-      offBuf();
-      offReady();
-      offCap();
-    };
-  }, [adapter, connection]);
+    if (adapter === null || !fullSync || !localReady || !wantsPlay || localPlaying) return;
+    adapter.play();
+  }, [adapter, fullSync, localReady, wantsPlay, localPlaying, startAttempt]);
+
+  // Autoplay reality (UX_OVERHAUL B2): browsers refuse playback nobody asked
+  // for. NativeAdapter/VimeoAdapter report the refusal outright; the iframe
+  // widgets can only be caught by noticing that a ready, un-buffering player
+  // still is not running a beat after the room said play.
+  useEffect(() => {
+    if (!fullSync || !wantsPlay || !localReady || localPlaying || localBuffering) {
+      setStartStalled(false);
+      return undefined;
+    }
+    const h = setTimeout(() => setStartStalled(true), 1500);
+    return () => clearTimeout(h);
+  }, [fullSync, wantsPlay, localReady, localPlaying, localBuffering, mediaIdentity, startAttempt]);
+
+  /** Is a provider surface with its own chrome on screen for us to shield?
+   *  Not for Mode B (the share owns the stage), not for approximate-tier
+   *  embeds (their iframe is the only control they have), and not for a
+   *  listen room's hidden audio element (ListenStage owns that space). */
+  const providerSurface =
+    !showModeB &&
+    playback !== null &&
+    mediaRef !== null &&
+    fullSync &&
+    !(listen && adapterKind === 'native');
+
+  const gate = stageGate({
+    active: providerSurface,
+    wantsPlay,
+    localPlaying,
+    blocked: playRefused || startStalled,
+  });
+
+  /** The stage's one action: recover a refused start locally, or drive the
+   *  room's transport under the same policy gate as the keyboard map. */
+  const activateStage = useCallback((): void => {
+    if (adapter === null || playback === null) return;
+    if (gate === 'blocked') {
+      // This click IS the gesture the browser was holding out for; the drift
+      // engine puts us back on the room's position within a tick.
+      setPlayRefused(false);
+      setStartStalled(false);
+      setStartAttempt((n) => n + 1);
+      adapter.play();
+      return;
+    }
+    if (!controlEnabled) return;
+    if (playback.playing) connection.syncPause(adapter.positionMs());
+    else connection.syncPlay(adapter.positionMs());
+  }, [adapter, playback, gate, controlEnabled, connection]);
 
   // Captions: HLS text tracks rendered by the element itself (§9).
   useEffect(() => {
@@ -230,41 +427,50 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         ? { artwork: [{ src: currentItem.artworkUrl }] }
         : {}),
     });
-    navigator.mediaSession.setActionHandler('play', () => connection.syncPlay(adapter?.positionMs()));
-    navigator.mediaSession.setActionHandler('pause', () =>
-      connection.syncPause(adapter?.positionMs()),
-    );
+    navigator.mediaSession.playbackState = wantsPlay ? 'playing' : 'paused';
+    // Handlers are registered even for members who may not drive playback:
+    // a registered no-op keeps the OS from playing the element locally and
+    // desyncing them. The policy check mirrors the keyboard map exactly.
+    navigator.mediaSession.setActionHandler('play', () => {
+      if (controlEnabled) connection.syncPlay(adapter?.positionMs());
+    });
+    navigator.mediaSession.setActionHandler('pause', () => {
+      if (controlEnabled) connection.syncPause(adapter?.positionMs());
+    });
     navigator.mediaSession.setActionHandler('seekto', (d) => {
-      if (typeof d.seekTime === 'number') connection.syncSeek(Math.round(d.seekTime * 1000));
+      if (controlEnabled && typeof d.seekTime === 'number')
+        connection.syncSeek(Math.round(d.seekTime * 1000));
     });
     return () => {
       navigator.mediaSession.setActionHandler('play', null);
       navigator.mediaSession.setActionHandler('pause', null);
       navigator.mediaSession.setActionHandler('seekto', null);
     };
-  }, [connection, adapter, currentItem?.title, currentItem?.artworkUrl, room.name]);
+  }, [
+    connection,
+    adapter,
+    controlEnabled,
+    wantsPlay,
+    currentItem?.title,
+    currentItem?.artworkUrl,
+    room.name,
+  ]);
 
-  // ── chrome auto-hide: 3 s of stillness (§7) ──
+  // ── chrome auto-hide: 3 s of stillness (§7), but never while the stage is
+  //    gated — the transport bar must stay visible next to the centre ring ──
   const wakeChrome = useCallback(() => setChromeAwake(true), []);
   useEffect(() => {
-    if (!chromeAwake) return;
+    if (!chromeAwake || gate !== 'none') return;
     const h = setTimeout(() => setChromeAwake(false), 3000);
     return () => clearTimeout(h);
-  }, [chromeAwake]);
+  }, [chromeAwake, gate]);
+  const chromeVisible = chromeAwake || gate !== 'none';
 
   // ── keyboard map (§9) ──
-  const controlEnabled = canAct(room.policies.playbackControl, member.role);
   useKeyboardShortcuts(
     useMemo(
       () => [
-        {
-          key: ' ',
-          handler: () => {
-            if (!controlEnabled || adapter === null || playback === null) return;
-            if (playback.playing) connection.syncPause(adapter.positionMs());
-            else connection.syncPlay(adapter.positionMs());
-          },
-        },
+        { key: ' ', handler: activateStage },
         {
           key: 'ArrowLeft',
           handler: () => {
@@ -294,13 +500,12 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
           },
         },
       ],
-      [controlEnabled, adapter, playback, connection, muted, captionsAvailable],
+      [activateStage, controlEnabled, adapter, connection, muted, captionsAvailable],
     ),
   );
 
   const glow = useAmbientGlow(adapter, playback?.playing === true, reduced);
   const pulseKey = playback?.seq ?? 0;
-  const showModeB = restream?.active === true;
 
   return (
     <section
@@ -337,10 +542,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
           <ModeBStage restream={restream} />
         ) : (
           <>
-            {/* All iframe adapters share one mount point. Full-sync embeds
-                (YouTube/SoundCloud/Vimeo) are INERT — pointer-events-none plus
-                a click layer that toggles play/pause — so the room's transport
-                bar is the only control surface. Approximate-tier embeds
+            {/* All iframe adapters share one mount point. Full-sync providers
+                (YouTube/SoundCloud/Vimeo) are INERT — pointer-events-none here,
+                plus the adapters neutralise the iframe itself, plus the
+                StageShield below owns every click — so the room's own transport
+                is the only control surface. Approximate-tier embeds
                 (Spotify/Apple/Tidal/Deezer) stay interactive because their
                 iframe is the only control surface that exists. */}
             <div
@@ -358,45 +564,9 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                   adapterKind !== 'embed' && 'pointer-events-none',
                 )}
               />
-              {adapterKind !== null &&
-                adapterKind !== 'native' &&
-                adapterKind !== 'embed' &&
-                playback !== null && (
-                  <button
-                    type="button"
-                    aria-label={playback.playing ? 'Pause' : 'Play'}
-                    className="absolute inset-0 h-full w-full cursor-pointer"
-                    onClick={() => {
-                      if (!controlEnabled || adapter === null) return;
-                      if (playback.playing) connection.syncPause(adapter.positionMs());
-                      else connection.syncPlay(adapter.positionMs());
-                    }}
-                  />
-                )}
-              {/* While paused, the provider's iframe chrome (YouTube's red
-                  button / "Watch on" bar) is fully covered by OUR paused
-                  backdrop — one play button exists, and it is ours. */}
-              {adapterKind !== null &&
-                adapterKind !== 'native' &&
-                adapterKind !== 'embed' &&
-                playback !== null &&
-                !playback.playing && (
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-void/95"
-                  >
-                    <span className="font-display text-lg font-semibold text-mid">
-                      {currentItem?.title ?? 'Paused'}
-                    </span>
-                    <span className="glass-raised flex h-16 w-16 items-center justify-center rounded-full text-2xl text-hi shadow-glow">
-                      ▶
-                    </span>
-                    <span className="text-xs text-low">Press play — everyone starts together</span>
-                  </div>
-                )}
               {adapterKind === 'embed' && (
                 <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-[10px] text-white/90">
-                  Approximate sync — this service’s embed plays on each device
+                  Approximate sync — this service plays in its own player on each device
                 </span>
               )}
             </div>
@@ -423,6 +593,18 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
               />
             )}
             {mediaRef === null && !listen && <EmptyStage listen={listen} />}
+            {/* One shield over every full-sync provider: the provider's own
+                play overlay is unreachable, and while we are paused or the
+                browser refused to start, invisible too. */}
+            {providerSurface && (
+              <StageShield
+                gate={gate}
+                title={currentItem?.title ?? null}
+                listen={listen}
+                canControl={controlEnabled}
+                onActivate={activateStage}
+              />
+            )}
           </>
         )}
         <SyncPulse pulseKey={pulseKey} />
@@ -432,7 +614,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       {/* waiting-for-all honesty + relay badge + Mode B entry */}
       <div className="pointer-events-none absolute right-4 top-4 z-20 flex flex-col items-end gap-2">
         <Badge variant="muted" className="pointer-events-auto">
-          {room.relayMode === 'mesh' ? 'P2P · E2E' : room.relayMode === 'cf-sfu' ? 'Relayed · Theater' : 'Relayed'}
+          {RELAY_LABEL[room.relayMode]}
         </Badge>
         {waitingOn.length > 0 && (
           <Badge variant="default" className="pointer-events-auto">
@@ -456,7 +638,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         <div
           className={cn(
             'absolute inset-x-4 bottom-4 z-20 transition-opacity duration-300',
-            chromeAwake ? 'opacity-100' : 'pointer-events-none opacity-0',
+            chromeVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
         >
           <PlayerControls
@@ -482,7 +664,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       {/* Mode B hosting entry (when no one is sharing) */}
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent aria-label="Share your screen">
-          <DialogTitle>Mode B — share your screen</DialogTitle>
+          <DialogTitle>Share your screen</DialogTitle>
           <ModeBStage
             restream={
               restream ?? {

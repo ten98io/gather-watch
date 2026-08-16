@@ -333,7 +333,8 @@ export class RoomsService {
     if (patch.maxPublishers !== undefined) {
       const ent = await getEntitlementsPort(this.deps).getFor(callerId);
       if (patch.maxPublishers > ent.maxPublishers) {
-        throw new AppError('ROOM_POLICY', 'maxPublishers exceeds plan limit');
+        // Plan cap, not a room policy: 402 so the client offers an upgrade.
+        throw new AppError('PAYMENT_REQUIRED', 'maxPublishers exceeds plan limit');
       }
     }
     // Strip undefined fields so exactOptionalPropertyTypes never writes an
@@ -493,14 +494,17 @@ export class RoomsService {
     );
   }
 
-  /** Toggle theater layout; enabling requires relay (premium) entitlement. */  async setTheater(roomId: string, callerId: string, enabled: boolean): Promise<RoomDoc> {
+  /** Toggle theater layout; enabling requires relay (premium) entitlement.
+   *  The plan gate is PAYMENT_REQUIRED (402), not FORBIDDEN — clients show an
+   *  upgrade prompt for 402 and a permission refusal for 403. */
+  async setTheater(roomId: string, callerId: string, enabled: boolean): Promise<RoomDoc> {
     const room = await this.requireRoom(roomId);
     const caller = await this.requireMember(roomId, callerId);
     this.requireRole(caller, 'host', 'moderator');
     if (enabled) {
       const ent = await getEntitlementsPort(this.deps).getFor(callerId);
       if (!ent.relayAllowed) {
-        throw new AppError('FORBIDDEN', 'theater mode requires a premium plan');
+        throw new AppError('PAYMENT_REQUIRED', 'theater mode requires a premium plan');
       }
     }
     const updated = await this.deps.store.rooms.updateOne(

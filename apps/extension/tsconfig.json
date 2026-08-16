@@ -11,7 +11,15 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    // sync-core is consumed from SOURCE, not from its built dist. The elastic
+    // controller is the extension's drift brain (src/driver.ts) and a stale
+    // dist would silently compile against the old fixed-threshold API; the
+    // module is dependency-free TypeScript, so bundling it costs nothing.
+    // vitest.config.ts carries the same alias for the test runner.
+    "paths": {
+      "@playin/sync-core": ["../../packages/sync-core/src/index.ts"]
+    }
   },
   "include": ["src", "test"]
 }

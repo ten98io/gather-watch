@@ -1,139 +1,40 @@
 /**
- * SSRF-guarded Open Graph unfurler for chat link previews. Fetches a URL
- * (following redirects manually) and extracts og:* meta tags. EVERY hop —
- * the initial URL and each redirect target — is re-validated against the
- * private-address guard, so a public URL cannot redirect into the internal
- * network. All guard failures surface as AppError('VALIDATION'); the
- * unfurler never throws anything else on purpose.
+ * Open Graph unfurler for chat link previews: fetches a URL and extracts
+ * og:* meta tags.
  *
- * DNS-rebinding defence: the guard's vetted addresses are PINNED — the
- * default fetch dials through an undici Agent whose connect-time lookup only
- * ever returns what the guard resolved (fail closed on anything else), so an
- * attacker DNS server cannot answer public-to-the-check and
- * private-to-the-connect. Injecting fetchImpl bypasses pinning; that option
- * exists for tests only.
+ * All of the security — http/https only, per-hop re-validation of manual
+ * redirects, the private-address guard, connect-time DNS pinning, the byte cap
+ * and the single deadline — lives in lib/safe-fetch.ts and is SHARED with the
+ * media metadata resolver, so there is exactly one guard to audit. The
+ * primitives are re-exported here because this module has been the public
+ * import site for them since before the resolver existed.
+ *
+ * All guard failures surface as AppError('VALIDATION'); the unfurler never
+ * throws anything else on purpose.
  */
-import { lookup as dnsLookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
-import type { LookupFunction } from 'node:net';
-import { Agent, fetch as undiciFetch } from 'undici';
 import type { UnfurlResponse } from '@playin/contracts';
-import { AppError } from '../../lib/errors';
+import { createSafeFetcher } from '../../lib/safe-fetch';
+import type { SafeFetchOptions } from '../../lib/safe-fetch';
 
-export interface ResolvedAddress {
-  address: string;
-  family: number;
-}
-export type LookupFn = (hostname: string) => Promise<ResolvedAddress[]>;
+export {
+  createPinnedLookup,
+  createPinningFetch,
+  createSafeFetcher,
+  isPrivateIp,
+} from '../../lib/safe-fetch';
+export type {
+  LookupFn,
+  PinnedLookup,
+  ResolvedAddress,
+  SafeFetcher,
+  SafeFetchResult,
+} from '../../lib/safe-fetch';
 
-export interface UnfurlerOptions {
-  allowPrivateAddresses?: boolean; // default false — ONLY tests set true
-  timeoutMs?: number; // default 3000 (one deadline across all redirects)
-  maxBytes?: number; // default 512 * 1024
-  maxRedirects?: number; // default 3
-  fetchImpl?: typeof fetch; // default globalThis.fetch
-  lookupImpl?: LookupFn; // default node:dns/promises lookup(hostname, { all: true })
-}
+/** Unfurl knobs = the shared fetch guard's knobs (`allowPrivateAddresses`
+ *  and `fetchImpl` are test-only; see lib/safe-fetch.ts). */
+export type UnfurlerOptions = SafeFetchOptions;
 
 export type Unfurler = (url: string) => Promise<UnfurlResponse>;
-
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-
-/**
- * connect-time lookup that ONLY hands out addresses already vetted by the
- * guard. FAIL CLOSED: a hostname with no pinned entry is a connection error,
- * never a fresh DNS query. Handles both node lookup callback shapes
- * (`all: true` -> array, otherwise (address, family)).
- */
-export type PinnedLookup = (
-  hostname: string,
-  options: { all?: boolean; family?: number | string },
-  callback: (err: NodeJS.ErrnoException | null, address?: unknown, family?: number) => void,
-) => void;
-
-export function createPinnedLookup(
-  pinned: ReadonlyMap<string, readonly ResolvedAddress[]>,
-): PinnedLookup {
-  return (hostname, options, callback) => {
-    const vetted = pinned.get(hostname.toLowerCase()) ?? [];
-    const family = options.family === 4 || options.family === 6 ? options.family : null;
-    const usable = family === null ? vetted : vetted.filter((a) => a.family === family);
-    const first = usable[0];
-    if (first === undefined) {
-      callback(new Error(`unfurl: no vetted address for ${hostname}`));
-      return;
-    }
-    if (options.all === true) {
-      callback(
-        null,
-        usable.map((a) => ({ address: a.address, family: a.family })),
-      );
-      return;
-    }
-    callback(null, first.address, first.family);
-  };
-}
-
-/** A fetch whose sockets resolve exclusively through the `pinned` map. */
-export function createPinningFetch(
-  pinned: ReadonlyMap<string, readonly ResolvedAddress[]>,
-): typeof fetch {
-  const agent = new Agent({
-    connect: { lookup: createPinnedLookup(pinned) as unknown as LookupFunction },
-  });
-  const pinnedFetch = (input: string | URL, init?: RequestInit): Promise<Response> =>
-    undiciFetch(input as never, {
-      ...(init as object),
-      dispatcher: agent,
-    } as never) as unknown as Promise<Response>;
-  return pinnedFetch as unknown as typeof fetch;
-}
-
-function privateAddressError(): AppError {
-  return new AppError('VALIDATION', 'url resolves to a private address');
-}
-
-/**
- * True when `ip` is private/reserved — FAIL CLOSED: anything unparseable
- * counts as private. Covers IPv4 RFC1918/loopback/link-local/CGNAT/
- * documentation/multicast ranges plus IPv6 loopback, ULA, link-local,
- * v4-mapped (recursed on the v4 tail) and NAT64 prefixes.
- */
-export function isPrivateIp(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    const octets = ip.split('.').map((part) => Number(part));
-    const a = octets[0];
-    const b = octets[1];
-    const c = octets[2];
-    if (a === undefined || b === undefined || c === undefined) {
-      return true;
-    }
-    if (a === 0 || a >= 224) return true;
-    if (a === 10 || a === 127) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 198 && (b === 18 || b === 19)) return true;
-    if (a === 198 && b === 51 && c === 100) return true;
-    if (a === 203 && b === 0 && c === 113) return true;
-    return false;
-  }
-  const lower = ip.toLowerCase();
-  if (isIP(lower) !== 6) {
-    return true; // fail closed
-  }
-  if (lower === '::' || lower === '::1') return true;
-  if (lower.startsWith('::ffff:')) {
-    // v4-mapped — decide on the embedded v4 address.
-    return isPrivateIp(lower.slice('::ffff:'.length));
-  }
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // fc00::/7
-  if (/^fe[89ab]/.test(lower)) return true; // fe80::/10
-  if (lower.startsWith('64:ff9b:')) return true; // NAT64 can smuggle v4
-  return false;
-}
 
 /** HTML-entity decoding for the handful OG tags actually contain. */
 function decodeEntities(text: string): string {
@@ -231,72 +132,23 @@ export function parseOgTags(html: string): {
   return { title, description, imageUrl, siteName };
 }
 
-export function createUnfurler(options: UnfurlerOptions = {}): Unfurler {
-  const allowPrivate = options.allowPrivateAddresses ?? false;
-  const timeoutMs = options.timeoutMs ?? 3000;
-  const maxBytes = options.maxBytes ?? 512 * 1024;
-  const maxRedirects = options.maxRedirects ?? 3;
-  // hostname (lowercased) -> the exact addresses the guard vetted. The
-  // default fetch dials ONLY through this map (see createPinningFetch);
-  // allowPrivate skips vetting, so it falls back to the plain global fetch
-  // (test-only mode, documented above).
-  const pinned = new Map<string, ResolvedAddress[]>();
-  const fetchImpl =
-    options.fetchImpl ?? (allowPrivate ? globalThis.fetch : createPinningFetch(pinned));
-  const lookupImpl: LookupFn =
-    options.lookupImpl ?? (async (hostname) => dnsLookup(hostname, { all: true }));
-  const pin = (hostname: string, addresses: readonly ResolvedAddress[]): void => {
-    if (pinned.size > 256 && !pinned.has(hostname.toLowerCase())) {
-      pinned.clear(); // hard bound; every entry is vetted-public anyway
-    }
-    pinned.set(hostname.toLowerCase(), [...addresses]);
-  };
+/** Absolute http(s) form of an og:image, resolved against the page URL. */
+export function absoluteImageUrl(raw: string | null, base: URL): string | null {
+  if (raw === null) {
+    return null;
+  }
+  try {
+    const resolved = new URL(raw, base);
+    return resolved.protocol === 'http:' || resolved.protocol === 'https:'
+      ? resolved.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
 
-  /** Validate one hop: scheme, localhost, and private-address checks. */
-  const guard = async (raw: string): Promise<URL> => {
-    let url: URL;
-    try {
-      url = new URL(raw);
-    } catch {
-      throw new AppError('VALIDATION', 'only http/https urls can be unfurled');
-    }
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new AppError('VALIDATION', 'only http/https urls can be unfurled');
-    }
-    if (allowPrivate) {
-      return url;
-    }
-    let hostname = url.hostname;
-    if (hostname.startsWith('[') && hostname.endsWith(']')) {
-      hostname = hostname.slice(1, -1); // IPv6 literal brackets
-    }
-    if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
-      throw privateAddressError();
-    }
-    if (isIP(hostname) !== 0) {
-      if (isPrivateIp(hostname)) {
-        throw privateAddressError();
-      }
-      pin(hostname, [{ address: hostname, family: isIP(hostname) }]);
-      return url;
-    }
-    let addresses: ResolvedAddress[];
-    try {
-      addresses = await lookupImpl(hostname);
-    } catch {
-      throw new AppError('VALIDATION', 'could not resolve host');
-    }
-    if (addresses.length === 0) {
-      throw new AppError('VALIDATION', 'could not resolve host');
-    }
-    for (const address of addresses) {
-      if (isPrivateIp(address.address)) {
-        throw privateAddressError();
-      }
-    }
-    pin(hostname, addresses);
-    return url;
-  };
+export function createUnfurler(options: UnfurlerOptions = {}): Unfurler {
+  const fetcher = createSafeFetcher({ label: 'unfurl', ...options });
 
   const allNull = (url: URL): UnfurlResponse => ({
     url: url.toString(),
@@ -307,130 +159,20 @@ export function createUnfurler(options: UnfurlerOptions = {}): Unfurler {
   });
 
   return async (rawUrl: string): Promise<UnfurlResponse> => {
-    // One deadline across the whole operation (all redirect hops).
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
-    timer.unref();
-
-    try {
-      let current = rawUrl;
-      for (let hops = 0; ; hops += 1) {
-        const url = await guard(current);
-
-        let response: Response;
-        try {
-          response = await fetchImpl(url.toString(), {
-            redirect: 'manual',
-            signal: controller.signal,
-            headers: { 'user-agent': 'playin-unfurl/1.0', accept: 'text/html,*/*;q=0.5' },
-          });
-        } catch (_err) {
-          if (controller.signal.aborted) {
-            throw new AppError('VALIDATION', 'unfurl timed out');
-          }
-          throw new AppError('VALIDATION', 'unfurl failed');
-        }
-
-        if (REDIRECT_STATUSES.has(response.status)) {
-          const location = response.headers.get('location');
-          if (location !== null) {
-            if (hops + 1 > maxRedirects) {
-              throw new AppError('VALIDATION', 'too many redirects');
-            }
-            await response.body?.cancel().catch(() => {});
-            try {
-              current = new URL(location, url).toString();
-            } catch {
-              throw new AppError('VALIDATION', 'unfurl failed');
-            }
-            continue; // the guard re-validates the redirect target
-          }
-        }
-
-        if (response.status < 200 || response.status >= 300) {
-          throw new AppError('VALIDATION', `unfurl target returned ${response.status}`);
-        }
-
-        const contentType = response.headers.get('content-type');
-        if (contentType !== null && !contentType.includes('text/html')) {
-          await response.body?.cancel().catch(() => {});
-          return allNull(url);
-        }
-
-        if (response.body === null) {
-          return allNull(url);
-        }
-
-        // Read at most maxBytes, then cancel and parse the truncated buffer —
-        // a huge page still unfurls from its first chunk.
-        const reader = response.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let total = 0;
-        try {
-          for (;;) {
-            let done: boolean;
-            let value: Uint8Array | undefined;
-            try {
-              ({ done, value } = await reader.read());
-            } catch (_err) {
-              if (controller.signal.aborted) {
-                throw new AppError('VALIDATION', 'unfurl timed out');
-              }
-              throw new AppError('VALIDATION', 'unfurl failed');
-            }
-            if (done) {
-              break;
-            }
-            if (value !== undefined) {
-              chunks.push(value);
-              total += value.byteLength;
-              if (total >= maxBytes) {
-                await reader.cancel().catch(() => {});
-                break;
-              }
-            }
-          }
-        } finally {
-          reader.releaseLock();
-        }
-
-        const bytes = new Uint8Array(Math.min(total, maxBytes));
-        let offset = 0;
-        for (const chunk of chunks) {
-          const slice = chunk.subarray(
-            0,
-            Math.min(chunk.byteLength, bytes.byteLength - offset),
-          );
-          bytes.set(slice, offset);
-          offset += slice.byteLength;
-        }
-        const html = new TextDecoder().decode(bytes);
-
-        const tags = parseOgTags(html);
-        let imageUrl: string | null = null;
-        if (tags.imageUrl !== null) {
-          try {
-            const resolved = new URL(tags.imageUrl, url);
-            if (resolved.protocol === 'http:' || resolved.protocol === 'https:') {
-              imageUrl = resolved.toString();
-            }
-          } catch {
-            imageUrl = null;
-          }
-        }
-
-        return {
-          url: url.toString(),
-          title: tags.title,
-          description: tags.description,
-          imageUrl,
-          siteName: tags.siteName,
-        };
-      }
-    } finally {
-      clearTimeout(timer);
+    const result = await fetcher.fetch(rawUrl, {
+      accept: 'text/html,*/*;q=0.5',
+      expectContentType: 'text/html',
+    });
+    if (!result.bodyRead) {
+      return allNull(result.url);
     }
+    const tags = parseOgTags(result.text);
+    return {
+      url: result.url.toString(),
+      title: tags.title,
+      description: tags.description,
+      imageUrl: absoluteImageUrl(tags.imageUrl, result.url),
+      siteName: tags.siteName,
+    };
   };
 }

@@ -309,6 +309,48 @@ export const CompleteUploadResponse = z.object({ asset: MediaAsset });
 export type CompleteUploadResponse = z.infer<typeof CompleteUploadResponse>;
 
 /**
+ * Server-resolved display metadata for one piece of media. `source` says
+ * where the values came from, so a caller can tell real metadata apart from
+ * what was merely derived from the link:
+ *   'provider' — the service's own metadata endpoint (best quality)
+ *   'page'     — the public page's Open Graph tags
+ *   'link'     — nothing was fetched; only the link itself was read
+ * Anything null simply could not be determined — clients render their own
+ * placeholder rather than an empty box.
+ */
+export const ResolvedMedia = z.object({
+  title: z.string().min(1).max(300).nullable(),
+  artworkUrl: z.string().url().nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  /** Stable provider key ('youtube', 'spotify', 'library', 'link'…). */
+  providerId: z.string().min(1).max(40),
+  /** Display name for that provider ('YouTube', 'Apple Music'…). */
+  providerName: z.string().min(1).max(80),
+  /** Channel/artist/uploader when the provider reports one. */
+  authorName: z.string().min(1).max(200).nullable(),
+  /** Provider-native id (YouTube video id, Spotify 'track/<id>'…). */
+  canonicalId: z.string().min(1).max(200).nullable(),
+  /** Public page for the item, as the provider canonicalises it. */
+  canonicalUrl: z.string().url().nullable(),
+  source: z.enum(['provider', 'page', 'link']),
+});
+export type ResolvedMedia = z.infer<typeof ResolvedMedia>;
+
+/** Resolve by pasted link, by MediaRef, or both (the MediaRef wins). */
+export const ResolveMediaBody = z
+  .object({
+    url: z.string().url().max(2048).optional(),
+    mediaRef: MediaRef.optional(),
+  })
+  .refine((body) => body.url !== undefined || body.mediaRef !== undefined, {
+    message: 'url or mediaRef is required',
+  });
+export type ResolveMediaBody = z.infer<typeof ResolveMediaBody>;
+
+export const ResolveMediaResponse = z.object({ media: ResolvedMedia });
+export type ResolveMediaResponse = z.infer<typeof ResolveMediaResponse>;
+
+/**
  * Re-presign the part URLs of an in-flight ('uploading') multipart session
  * (POST /uploads/:id/parts). Presigned part URLs are short-lived by design;
  * uploads that outlive the TTL refresh their remaining URLs here instead of
@@ -716,6 +758,7 @@ export const rest = {
     listLibrary: { query: ListLibraryQuery, response: ListLibraryResponse },
     deleteAsset: { response: DeleteAssetResponse },
     renameAsset: { body: RenameAssetBody, response: RenameAssetResponse },
+    resolveMedia: { body: ResolveMediaBody, response: ResolveMediaResponse },
   },
   playlists: {
     createPlaylist: { body: CreatePlaylistBody, response: CreatePlaylistResponse },

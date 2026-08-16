@@ -2,6 +2,8 @@
 
 /**
  * ModeBStage — re-stream (Mode B, spec §Playback — Mode B / v3.1 P2P pivot).
+ * "Mode B" is INTERNAL vocabulary: every user-facing string here says
+ * "screen share" instead.
  *
  * Host: getDisplayMedia capture (tab/screen WITH audio — the pre-flight dialog
  * below makes the DRM honesty explicit) → restream.start → the capture fans
@@ -22,6 +24,8 @@ import {
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/ui/toast';
+import { describeError } from '@/lib/describe-error';
+import { UPLINK_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { getCallMesh } from '@/lib/call-mesh';
 
@@ -59,7 +63,7 @@ function HostControls({ onStream }: { onStream(stream: MediaStream | null): void
     } catch (err) {
       setPhase('idle');
       if (err instanceof DOMException && err.name === 'NotAllowedError') return; // cancelled
-      toast.error(err instanceof Error ? err.message : 'Screen capture failed');
+      toast.error(describeError(err, 'Could not start screen sharing'));
     }
   };
 
@@ -67,7 +71,7 @@ function HostControls({ onStream }: { onStream(stream: MediaStream | null): void
     <>
       {phase === 'idle' && (
         <Button variant="secondary" size="sm" onClick={() => setPhase('preflight')}>
-          Share screen (Mode B)
+          Share screen
         </Button>
       )}
       {phase === 'capturing' && (
@@ -85,16 +89,16 @@ function HostControls({ onStream }: { onStream(stream: MediaStream | null): void
           <div className="mt-2 flex flex-col gap-2 text-sm text-mid">
             <p>
               Pick a <strong>tab or window with audio</strong> — everyone in the room
-              watches your capture, end-to-end encrypted peer-to-peer.
+              sees it, sent straight from your device and encrypted on the way.
             </p>
             <p>
-              Protected content (DRM — most streaming services) renders black by
-              OS/browser design, not a bug. Mode B is for non-DRM and your own
-              content.
+              Most streaming services block screen recording, so their shows come
+              through as a black picture. Screen sharing is for your own content and
+              sites that allow it.
             </p>
             <p className="text-low">
-              Your uplink carries one copy per viewer (cap: 8). The room’s quality
-              ceiling is your connection.
+              Your device sends one copy to each viewer (up to 8), so your connection
+              sets the quality everyone sees.
             </p>
           </div>
           <div className="mt-4 flex justify-end gap-2">
@@ -143,7 +147,7 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
       />
       {!gotTrack && (
         <p className="absolute text-sm text-mid">
-          Connecting to the host’s share… (peer-to-peer, this can take a moment)
+          Connecting to the host’s screen… this can take a moment.
         </p>
       )}
     </div>
@@ -186,8 +190,9 @@ export function ModeBStage({ restream }: { restream: RestreamState }) {
             Share a tab, window, or screen
           </p>
           <p className="max-w-md text-sm text-mid">
-            Mode B re-streams your capture to everyone — end-to-end encrypted,
-            peer-to-peer. Your uplink is the ceiling (viewer cap 8).
+            Everyone in the room watches what you share, sent straight from your
+            device and encrypted on the way. Up to 8 viewers — your connection sets
+            the quality.
           </p>
         </>
       )}
@@ -196,7 +201,9 @@ export function ModeBStage({ restream }: { restream: RestreamState }) {
         {restream.active && (
           <Badge variant="aurora">
             Live · {restream.viewerCount} watching
-            {restream.uplinkQuality !== null ? ` · uplink ${restream.uplinkQuality}` : ''}
+            {restream.uplinkQuality !== null
+              ? ` · ${UPLINK_LABEL[restream.uplinkQuality]}`
+              : ''}
           </Badge>
         )}
       </div>

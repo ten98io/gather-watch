@@ -53,12 +53,17 @@ export class SoundCloudAdapter implements PlayerAdapter {
   private duration = 0;
   private muted = false;
   private destroyed = false;
+  private buffering = false;
 
   /** @param container an empty div the widget iframe is mounted into. */
   constructor(private readonly container: HTMLElement) {}
 
   load(ref: Extract<MediaRef, { kind: 'soundcloud' }>): void {
     if (this.destroyed) return;
+    // Loading IS buffering (same contract as NativeAdapter): it keeps the
+    // room's wait-for-all honest and stops the stage mistaking a slow widget
+    // for a browser that refused to play.
+    this.setBuffering(true);
     void loadWidgetApi()
       .then(() => {
         if (this.destroyed) return;
@@ -70,6 +75,10 @@ export class SoundCloudAdapter implements PlayerAdapter {
         const iframe = document.createElement('iframe');
         iframe.className = 'h-full w-full border-0';
         iframe.allow = 'autoplay';
+        // The stage's click shield is the only control surface: keep the
+        // widget's own transport out of reach of pointer and tab order.
+        iframe.style.pointerEvents = 'none';
+        iframe.setAttribute('tabindex', '-1');
         iframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(ref.url)}&auto_play=false&visual=true`;
         this.container.replaceChildren(iframe);
         this.iframe = iframe;
@@ -77,29 +86,46 @@ export class SoundCloudAdapter implements PlayerAdapter {
         this.widget = widget;
 
         widget.bind('ready', () => {
+          // The widget API reports getDuration/getPosition/currentPosition in
+          // MILLISECONDS already — no conversion, unlike Vimeo's seconds.
           widget.getDuration((ms) => {
             this.duration = ms;
             this.emit('durationchange');
           });
+          this.setBuffering(false);
           this.emit('ready');
         });
-        widget.bind('play', () => this.emit('playing'));
+        widget.bind('play', () => {
+          this.setBuffering(false);
+          this.emit('playing');
+        });
         widget.bind('pause', () => this.emit('paused'));
-        widget.bind('finish', () => this.emit('ended'));
-        widget.bind('buffering', () => this.emit('buffering'));
+        widget.bind('finish', () => {
+          this.setBuffering(false);
+          this.emit('ended');
+        });
+        widget.bind('error', () => {
+          this.setBuffering(false);
+          this.emit('error');
+        });
         widget.bind('playProgress', (pos: unknown) => {
           const ms = (pos as { currentPosition?: number }).currentPosition;
           if (typeof ms === 'number') this.position = ms;
-          if (this.bufferingEmitted) {
-            this.bufferingEmitted = false;
-            this.emit('buffered');
-          }
+          this.setBuffering(false);
         });
       })
-      .catch(() => this.emit('error'));
+      .catch(() => {
+        this.setBuffering(false);
+        this.emit('error');
+      });
   }
 
-  private bufferingEmitted = false;
+  /** Paired buffering edges — the room's wait-for-all needs both. */
+  private setBuffering(value: boolean): void {
+    if (value === this.buffering) return;
+    this.buffering = value;
+    this.emit(value ? 'buffering' : 'buffered');
+  }
 
   play(): void {
     this.widget?.play();
@@ -150,6 +176,7 @@ export class SoundCloudAdapter implements PlayerAdapter {
 
   destroy(): void {
     this.destroyed = true;
+    this.buffering = false;
     this.container.replaceChildren();
     this.widget = null;
     this.iframe = null;
@@ -157,7 +184,6 @@ export class SoundCloudAdapter implements PlayerAdapter {
   }
 
   private emit(evt: AdapterEvent): void {
-    if (evt === 'buffering') this.bufferingEmitted = true;
     for (const cb of [...(this.listeners.get(evt) ?? [])]) {
       try {
         cb();

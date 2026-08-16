@@ -13,3 +13,7 @@ node_modules
 coverage
 .env
 .env.*
+# Local Atlas secrets file — not matched by `.env.*` (no leading dot in the
+# stem), and a CLI-context build (`railway up`, `docker build`) would bake it.
+atlas-credentials.env
+*credentials*.env

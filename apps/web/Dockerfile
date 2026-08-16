@@ -34,6 +34,11 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # --fail-if-no-match: an image built before the app package exists must fail
 # loudly at build time, not ship a no-op container that restart-loops.
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* vars are inlined at `next build` time — Railway (and plain
+# docker build) only pass service variables into the build through declared
+# ARGs. Without this, every image bakes the localhost default from lib/api.ts.
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN pnpm --filter ./apps/web... --fail-if-no-match run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────

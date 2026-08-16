@@ -1,96 +1,154 @@
 'use client';
 
 /**
- * Composer — chat input row: typing signals, emoji, GIF picker, attachment
- * upload with progress, voice notes (MediaRecorder), @mention autocomplete,
- * and a debounced link-unfurl preview (server-side, SSRF-guarded). Sends
- * contracts chat.send ClientEvents; nothing optimistic — the server-ordered
- * chat.message event is the single source of truth.
+ * Composer — the messaging bar, standard layout (WhatsApp/Telegram/Discord
+ * convention): [attach] [GIF] [message pill + emoji] [send ⇄ voice]. Above the
+ * row, in order: reply banner, link-unfurl preview, @mention autocomplete,
+ * upload progress. Typing signals, emoji popover, GIF picker, attachment
+ * upload with progress, voice notes (MediaRecorder), and a debounced
+ * link-unfurl preview (server-side, SSRF-guarded). Sends contracts chat.send
+ * ClientEvents; nothing optimistic — the server-ordered chat.message event is
+ * the single source of truth.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import type { Message, RoomId, UserId } from '@playin/contracts';
 import { Button } from '@/components/ui/button';
+import {
+  MicIcon,
+  PaperclipIcon,
+  SendIcon,
+  SmileIcon,
+  StopCircleIcon,
+  XIcon,
+} from '@/components/ui/icons';
 import { toast } from '@/components/ui/toast';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { api } from '@/lib/api';
 import { uploadChatAttachment } from '@/lib/attachments';
+import { cn } from '@/lib/cn';
+import { describeError } from '@/lib/describe-error';
 import { firstUrl } from '@/lib/markdown-lite';
 import { useRoomConnection } from '@/lib/room-context';
 import { GifPicker } from './GifPicker';
 
-const EMOJI_ROW = ['😀', '😂', '🔥', '❤️', '👍', '🎉', '😮', '😢'] as const;
+/** Emoji popover grid, 8 per row. Row 1 is the legacy always-visible strip. */
+const EMOJI_GRID = [
+  '😀', '😂', '🔥', '❤️', '👍', '🎉', '😮', '😢',
+  '🤣', '😊', '😍', '😎', '🤔', '😅', '🙌', '👏',
+  '🙏', '💯', '✨', '🥳', '😴', '😭', '😡', '👀',
+] as const;
+
+/** Auto-grow ceiling: 5 lines × 20px leading + 24px vertical padding. */
+const MAX_TEXTAREA_PX = 5 * 20 + 24;
+/** Anything taller than one line loses the full pill radius (text would clip). */
+const SINGLE_LINE_PX = 48;
+
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
 
 export interface Mentionable {
   userId: UserId;
   displayName: string;
 }
 
-function VoiceButton({
-  roomId,
-  disabled,
-  onRecorded,
+/**
+ * Compact emoji panel above the bar. Closes on Escape, on outside pointerdown,
+ * and after a pick unless a modifier is held (multi-pick). Constrained to the
+ * composer's own width so it never widens the 380px rail.
+ */
+function EmojiPopover({
+  open,
+  triggerRef,
+  onClose,
+  onPick,
 }: {
-  roomId: RoomId;
-  disabled: boolean;
-  onRecorded(attachment: Message['attachment']): void;
+  open: boolean;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  /** restoreFocus: put the caret back in the message field (not on outside clicks). */
+  onClose(restoreFocus: boolean): void;
+  onPick(emoji: string): void;
 }) {
-  const [recording, setRecording] = useState(false);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const startedAtRef = useRef(0);
+  const reduced = useReducedMotion();
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
-  const toggle = async (): Promise<void> => {
-    if (recording) {
-      recorderRef.current?.stop();
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-      recorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const durationMs = Date.now() - startedAtRef.current;
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-        const file = new File([blob], `voice-note.webm`, { type: blob.type });
-        void uploadChatAttachment(roomId, file, { durationMs })
-          .then(onRecorded)
-          .catch((err: unknown) => {
-            toast.error(err instanceof Error ? err.message : 'Voice note upload failed');
-          });
-      };
-      recorderRef.current = recorder;
-      startedAtRef.current = Date.now();
-      recorder.start();
-      setRecording(true);
-    } catch {
-      toast.error('Microphone unavailable — check browser permissions');
-    }
-  };
-
-  // MediaRecorder.onstop → state back to idle.
   useEffect(() => {
-    if (!recording) return;
-    const recorder = recorderRef.current;
-    if (recorder === null) return;
-    const prev = recorder.onstop;
-    recorder.onstop = (e) => {
-      prev?.call(recorder, e);
-      setRecording(false);
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent): void => {
+      const target = e.target as Node;
+      if (panelRef.current?.contains(target) === true) return;
+      // The trigger toggles itself — let its click handler own that case.
+      if (triggerRef.current?.contains(target) === true) return;
+      onClose(false);
     };
-  }, [recording]);
+    // Capture phase: Escape closes the popover without also reaching the
+    // document-level Escape handlers of the mobile Sheet / any open Dialog.
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      onClose(true);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKey, true);
+    };
+  }, [open, onClose, triggerRef]);
+
+  // The panel sits earlier in the DOM than its trigger (it is absolutely
+  // positioned over the row), so move focus into it to keep the tab order sane.
+  useEffect(() => {
+    if (!open) return;
+    panelRef.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+  }, [open]);
+
+  const motionProps = reduced
+    ? {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
+        transition: { duration: 0.15 },
+      }
+    : {
+        initial: { opacity: 0, y: 6, scale: 0.98 },
+        animate: { opacity: 1, y: 0, scale: 1 },
+        exit: { opacity: 0, y: 4, scale: 0.98 },
+        transition: { type: 'spring' as const, stiffness: 260, damping: 30 },
+      };
 
   return (
-    <Button
-      variant={recording ? 'destructive' : 'ghost'}
-      size="icon"
-      aria-label={recording ? 'Stop recording' : 'Record voice note'}
-      disabled={disabled}
-      onClick={() => void toggle()}
-    >
-      {recording ? '⏺' : '🎤'}
-    </Button>
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          ref={panelRef}
+          role="dialog"
+          aria-label="Emoji picker"
+          className="glass-raised absolute bottom-full left-2 right-2 z-[60] mb-2 p-2 shadow-glow"
+          {...motionProps}
+        >
+          <div className="grid grid-cols-8 gap-0.5">
+            {EMOJI_GRID.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                aria-label={`Insert ${emoji}`}
+                className="flex h-9 items-center justify-center rounded-ctl text-lg leading-none transition-colors duration-150 hover:bg-glass focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={(e) => {
+                  onPick(emoji);
+                  if (!(e.shiftKey || e.metaKey || e.ctrlKey || e.altKey)) onClose(true);
+                }}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -108,17 +166,23 @@ export function Composer({
   mentionables: Mentionable[];
 }) {
   const connection = useRoomConnection();
+  const reduced = useReducedMotion();
   const [draft, setDraft] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [multiline, setMultiline] = useState(false);
   const [unfurl, setUnfurl] = useState<{
     url: string;
     title: string | null;
     siteName: string | null;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const emojiTriggerRef = useRef<HTMLButtonElement | null>(null);
   const typingSentRef = useRef(false);
   const typingStopHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unmountedRef = useRef(false);
 
   // ── @mention autocomplete ──
   const mentionMatch = /@([\p{L}\p{N}_-]{0,40})$/u.exec(draft);
@@ -167,15 +231,98 @@ export function Composer({
     }
   };
 
+  // ── voice notes (MediaRecorder → the attachment upload path) ──
+  const [recording, setRecording] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const startedAtRef = useRef(0);
+  // Late-resolving sends (voice upload) must use the reply target as it stands
+  // when they land, not as it stood when recording started.
+  const replyToRef = useRef(replyTo);
+  useEffect(() => {
+    replyToRef.current = replyTo;
+  }, [replyTo]);
+
+  useEffect(() => {
+    if (!recording) return;
+    const handle = setInterval(() => setElapsedMs(Date.now() - startedAtRef.current), 250);
+    return () => clearInterval(handle);
+  }, [recording]);
+
+  // Unmount: drop the pending typing-stop timer and release the microphone.
+  useEffect(
+    () => () => {
+      unmountedRef.current = true;
+      if (typingStopHandle.current !== null) clearTimeout(typingStopHandle.current);
+      const recorder = recorderRef.current;
+      if (recorder !== null && recorder.state !== 'inactive') recorder.stop();
+    },
+    [],
+  );
+
+  const startRecording = async (): Promise<void> => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        recorderRef.current = null;
+        // Composer went away (mobile sheet closed): mic released, take dropped.
+        if (unmountedRef.current) return;
+        setRecording(false);
+        const durationMs = Date.now() - startedAtRef.current;
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        const file = new File([blob], `voice-note.webm`, { type: blob.type });
+        void uploadChatAttachment(roomId, file, { durationMs })
+          .then((attachment) => {
+            connection.chatSend({
+              kind: 'voice',
+              body: 'Voice note',
+              attachment,
+              replyTo: replyToRef.current?.id ?? null,
+            });
+            onCancelReply();
+          })
+          .catch((err: unknown) => {
+            toast.error(describeError(err, 'Could not send that voice note'));
+          });
+      };
+      recorderRef.current = recorder;
+      startedAtRef.current = Date.now();
+      setElapsedMs(0);
+      recorder.start();
+      setRecording(true);
+    } catch {
+      toast.error('Microphone unavailable — check browser permissions');
+    }
+  };
+
+  const stopRecording = (): void => {
+    recorderRef.current?.stop();
+  };
+
   const send = (): void => {
     const body = draft.trim();
-    if (body.length === 0) return;
-    connection.chatSend({ body, replyTo: replyTo?.id ?? null, mentions });
+    if (disabled || body.length === 0) return;
+    // Mentions go stale when their @DisplayName text is edited out of the
+    // draft — only send the ones the body still names.
+    const live = mentions.filter((id) => {
+      const target = mentionables.find((m) => m.userId === id);
+      return target !== undefined && body.includes(`@${target.displayName}`);
+    });
+    connection.chatSend({ body, replyTo: replyTo?.id ?? null, mentions: live });
     setDraft('');
     setMentions([]);
     setUnfurl(null);
     onCancelReply();
     stopTyping();
+    // The send button unmounts (it swaps back to the mic) — keep the caret in
+    // the field so the next message can be typed straight away.
+    textareaRef.current?.focus({ preventScroll: true });
   };
 
   const pickFile = (file: File): void => {
@@ -195,14 +342,45 @@ export function Composer({
       })
       .catch((err: unknown) => {
         setUploadPct(null);
-        toast.error(err instanceof Error ? err.message : 'Attachment upload failed');
+        toast.error(describeError(err, 'Could not upload that file'));
       });
   };
+
+  // Auto-size by scrollHeight so soft-wrapped lines grow the field too.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el === null) return;
+    el.style.height = 'auto';
+    const next = Math.min(el.scrollHeight, MAX_TEXTAREA_PX);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > MAX_TEXTAREA_PX ? 'auto' : 'hidden';
+    setMultiline(next > SINGLE_LINE_PX);
+  }, [draft, recording]);
+
+  const closeEmoji = useCallback((restoreFocus: boolean): void => {
+    setEmojiOpen(false);
+    if (restoreFocus) textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  const insertEmoji = (emoji: string): void => {
+    if (disabled) return;
+    setDraft((d) => d + emoji);
+    signalTyping();
+  };
+
+  // Chat can be restricted mid-session — never leave the picker hanging open.
+  useEffect(() => {
+    if (disabled) setEmojiOpen(false);
+  }, [disabled]);
+
+  const uploading = uploadPct !== null;
+  const hasDraft = draft.trim().length > 0;
 
   return (
     <div className="border-t border-border-glass bg-deep">
       {replyTo !== null && (
         <div className="flex items-center gap-2 border-t border-border-glass bg-glass px-3 py-1.5">
+          <span aria-hidden className="h-6 w-0.5 shrink-0 rounded-full bg-aurora-1" />
           <span className="min-w-0 flex-1 truncate text-xs text-mid">
             Replying: {replyTo.deletedAt !== null ? 'Message deleted' : replyTo.body}
           </span>
@@ -210,15 +388,15 @@ export function Composer({
             type="button"
             aria-label="Cancel reply"
             onClick={onCancelReply}
-            className="px-1 text-low hover:text-hi"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-ctl text-low transition-colors duration-150 hover:bg-raised hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            ✕
+            <XIcon size={14} />
           </button>
         </div>
       )}
 
       {unfurl !== null && (
-        <div className="mx-3 mt-2 rounded-ctl border border-border-glass bg-glass px-3 py-2">
+        <div className="mx-2 mt-2 rounded-ctl border border-border-glass bg-glass px-3 py-2">
           <p className="truncate text-xs text-hi">{unfurl.title ?? unfurl.url}</p>
           {unfurl.siteName !== null && (
             <p className="text-[10px] text-low">{unfurl.siteName}</p>
@@ -227,15 +405,20 @@ export function Composer({
       )}
 
       {mentionCandidates.length > 0 && (
-        <div className="mx-3 mt-2 overflow-hidden rounded-ctl border border-border-glass bg-raised">
+        <div
+          role="group"
+          aria-label="Mention suggestions"
+          className="mx-2 mt-2 overflow-hidden rounded-ctl border border-border-glass bg-raised p-1"
+        >
           {mentionCandidates.map((m) => (
             <button
               key={m.userId}
               type="button"
-              className="block w-full px-3 py-1.5 text-left text-sm text-hi hover:bg-glass"
+              className="block w-full rounded-ctl px-2 py-1.5 text-left text-sm text-hi transition-colors duration-150 hover:bg-glass focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => {
                 setDraft((d) => d.replace(/@[\p{L}\p{N}_-]{0,40}$/u, `@${m.displayName} `));
                 setMentions((prev) => (prev.includes(m.userId) ? prev : [...prev, m.userId]));
+                textareaRef.current?.focus();
               }}
             >
               @{m.displayName}
@@ -244,8 +427,8 @@ export function Composer({
         </div>
       )}
 
-      {uploadPct !== null && (
-        <div className="mx-3 mt-2">
+      {uploading && (
+        <div className="mx-2 mt-2" role="status">
           <div className="h-1.5 overflow-hidden rounded-full bg-raised">
             <div className="h-full bg-aurora-1 transition-all" style={{ width: `${uploadPct}%` }} />
           </div>
@@ -253,89 +436,125 @@ export function Composer({
         </div>
       )}
 
-      {/* Emoji strip spans the full composer width; the input row below keeps
-          the textarea roomy even in the 380px rail (audit fix). */}
-      <div className="flex gap-0.5 overflow-x-auto px-2 pt-1.5">
-        {EMOJI_ROW.map((emoji) => (
-          <button
-            key={emoji}
-            type="button"
-            aria-label={`Insert ${emoji}`}
-            className="rounded px-0.5 text-base hover:bg-glass"
-            onClick={() => {
-              setDraft((d) => d + emoji);
-              signalTyping();
-            }}
-          >
-            {emoji}
-          </button>
-        ))}
-      </div>
+      {/* One standard input row: attach · GIF · field (+emoji) · send/voice. */}
+      <div className="relative flex items-end gap-1 p-2">
+        <EmojiPopover
+          open={emojiOpen}
+          triggerRef={emojiTriggerRef}
+          onClose={closeEmoji}
+          onPick={insertEmoji}
+        />
 
-      <div className="flex items-end gap-1.5 p-2 pt-0">
-        <div className="flex gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Send a GIF"
-            disabled={disabled}
-            onClick={() => setGifOpen(true)}
-          >
-            GIF
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Attach a file"
-            disabled={disabled || uploadPct !== null}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            📎
-          </Button>
-          <VoiceButton
-            roomId={roomId}
-            disabled={disabled}
-            onRecorded={(attachment) => {
-              connection.chatSend({
-                kind: 'voice',
-                body: 'Voice note',
-                attachment,
-                replyTo: replyTo?.id ?? null,
-              });
-              onCancelReply();
-            }}
-          />
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Attach a file"
+          disabled={disabled || uploading || recording}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <PaperclipIcon size={18} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Send a GIF"
+          aria-haspopup="dialog"
+          className="text-[11px] font-semibold tracking-tight"
+          disabled={disabled || uploading || recording}
+          onClick={() => setGifOpen(true)}
+        >
+          GIF
+        </Button>
+
+        <div
+          className={cn(
+            'flex min-w-0 flex-1 items-end border border-border-glass bg-glass transition-colors duration-150',
+            'focus-within:ring-2 focus-within:ring-ring',
+            multiline ? 'rounded-[22px]' : 'rounded-full',
+            recording && 'border-danger',
+          )}
+        >
+          {recording ? (
+            <div role="status" className="flex min-h-[44px] flex-1 items-center gap-2 pl-4 pr-2">
+              <span
+                aria-hidden
+                className={cn('h-2 w-2 shrink-0 rounded-full bg-danger', !reduced && 'animate-pulse')}
+              />
+              <span className="truncate text-sm text-mid">Recording voice note…</span>
+            </div>
+          ) : (
+            <>
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  signalTyping();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    send();
+                  }
+                }}
+                placeholder={disabled ? 'Chat is restricted' : 'Message…'}
+                disabled={disabled}
+                rows={1}
+                aria-label="Message"
+                autoCorrect="on"
+                autoCapitalize="sentences"
+                spellCheck
+                className="min-w-0 flex-1 resize-none bg-transparent py-3 pl-4 pr-1 text-sm leading-5 text-hi placeholder:text-low focus:outline-none"
+              />
+              <button
+                ref={emojiTriggerRef}
+                type="button"
+                aria-label="Emoji"
+                aria-haspopup="dialog"
+                aria-expanded={emojiOpen}
+                disabled={disabled}
+                onClick={() => {
+                  if (emojiOpen) closeEmoji(true);
+                  else setEmojiOpen(true);
+                }}
+                className={cn(
+                  'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors duration-150',
+                  'disabled:pointer-events-none disabled:opacity-50',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  emojiOpen ? 'text-hi' : 'text-mid hover:text-hi',
+                )}
+              >
+                <SmileIcon size={20} />
+              </button>
+            </>
+          )}
         </div>
 
-        <textarea
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            signalTyping();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          placeholder={disabled ? 'Chat is restricted' : 'Message…'}
-          disabled={disabled}
-          rows={Math.min(4, Math.max(1, draft.split('\n').length))}
-          aria-label="Message"
-          autoCorrect="on"
-          autoCapitalize="sentences"
-          spellCheck
-          className="min-h-[40px] min-w-0 flex-1 resize-none rounded-ctl border border-border-glass bg-glass px-3 py-2 text-sm text-hi placeholder:text-low focus:outline-none focus:ring-2 focus:ring-ring"
-        />
-        <Button
-          size="icon"
-          aria-label="Send"
-          disabled={disabled || draft.trim().length === 0}
-          onClick={send}
-        >
-          ↑
-        </Button>
+        {recording ? (
+          <Button
+            variant="destructive"
+            aria-label="Stop recording"
+            className="shrink-0"
+            onClick={stopRecording}
+          >
+            <StopCircleIcon size={18} />
+            <span className="tabular text-xs font-semibold">{formatElapsed(elapsedMs)}</span>
+          </Button>
+        ) : hasDraft ? (
+          <Button size="icon" aria-label="Send" disabled={disabled} onClick={send}>
+            <SendIcon size={18} />
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Record voice note"
+            disabled={disabled || uploading}
+            onClick={() => void startRecording()}
+          >
+            <MicIcon size={20} />
+          </Button>
+        )}
       </div>
 
       <input

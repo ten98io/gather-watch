@@ -9,6 +9,8 @@ import { SetTheaterResponse, formatInviteCode } from '@playin/contracts';
 import type { RoomId } from '@playin/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { describeError } from '@/lib/describe-error';
+import { ROLE_LABEL } from '@/lib/labels';
 import { toast } from '@/components/ui/toast';
 import { ExpiryChip, RoomMenu } from '@/components/room/RoomMenu';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
@@ -17,11 +19,11 @@ import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { StagePane } from '@/components/stage/StagePane'; // wave 2
 import { ChatPane } from '@/components/chat/ChatPane'; // wave 2
 import { QueuePane } from '@/components/queue/QueuePane'; // wave 2
-import { CallStrip } from '@/components/call/CallStrip'; // wave 2
 import { PeoplePane } from '@/components/people/PeoplePane'; // wave 2
-import { CallGrid } from '@/components/call/CallGrid';
+import { CallDock, CallOverlay, CallSessionProvider } from '@/components/call/CallSurface';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ArrowLeftIcon, TheaterIcon } from '@/components/ui/icons';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -63,12 +65,35 @@ function ConnectionPill() {
   );
 }
 
-/** Desktop: 380px glass right rail — CallStrip docked above Chat/Queue/People. */
-function Rail({ roomId, tab, onTabChange }: { roomId: RoomId; tab: RailTab; onTabChange(t: RailTab): void }) {
+/**
+ * Desktop right rail (380px): the ONE call surface docked above
+ * Chat/Queue/People. Solid `surface-1` normally — glass is reserved for things
+ * that float over moving video, which the rail only does in theater mode
+ * (`floating`), where it overlays the stage.
+ */
+function Rail({
+  roomId,
+  tab,
+  onTabChange,
+  floating = false,
+}: {
+  roomId: RoomId;
+  tab: RailTab;
+  onTabChange(t: RailTab): void;
+  floating?: boolean;
+}) {
   return (
-    <aside className="glass-panel m-3 ml-0 flex w-[380px] shrink-0 flex-col overflow-hidden">
-      <div className="border-b border-border-glass">
-        <CallStrip roomId={roomId} />
+    <aside
+      className={cn(
+        'm-3 ml-0 flex w-rail shrink-0 flex-col overflow-hidden',
+        floating
+          ? 'glass-panel absolute inset-y-0 right-0 z-20'
+          : 'rounded-panel bg-surface-1',
+      )}
+    >
+      {/* Hairline: the dock and the tabs are the same elevation step. */}
+      <div className="border-b border-hairline">
+        <CallDock roomId={roomId} />
       </div>
       <RailTabs roomId={roomId} tab={tab} onTabChange={onTabChange} />
     </aside>
@@ -109,7 +134,7 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange(o: 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-label="Keyboard shortcuts">
         <DialogTitle>Keyboard shortcuts</DialogTitle>
-        <DialogDescription>The room is fully keyboard-driven (DESIGN.md §9).</DialogDescription>
+        <DialogDescription>The room is fully keyboard-driven.</DialogDescription>
         <ul className="mt-4 flex flex-col gap-2">
           {SHORTCUTS.map(([key, action]) => (
             <li key={key} className="flex items-center justify-between gap-4 text-sm">
@@ -141,12 +166,12 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
     })
       .then(() => toast.success(room.theater ? 'Theater off' : 'Theater on'))
       .catch((err: unknown) => {
-        // Surface the server's reason — premium gate, role policy, etc.
-        const msg = err instanceof ApiError ? err.message : 'Could not toggle theater mode';
-        if (err instanceof ApiError && err.code === 'FORBIDDEN' && /premium/i.test(msg)) {
-          toast.error('Theater mode is a premium feature — upgrade to enable it');
+        // Plan gates arrive as 402; everything else gets curated copy. The raw
+        // server body is never shown.
+        if (err instanceof ApiError && err.status === 402) {
+          toast.error('Theater mode is a Premium feature — upgrade to enable it');
         } else {
-          toast.error(msg);
+          toast.error(describeError(err, 'Could not switch theater mode'));
         }
       });
   };
@@ -164,93 +189,103 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
   );
   useKeyboardShortcuts(shortcuts);
 
+  /** Theater collapses the rail; the call tiles float over the stage instead. */
+  const railCollapsed = room.theater && !railOpen;
+
   return (
-    <div className="flex h-dvh flex-col">
-      <header className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <Link href="/home" aria-label="Leave room" className="text-low transition-colors hover:text-hi">
-          ←
-        </Link>
-        <h1 className="min-w-0 flex-1 truncate font-display text-lg font-semibold">{room.name}</h1>
-        <Badge variant={room.kind === 'watch' ? 'aurora' : 'default'}>
-          {room.kind === 'watch' ? 'Watch' : 'Listen'}
-        </Badge>
-        <Badge variant="muted" className="hidden font-mono sm:inline-flex">
-          {formatInviteCode(room.inviteCode)}
-        </Badge>
-        <ExpiryChip room={room} />
-        {member.role !== 'member' && <Badge variant="default">{member.role}</Badge>}
-        <RoomMenu room={room} canManage={canToggleTheater} />
-        {canToggleTheater && (
-          <Button
-            variant={room.theater ? 'secondary' : 'ghost'}
-            size="sm"
-            aria-pressed={room.theater}
-            onClick={toggleTheater}
+    <CallSessionProvider>
+      <div className="flex h-dvh flex-col">
+        <header className="flex flex-wrap items-center gap-3 px-4 py-3">
+          <Link
+            href="/home"
+            aria-label="Leave room"
+            className="text-low transition-colors hover:text-hi"
           >
-            🎭 Theater
-          </Button>
-        )}
-        {!isDesktop && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setSheetOpen(true);
-            }}
-          >
-            Chat &amp; queue
-          </Button>
-        )}
-      </header>
-
-      {isDesktop ? (
-        <div className="relative flex min-h-0 flex-1">
-          <main className="relative min-w-0 flex-1" aria-label="Stage area">
-            <ConnectionPill />
-            <CallGrid theater={room.theater} />
-            <StagePane roomId={roomId} />
-          </main>
-          {room.theater ? (
-            <>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="absolute bottom-4 right-4 z-30"
-                onClick={() => setRailOpen((v) => !v)}
-                aria-expanded={railOpen}
-              >
-                {railOpen ? 'Hide panel' : 'Chat & queue'}
-              </Button>
-              {railOpen && (
-                <div className="absolute inset-y-0 right-0 z-20 w-[392px]">
-                  <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
-                </div>
-              )}
-            </>
-          ) : (
-            <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
+            <ArrowLeftIcon size={20} aria-hidden />
+          </Link>
+          <h1 className="min-w-0 flex-1 truncate font-display text-lg font-semibold">{room.name}</h1>
+          <Badge variant={room.kind === 'watch' ? 'aurora' : 'default'}>
+            {room.kind === 'watch' ? 'Watch' : 'Listen'}
+          </Badge>
+          <Badge variant="muted" className="hidden font-mono sm:inline-flex">
+            {formatInviteCode(room.inviteCode)}
+          </Badge>
+          <ExpiryChip room={room} />
+          {member.role !== 'member' && <Badge variant="default">{ROLE_LABEL[member.role]}</Badge>}
+          <RoomMenu room={room} canManage={canToggleTheater} />
+          {canToggleTheater && (
+            <Button
+              variant={room.theater ? 'secondary' : 'ghost'}
+              size="sm"
+              aria-pressed={room.theater}
+              aria-label={room.theater ? 'Turn theater mode off' : 'Turn theater mode on'}
+              onClick={toggleTheater}
+            >
+              <TheaterIcon size={16} aria-hidden />
+              Theater
+            </Button>
           )}
-        </div>
-      ) : (
-        <>
-          <main className="relative min-h-0 flex-1" aria-label="Stage area">
-            <ConnectionPill />
-            <CallGrid theater={room.theater} />
-            <StagePane roomId={roomId} />
-          </main>
-          <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-            <SheetContent aria-label="Chat, queue and people" className="min-h-[50dvh]">
-              <RailTabs roomId={roomId} tab={tab} onTabChange={setTab} />
-              <div className="mt-2 border-t border-border-glass">
-                <CallStrip roomId={roomId} />
-              </div>
-            </SheetContent>
-          </Sheet>
-        </>
-      )}
+          {!isDesktop && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSheetOpen(true);
+              }}
+            >
+              Chat &amp; queue
+            </Button>
+          )}
+        </header>
 
-      <ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-    </div>
+        {isDesktop ? (
+          <div className="relative flex min-h-0 flex-1">
+            <main className="relative min-w-0 flex-1" aria-label="Stage area">
+              <ConnectionPill />
+              <StagePane roomId={roomId} />
+              {/* Theater: the rail is gone, so the tiles float along the left
+                  edge — never over the middle of the picture — and can be
+                  hidden for the session. */}
+              {railCollapsed && <CallOverlay roomId={roomId} />}
+            </main>
+            {room.theater ? (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="absolute bottom-4 right-4 z-30"
+                  onClick={() => setRailOpen((v) => !v)}
+                  aria-expanded={railOpen}
+                >
+                  {railOpen ? 'Hide panel' : 'Chat & queue'}
+                </Button>
+                {railOpen && <Rail floating roomId={roomId} tab={tab} onTabChange={setTab} />}
+              </>
+            ) : (
+              <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
+            )}
+          </div>
+        ) : (
+          <>
+            <main className="relative min-h-0 flex-1" aria-label="Stage area">
+              <ConnectionPill />
+              <StagePane roomId={roomId} />
+              {!sheetOpen && <CallOverlay roomId={roomId} />}
+            </main>
+            <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+              <SheetContent aria-label="Chat, queue and people" className="min-h-[50dvh]">
+                <div className="border-b border-hairline">
+                  <CallDock roomId={roomId} />
+                </div>
+                <RailTabs roomId={roomId} tab={tab} onTabChange={setTab} />
+              </SheetContent>
+            </Sheet>
+          </>
+        )}
+
+        <ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      </div>
+    </CallSessionProvider>
   );
 }
 

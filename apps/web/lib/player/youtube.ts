@@ -2,8 +2,15 @@
  * YouTubeAdapter — Mode A YouTube over the IFrame Player API. Unlike the
  * mobile WebView (approximate sync), the web iframe exposes getCurrentTime /
  * seekTo / setPlaybackRate, so YouTube IS drift-corrected here through the
- * same sync-core math as native media. Chrome is hidden (controls=0): the
- * room's own transport bar stays authoritative.
+ * same sync-core math as native media.
+ *
+ * Chrome suppression (UX_OVERHAUL B2): `controls: 0` removes YouTube's control
+ * BAR but NOT its large centre play overlay, which still appears in the
+ * unstarted and paused states. So this adapter also (a) mounts into a throwaway
+ * inner div — the API REPLACES the element it is handed, and the stage's own
+ * container must survive that — and (b) makes the resulting iframe inert to
+ * both pointer and keyboard. The stage's click shield is the only surface the
+ * user can hit, so exactly one play affordance exists and it is ours.
  */
 import type { MediaRef } from '@playin/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
@@ -30,6 +37,8 @@ interface YTWindow {
       el: HTMLElement,
       opts: {
         videoId: string;
+        width?: string | number;
+        height?: string | number;
         playerVars: Record<string, string | number>;
         events: {
           onReady: () => void;
@@ -43,7 +52,7 @@ interface YTWindow {
   onYouTubeIframeAPIReady?: () => void;
 }
 
-const YT_STATE = { PLAYING: 1, PAUSED: 2, BUFFERING: 3, ENDED: 0 };
+const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 };
 
 let apiPromise: Promise<void> | null = null;
 
@@ -82,6 +91,7 @@ export class YouTubeAdapter implements PlayerAdapter {
   private ready = false;
   private pendingVideoId: string | null = null;
   private destroyed = false;
+  private buffering = false;
 
   /** @param container an empty div the iframe is mounted into. */
   constructor(container: HTMLElement) {
@@ -107,8 +117,15 @@ export class YouTubeAdapter implements PlayerAdapter {
           return;
         }
         const videoId = this.pendingVideoId;
-        this.player = new YT.Player(this.container, {
+        // The API replaces this node with its iframe — hand it a throwaway so
+        // the stage's own container (and its classes) stay intact.
+        const mount = document.createElement('div');
+        mount.className = 'h-full w-full';
+        this.container.replaceChildren(mount);
+        this.player = new YT.Player(mount, {
           videoId,
+          width: '100%',
+          height: '100%',
           playerVars: {
             controls: 0,
             rel: 0,
@@ -121,13 +138,24 @@ export class YouTubeAdapter implements PlayerAdapter {
           events: {
             onReady: () => {
               this.ready = true;
+              this.hardenIframe();
               this.emit('ready');
             },
             onStateChange: (ev) => {
-              if (ev.data === YT_STATE.PLAYING) this.emit('playing');
-              else if (ev.data === YT_STATE.PAUSED) this.emit('paused');
-              else if (ev.data === YT_STATE.BUFFERING) this.emit('buffering');
-              else if (ev.data === YT_STATE.ENDED) this.emit('ended');
+              if (ev.data === YT_STATE.PLAYING) {
+                this.setBuffering(false);
+                this.emit('playing');
+              } else if (ev.data === YT_STATE.PAUSED) this.emit('paused');
+              else if (ev.data === YT_STATE.BUFFERING) this.setBuffering(true);
+              else if (ev.data === YT_STATE.ENDED) {
+                this.setBuffering(false);
+                this.emit('ended');
+              }
+              // Unstarted/cued means the video is sitting behind YouTube's own
+              // centre overlay — which our shield covers. Report it as paused
+              // so the stage knows this device is not actually playing.
+              else if (ev.data === YT_STATE.UNSTARTED || ev.data === YT_STATE.CUED)
+                this.emit('paused');
             },
             onError: () => this.emit('error'),
           },
@@ -191,7 +219,28 @@ export class YouTubeAdapter implements PlayerAdapter {
     this.player?.destroy();
     this.player = null;
     this.ready = false;
+    this.buffering = false;
+    this.container.replaceChildren();
     this.listeners.clear();
+  }
+
+  /** Paired buffering edges — without them the room's wait-for-all never
+   *  clears after a YouTube stall. */
+  private setBuffering(value: boolean): void {
+    if (value === this.buffering) return;
+    this.buffering = value;
+    this.emit(value ? 'buffering' : 'buffered');
+  }
+
+  /** The stage's click shield is the only control surface: YouTube's centre
+   *  play overlay must be unreachable by pointer AND by keyboard. */
+  private hardenIframe(): void {
+    const iframe = this.container.querySelector('iframe');
+    if (iframe === null) return;
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.pointerEvents = 'none';
+    iframe.setAttribute('tabindex', '-1');
   }
 
   private emit(evt: AdapterEvent): void {

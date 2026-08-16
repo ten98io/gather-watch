@@ -12,6 +12,7 @@ import { UpdateRoomResponse } from '@playin/contracts';
 import { Ok } from '@playin/contracts';
 import type { Room, RoomId } from '@playin/contracts';
 import { apiFetch } from '@/lib/api';
+import { describeError } from '@/lib/describe-error';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -75,7 +76,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       toast.success('Room renamed');
       setOpen(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Rename failed');
+      toast.error(describeError(err, 'Could not rename the room'));
     } finally {
       setBusy(false);
     }
@@ -88,7 +89,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       toast.success('Room deleted');
       router.push('/home');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Delete failed');
+      toast.error(describeError(err, 'Could not delete the room'));
       setBusy(false);
     }
   };
