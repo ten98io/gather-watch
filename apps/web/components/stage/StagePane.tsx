@@ -23,6 +23,8 @@ import { SoundCloudAdapter } from '@/lib/player/soundcloud';
 import { VimeoAdapter } from '@/lib/player/vimeo';
 import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
+import { useExtensionDriver } from '@/lib/player/extension-driver';
+import { API_URL, getAccessToken } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PlayIcon } from '@/components/ui/icons';
@@ -199,6 +201,26 @@ function EmptyStage({ listen }: { listen: boolean }) {
   );
 }
 
+/**
+ * What the stage says while the extension is the one playing. The video is in
+ * the user's own tab on the content site, so this space explains where it went
+ * rather than pretending to be a player — the room's transport, chat, queue and
+ * call all keep working here.
+ */
+function ExtensionDrivingStage({ providerName }: { providerName: string | null }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+      <p className="font-display text-lg font-semibold text-mid">
+        {providerName === null ? 'Playing in your other tab' : `Playing on ${providerName}`}
+      </p>
+      <p className="max-w-sm text-sm text-low">
+        Everyone stays on the same second. Play, pause and skip from here or from the
+        tab — the room follows either way.
+      </p>
+    </div>
+  );
+}
+
 export function StagePane({ roomId }: { roomId: RoomId }) {
   const connection = useRoomConnection();
   const { room, member } = useRoom();
@@ -209,7 +231,23 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const reduced = useReducedMotion();
 
   const mediaRef = playback?.mediaRef ?? null;
-  const adapterKind = adapterKindFor(mediaRef);
+
+  /**
+   * WEB_SLIMMING step 2 — the extension is the preferred driver when it is
+   * there, and the web defers to it.
+   *
+   * "Defers" is the whole point: while the extension drives, this tab must not
+   * ALSO create a player. Two players for one room means two things seeking
+   * against one another and the room's own sync engine correcting a position
+   * nobody is watching. So the adapter kind goes null and no adapter is built.
+   *
+   * When the extension is absent this is inert and the web plays as before —
+   * deleting the web adapters is step 4, and it is gated on this path being
+   * verified first.
+   */
+  const extension = useExtensionDriver();
+  const extensionDriving = extension.driving;
+  const adapterKind = extensionDriving ? null : adapterKindFor(mediaRef);
   const listen = room.kind === 'listen';
   const showModeB = restream?.active === true;
   /** Room policy: may this member drive playback? */
@@ -240,6 +278,29 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug'),
     [],
   );
+
+  /**
+   * Hand this room to the extension once it is there, and hand it back when we
+   * leave. The extension needs the room-scoped token to join the room's sync
+   * stream itself; it goes only to the API origin this build already talks to,
+   * and the extension re-checks that origin against its own build (see the
+   * threat model in apps/extension/src/external.ts).
+   *
+   * `handoff`/`release` come from a module-level store, so their identities are
+   * stable and this does not re-fire every render.
+   */
+  const { ready: extensionReady, handoff, release } = extension;
+  useEffect(() => {
+    if (!extensionReady) return undefined;
+    const accessToken = getAccessToken();
+    // Signed out, or the token has not been captured yet: the next render after
+    // it arrives runs this again.
+    if (accessToken === null) return undefined;
+    void handoff({ roomId, roomName: room.name, accessToken, apiOrigin: API_URL });
+    return () => {
+      void release();
+    };
+  }, [extensionReady, roomId, room.name, handoff, release]);
 
   // ── adapter lifecycle (created per adapter kind; loaded per media identity)
   useEffect(() => {
@@ -564,6 +625,12 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       <div className="relative flex min-h-0 flex-1 items-center justify-center">
         {showModeB ? (
           <ModeBStage restream={restream} />
+        ) : extensionDriving ? (
+          <ExtensionDrivingStage
+            providerName={
+              extension.state.phase === 'ready' ? (extension.state.provider?.name ?? null) : null
+            }
+          />
         ) : (
           <>
             {/* All iframe adapters share one mount point. Full-sync providers
