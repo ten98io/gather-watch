@@ -58,6 +58,9 @@ export type { TurnCredentialManagerOptions } from './turn';
 export { MeshManager } from './mesh';
 export type { MeshConnectionState, MeshManagerOptions } from './mesh';
 
+export { classifyLinkStats } from './linkstate';
+export type { MeshLinkState } from './linkstate';
+
 export { FILE_CHUNK_SIZE, FILE_WINDOW_CHUNKS, FileShareClient, FileShareServer } from './fileshare';
 export type {
   FileShareClientOptions,
@@ -66,7 +69,7 @@ export type {
   HashFn,
 } from './fileshare';
 
-export { applyMaxBitrate, BitrateGovernor, LinkAdaptor } from './adaptation';
+export { applyMaxBitrate, BitrateGovernor, clearMaxBitrate, LinkAdaptor } from './adaptation';
 export type { BitrateGovernorOptions, LinkAdaptorOptions, LinkSample } from './adaptation';
 
 export { CfSfuProvider, LivekitProvider, MeshProvider, RelayError } from './relay';
