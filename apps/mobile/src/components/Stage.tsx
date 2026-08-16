@@ -239,10 +239,10 @@ export function Stage(props: {
 
       {restream?.active === true ? (
         <View style={styles.stageBody}>
-          <Text style={styles.modeBTitle}>Host is sharing their screen (Mode B)</Text>
+          <Text style={styles.modeBTitle}>The host is sharing their screen</Text>
           <Text style={styles.limitation}>
-            Native Mode B viewing rides the LiveKit call module, which is a documented
-            scaffold in this build (see CallBar). Nothing here is simulated.
+            Watching a screen share isn’t available in the mobile app yet — open the room
+            in a browser to see it.
           </Text>
         </View>
       ) : mediaRef === null ? (

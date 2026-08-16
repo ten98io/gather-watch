@@ -9,8 +9,8 @@ interface VimeoPlayer {
   play(): Promise<void>;
   pause(): Promise<void>;
   setCurrentTime(seconds: number): Promise<void>;
-  getCurrentTime(): Promise<number>;
-  getDuration(): Promise<number>;
+  getCurrentTime(): Promise<number>; // seconds
+  getDuration(): Promise<number>; // seconds
   setVolume(volume: number): Promise<void>; // 0..1
   getVolume(): Promise<number>;
   setPlaybackRate(rate: number): Promise<void>;
@@ -71,8 +71,10 @@ export class VimeoAdapter implements PlayerAdapter {
         this.player = player;
 
         player.on('loaded', () => {
-          void player.getDuration().then((ms) => {
-            this.duration = ms;
+          this.hardenIframe();
+          // player.js reports SECONDS; the adapter contract is milliseconds.
+          void player.getDuration().then((seconds) => {
+            this.duration = seconds * 1000;
             this.emit('durationchange');
           });
           this.emit('ready');
@@ -90,8 +92,24 @@ export class VimeoAdapter implements PlayerAdapter {
       .catch(() => this.emit('error'));
   }
 
+  /** The stage's click shield is the only control surface: keep Vimeo's own
+   *  chrome out of reach of both the pointer and the tab order. */
+  private hardenIframe(): void {
+    const iframe = this.container.querySelector('iframe');
+    if (iframe === null) return;
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.pointerEvents = 'none';
+    iframe.setAttribute('tabindex', '-1');
+  }
+
   play(): void {
-    void this.player?.play().catch(() => undefined);
+    void this.player?.play().catch((err: unknown) => {
+      // Interrupted by a newer seek/pause — not an autoplay refusal.
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'AbortError' || name === 'PlayInterrupted') return;
+      this.emit('blocked');
+    });
   }
   pause(): void {
     void this.player?.pause().catch(() => undefined);

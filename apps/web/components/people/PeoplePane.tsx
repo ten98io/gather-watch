@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { formatInviteCode } from '@playin/contracts';
 import type { MemberRole, PresenceEntry, RoomId } from '@playin/contracts';
 import { api } from '@/lib/api';
+import { ROLE_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -55,7 +56,8 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
       await navigator.clipboard.writeText(link);
       toast.success(`Invite copied: ${pretty}`);
     } catch {
-      toast.error(link); // clipboard blocked — surface the link itself
+      // Clipboard blocked — surface the link itself, explained.
+      toast.error(`Copy this invite link: ${link}`);
     }
   };
 
@@ -93,13 +95,13 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
                   {user.id === me ? ' (you)' : ''}
                 </p>
                 <p className="text-xs text-low">
-                  {m.role}
+                  {ROLE_LABEL[m.role]}
                   {p !== undefined ? ` · ${STATE_LABEL[p.state]}` : ' · offline'}
                   {p?.sharing === true ? ' · sharing' : ''}
                   {p !== undefined && p.state === 'in-call' ? (p.micOn ? ' · 🎙' : ' · 🔇') : ''}
                 </p>
               </div>
-              {m.role === 'host' && <Badge variant="aurora">host</Badge>}
+              {m.role === 'host' && <Badge variant="aurora">{ROLE_LABEL.host}</Badge>}
               {actionable && (
                 <div className="flex flex-wrap justify-end gap-1">
                   {iAmHost && (

@@ -47,6 +47,8 @@ import {
   ReplayEventsResponse,
   RequestMagicLinkBody,
   RequestMagicLinkResponse,
+  ResolveMediaBody,
+  ResolveMediaResponse,
   RevokeAllSessionsResponse,
   RevokeSessionResponse,
   SearchGifsResponse,
@@ -150,6 +152,10 @@ export class RestClient {
     listLibrary(query?: { cursor?: string; limit?: number }): Promise<ListLibraryResponse>;
     deleteAsset(assetId: AssetId): Promise<DeleteAssetResponse>;
     renameAsset(assetId: AssetId, body: RenameAssetBody): Promise<RenameAssetResponse>;
+    /** Server-side title/artwork/duration lookup for a pasted link or a
+     *  MediaRef — the paste-a-link preview and any surface that needs real
+     *  metadata before an item exists in a queue. */
+    resolveMedia(body: ResolveMediaBody): Promise<ResolveMediaResponse>;
   };
   /** Playlist endpoints. */
   readonly playlists: {
@@ -443,6 +449,14 @@ export class RestClient {
           method: 'PATCH',
           path: `/media/assets/${encodeURIComponent(assetId)}`,
           schema: RenameAssetResponse,
+          body,
+        }),
+      resolveMedia: (body) =>
+        this.request({
+          label: 'media.resolveMedia',
+          method: 'POST',
+          path: '/media/resolve',
+          schema: ResolveMediaResponse,
           body,
         }),
     };

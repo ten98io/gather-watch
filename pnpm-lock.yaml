@@ -35,6 +35,9 @@ importers:
       '@playin/p2p':
         specifier: workspace:*
         version: link:../../packages/p2p
+      '@playin/sync-core':
+        specifier: workspace:*
+        version: link:../../packages/sync-core
     devDependencies:
       '@types/chrome':
         specifier: ^0.2.6

@@ -46,6 +46,9 @@ export class NativeAdapter implements PlayerAdapter {
   load(ref: Extract<MediaRef, { kind: 'hls' | 'url' }>): void {
     const generation = (this.hlsGeneration += 1);
     this.destroyHls();
+    // Loading IS buffering: it keeps the room's wait-for-all honest, and it
+    // stops the stage mistaking "still fetching" for "the browser refused".
+    this.setBuffering(true);
     const url = ref.kind === 'hls' ? ref.url : ref.url;
     if (isHlsRef(ref) && !this.el.canPlayType('application/vnd.apple.mpegurl')) {
       void import('hls.js')
@@ -70,8 +73,16 @@ export class NativeAdapter implements PlayerAdapter {
 
   play(): void {
     // Autoplay policies may reject; the server stays authoritative and the
-    // next drift tick re-asserts play state.
-    void this.el.play().catch(() => undefined);
+    // next drift tick re-asserts play state. A refusal is reported as
+    // 'blocked' so the stage can offer the one tap that fixes it — never a
+    // silently dead player.
+    const started = this.el.play() as Promise<void> | undefined;
+    if (started === undefined) return;
+    void started.catch((err: unknown) => {
+      // AbortError = a newer load()/pause() superseded this play, not a block.
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      this.emit('blocked');
+    });
   }
 
   pause(): void {

@@ -15,6 +15,7 @@ import type { StorePort } from '../src/adapters/ports';
 import { memberDocId } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 import type { Deps } from '../src/modules/types';
+import { registerMetadataResolver } from '../src/modules/metadata/resolver';
 import { addMember, makeApp, seedRoom, signupUser } from './helpers';
 import type { SignedUpUser } from './helpers';
 
@@ -77,6 +78,40 @@ function nextOfType(sock: WebSocket, type: string, timeoutMs = 2000): Promise<Fr
 
 function clientFrame(roomId: string, type: string, payload: unknown): string {
   return JSON.stringify({ type, roomId, seq: 0, ts: Date.now(), payload });
+}
+
+/** The next `count` frames of a type, with the listener attached BEFORE the
+ *  triggering send — the only race-free way to observe two broadcasts that
+ *  can land back to back (an add and its metadata patch). */
+function collectOfType(
+  sock: WebSocket,
+  type: string,
+  count: number,
+  timeoutMs = 3000,
+): Promise<Frame[]> {
+  return new Promise((resolve, reject) => {
+    const frames: Frame[] = [];
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      sock.off('message', onMessage);
+    };
+    const onMessage = (data: RawData): void => {
+      const frame = JSON.parse(data.toString()) as Frame;
+      if (frame.type !== type) return;
+      frames.push(frame);
+      if (frames.length === count) {
+        cleanup();
+        resolve(frames);
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(`timed out waiting for ${count} "${type}" frames (got ${frames.length})`),
+      );
+    }, timeoutMs);
+    sock.on('message', onMessage);
+  });
 }
 
 /** Resolves 'event' when a frame of the type arrives within the window,
@@ -206,6 +241,71 @@ describe('queue module', () => {
     room = await store.rooms.findById(roomId);
     expect(room!.queue.version).toBe(4);
     expect(room!.queue.items).toHaveLength(1);
+  });
+
+  // ── server-side metadata enrichment ────────────────────────────────────────
+
+  it('stores the client hint at once, then broadcasts the resolved metadata', async () => {
+    registerMetadataResolver(deps, {
+      resolve: async () => ({
+        title: 'Real Song Title',
+        artworkUrl: 'https://img.example/cover.jpg',
+        durationMs: 205_000,
+        providerId: 'direct',
+        providerName: 'Direct link',
+        authorName: 'Some Artist',
+        canonicalId: null,
+        canonicalUrl: 'https://example.com/a.mp3',
+        source: 'provider',
+      }),
+    });
+    const { roomId } = await seedRoom(store);
+    const host = await join('host@example.com', roomId, 'host');
+    const member = await join('member@example.com', roomId, 'member');
+
+    // Both broadcasts are observed from the moment the add is sent.
+    const hostFrames = collectOfType(host.sock, 'queue.state', 2);
+    const memberFrames = collectOfType(member.sock, 'queue.state', 2);
+    host.sock.send(clientFrame(roomId, 'queue.add', { item: itemInput('Pasted link') }));
+    const [added, enriched] = await hostFrames;
+
+    // v1: exactly what the client sent — the add is never blocked on a lookup.
+    expect(added?.payload.version).toBe(1);
+    expect(added?.payload.items[0].title).toBe('Pasted link');
+    expect(added?.payload.items[0].artworkUrl).toBeNull();
+    expect(added?.payload.items[0].durationMs).toBeNull();
+
+    // v2: the same item, patched with the resolved metadata.
+    expect(enriched?.payload.version).toBe(2);
+    expect(enriched?.payload.items).toHaveLength(1);
+    expect(enriched?.payload.items[0].id).toBe(added?.payload.items[0].id);
+    expect(enriched?.payload.items[0].title).toBe('Real Song Title');
+    expect(enriched?.payload.items[0].artworkUrl).toBe('https://img.example/cover.jpg');
+    expect(enriched?.payload.items[0].durationMs).toBe(205_000);
+
+    // Every client in the room sees the patch, not just the adder.
+    const memberSeen = await memberFrames;
+    expect(memberSeen[1]?.payload).toEqual(enriched?.payload);
+
+    // …and it is persisted, so late joiners get the enriched snapshot.
+    const room = await store.rooms.findById(roomId);
+    expect(room!.queue.items[0]!.title).toBe('Real Song Title');
+    expect(room!.queue.items[0]!.artworkUrl).toBe('https://img.example/cover.jpg');
+    expect(room!.queue.version).toBe(2);
+  });
+
+  it('leaves the queue alone when the resolver has nothing to add', async () => {
+    registerMetadataResolver(deps, { resolve: async () => null });
+    const { roomId } = await seedRoom(store);
+    const host = await join('host@example.com', roomId, 'host');
+
+    const pState = nextOfType(host.sock, 'queue.state');
+    host.sock.send(clientFrame(roomId, 'queue.add', { item: itemInput('Pasted link') }));
+    expect((await pState).payload.version).toBe(1);
+
+    // No follow-up broadcast, no version bump.
+    expect(await hearsWithin(host.sock, 'queue.state', 300)).toBe('silent');
+    expect((await store.rooms.findById(roomId))!.queue.version).toBe(1);
   });
 
   // ── reorder validation ─────────────────────────────────────────────────────

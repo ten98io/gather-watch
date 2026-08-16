@@ -18,14 +18,15 @@ export default function TermsPage() {
       <h2>2. Your responsibilities</h2>
       <p>
         You are responsible for the content you stream, upload, and share, and for having the
-        rights to share it. Re-streaming (Mode B) is for non-DRM and user-made content only.
+        rights to share it. Screen re-streaming is for unprotected and user-made content only.
         Do not use Playin to infringe copyright, harass others, or distribute illegal material.
       </p>
 
       <h2>3. Plans</h2>
       <p>
-        The Free plan includes every feature with peer-to-peer physics limits (mesh caps on
-        publishers and share viewers). Premium adds Theater-mode relay capacity and higher
+        The Free plan includes every feature, with the limits that come from sending media
+        directly between devices (caps on how many people can be on camera or mic, and how
+        many can watch a screen share). Premium adds Theater-mode relay capacity and higher
         quotas. Paid plans are billed through Stripe; you can cancel any time from Settings,
         and cancellation takes effect at the end of the current period.
       </p>

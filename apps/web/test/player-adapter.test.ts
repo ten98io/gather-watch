@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaRef } from '@playin/contracts';
-import { adapterKindFor, isHlsRef, mediaKey } from '@/lib/player/adapter';
+import { adapterKindFor, isHlsRef, mediaKey, stageGate } from '@/lib/player/adapter';
 
 describe('adapterKindFor', () => {
   it('routes youtube to the iframe adapter, everything else native', () => {
@@ -19,6 +19,33 @@ describe('isHlsRef', () => {
     expect(isHlsRef({ kind: 'url', url: 'https://x/y', mime: 'application/x-mpegURL' })).toBe(true);
     expect(isHlsRef({ kind: 'url', url: 'https://x/y.m3u8?tok=1', mime: 'video/mp4' })).toBe(true);
     expect(isHlsRef({ kind: 'url', url: 'https://x/y.mp4', mime: 'video/mp4' })).toBe(false);
+  });
+});
+
+describe('stageGate', () => {
+  const base = { active: true, wantsPlay: false, localPlaying: false, blocked: false };
+
+  it('shows nothing when no provider surface is on screen', () => {
+    expect(stageGate({ ...base, active: false })).toBe('none');
+    expect(stageGate({ ...base, active: false, wantsPlay: false })).toBe('none');
+  });
+
+  it('covers the provider whenever the room is paused', () => {
+    expect(stageGate(base)).toBe('paused');
+    // Even if this device is somehow still rolling, the room is the truth.
+    expect(stageGate({ ...base, localPlaying: true })).toBe('paused');
+  });
+
+  it('stays transparent while playback is actually running', () => {
+    expect(stageGate({ ...base, wantsPlay: true, localPlaying: true })).toBe('none');
+    // Not started yet, but nothing says it was refused — no premature prompt.
+    expect(stageGate({ ...base, wantsPlay: true })).toBe('none');
+  });
+
+  it('asks for a gesture only when the browser refused to start', () => {
+    expect(stageGate({ ...base, wantsPlay: true, blocked: true })).toBe('blocked');
+    // A refusal that has since resolved must not keep the prompt up.
+    expect(stageGate({ ...base, wantsPlay: true, blocked: true, localPlaying: true })).toBe('none');
   });
 });
 

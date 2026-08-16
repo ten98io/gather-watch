@@ -9,12 +9,15 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
+import { castAffordanceFor } from './cast';
+import type { TabProvider } from './providers';
+
 interface Status {
   connected: boolean;
   roomName: string | null;
   playing: boolean;
   telemetry: { positionMs: number; durationMs: number; playing: boolean } | null;
-  provider: { id: string; name: string; tier: string } | null;
+  provider: TabProvider | null;
 }
 
 async function send<T>(msg: Record<string, unknown>): Promise<T> {
@@ -38,13 +41,22 @@ async function refresh(): Promise<void> {
     ? `Connected to ${status.roomName ?? 'room'}${status.playing ? ' · playing' : ' · paused'}`
     : 'Not connected';
   $('provider').textContent = status.provider
-    ? `This tab: ${status.provider.name}${status.provider.tier === 'drm' ? ' (DRM — your own player)' : ''}`
+    ? `This tab: ${status.provider.name}${status.provider.drm === true ? ' (protected — your own player)' : ''}`
     : '';
   $('connect-card').hidden = status.connected;
   $('live-card').hidden = !status.connected;
   if (status.telemetry !== null && status.telemetry.durationMs > 0) {
     $('provider').textContent += ` — ${fmt(status.telemetry.positionMs)} / ${fmt(status.telemetry.durationMs)}`;
   }
+
+  // The cast control is always visible: when Playin cannot act it says why,
+  // instead of disappearing (docs/EXTENSION_FIRST.md, Part 3).
+  const affordance = castAffordanceFor(status.provider);
+  const castBtn = $<HTMLButtonElement>('cast');
+  castBtn.textContent = affordance.label;
+  castBtn.disabled = !affordance.enabled;
+  $('cast-reason').textContent = affordance.reason;
+  $('cast-reason').hidden = affordance.reason.length === 0;
 }
 
 $('connect').addEventListener('click', () => {
@@ -81,6 +93,23 @@ $('share').addEventListener('click', () => {
     .finally(() => {
       btn.disabled = false;
       if (btn.textContent === 'Sharing…') btn.textContent = 'Sharing — stop from the room';
+    });
+});
+
+$('cast').addEventListener('click', () => {
+  const btn = $<HTMLButtonElement>('cast');
+  btn.disabled = true;
+  send<{ clicked: boolean; reason: string }>({ kind: 'popup:cast' })
+    .then((res) => {
+      $('cast-reason').textContent = res.reason;
+      $('cast-reason').hidden = res.reason.length === 0;
+    })
+    .catch((err: unknown) => {
+      $('cast-reason').textContent = err instanceof Error ? err.message : 'Cast failed';
+      $('cast-reason').hidden = false;
+    })
+    .finally(() => {
+      btn.disabled = false;
     });
 });
 

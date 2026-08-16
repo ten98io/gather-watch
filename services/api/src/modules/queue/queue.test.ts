@@ -1,15 +1,19 @@
 /**
- * QueueService.voteSkip unit tests over faked Deps (no HTTP, no adapters):
- * threshold math (AT the fraction, not beyond), threshold 0 = record-only,
- * threshold 1 = unanimous, and the leaver-tips-threshold regression — when
- * disconnects shrink the active set enough that already-cast votes now meet
- * the fraction, the next vote (even a repeat vote) MUST fire the skip
- * instead of short-circuiting as a no-op forever.
+ * QueueService unit tests over faked Deps (no HTTP, no adapters):
+ *
+ *  • voteSkip — threshold math (AT the fraction, not beyond), threshold 0 =
+ *    record-only, threshold 1 = unanimous, and the leaver-tips-threshold
+ *    regression: when disconnects shrink the active set enough that
+ *    already-cast votes now meet the fraction, the next vote (even a repeat
+ *    vote) MUST fire the skip instead of short-circuiting as a no-op forever.
+ *  • add — the client's metadata is a sanitized HINT stored immediately, and
+ *    the resolved metadata is patched in afterwards with a second broadcast.
  */
 import { describe, expect, it } from 'vitest';
-import type { QueueItemId, RoomId, UserId } from '@playin/contracts';
+import type { MediaRef, QueueItemId, ResolvedMedia, RoomId, UserId } from '@playin/contracts';
 import { memberDocId } from '../../adapters/ports';
 import type { Deps } from '../types';
+import { registerMetadataResolver } from '../metadata/resolver';
 import { QueueService } from './service';
 
 interface FakeRoom {
@@ -20,10 +24,10 @@ interface FakeRoom {
 }
 interface FakeItem {
   id: string;
-  mediaRef: { kind: string; url: string; mime: string };
+  mediaRef: { kind: string; url?: string; mime?: string; videoId?: string };
   title: string;
-  durationMs: number;
-  artworkUrl: null;
+  durationMs: number | null;
+  artworkUrl: string | null;
   addedBy: string;
   votesToSkip: string[];
 }
@@ -156,3 +160,150 @@ describe('QueueService.voteSkip', () => {
     expect(has(room, 'a')).toBe(false);
   });
 });
+
+// ── add + background metadata enrichment ─────────────────────────────────────
+
+const YT_REF: MediaRef = { kind: 'youtube', videoId: 'dQw4w9WgXcQ' };
+
+function resolved(patch: Partial<ResolvedMedia> = {}): ResolvedMedia {
+  return {
+    title: 'Rick Astley - Never Gonna Give You Up',
+    artworkUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    durationMs: 213_000,
+    providerId: 'youtube',
+    providerName: 'YouTube',
+    authorName: 'Rick Astley',
+    canonicalId: 'dQw4w9WgXcQ',
+    canonicalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    source: 'provider',
+    ...patch,
+  };
+}
+
+describe('QueueService.add metadata', () => {
+  it('enqueues the hint immediately, then patches in resolved metadata and re-broadcasts', async () => {
+    const room = makeRoom([]);
+    const { deps, emitted } = makeDeps(room, ['A']);
+    registerMetadataResolver(deps, { resolve: async () => resolved() });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: 'YouTube video',
+      durationMs: null,
+      artworkUrl: null,
+    });
+
+    // The add itself never waits on the lookup: v1 is already stored + sent.
+    expect(room.queue.items).toHaveLength(1);
+    expect(room.queue.items[0]?.title).toBe('YouTube video');
+    expect(room.queue.version).toBe(1);
+    expect(emitted).toHaveLength(1);
+
+    await service.settleEnrichment();
+
+    expect(room.queue.items[0]?.title).toBe('Rick Astley - Never Gonna Give You Up');
+    expect(room.queue.items[0]?.artworkUrl).toBe(
+      'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    );
+    expect(room.queue.items[0]?.durationMs).toBe(213_000);
+    expect(room.queue.version).toBe(2);
+    expect(emitted).toHaveLength(2);
+    expect(emitted[1]?.type).toBe('queue.state');
+  });
+
+  it('sanitizes the client hint before it is ever stored', async () => {
+    const room = makeRoom([]);
+    const { deps } = makeDeps(room, ['A']);
+    registerMetadataResolver(deps, { resolve: async () => null });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: '  Spaced     out  ',
+      durationMs: 999 * 60 * 60 * 1000, // absurd
+      artworkUrl: 'http://insecure.example/a.jpg', // mixed content
+    });
+
+    expect(room.queue.items[0]?.title).toBe('Spaced out');
+    expect(room.queue.items[0]?.durationMs).toBeNull();
+    expect(room.queue.items[0]?.artworkUrl).toBeNull();
+  });
+
+  it('leaves the item untouched when nothing could be fetched', async () => {
+    const room = makeRoom([]);
+    const { deps, emitted } = makeDeps(room, ['A']);
+    registerMetadataResolver(deps, {
+      resolve: async () => resolved({ source: 'link', title: 'derived from the link' }),
+    });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: 'YouTube video',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    await service.settleEnrichment();
+
+    expect(room.queue.items[0]?.title).toBe('YouTube video');
+    expect(room.queue.version).toBe(1);
+    expect(emitted).toHaveLength(1); // no second broadcast
+  });
+
+  it('never resurrects an item removed while the lookup was in flight', async () => {
+    const room = makeRoom([]);
+    const { deps, emitted } = makeDeps(room, ['A']);
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    registerMetadataResolver(deps, {
+      resolve: async () => {
+        await gate;
+        return resolved();
+      },
+    });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: 'YouTube video',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    const added = room.queue.items[0];
+    expect(added).toBeDefined();
+    await service.remove(rid, uid('A'), iid(added?.id ?? ''));
+    expect(room.queue.items).toHaveLength(0);
+
+    release();
+    await service.settleEnrichment();
+
+    expect(room.queue.items).toHaveLength(0);
+    expect(emitted).toHaveLength(2); // the add and the remove, nothing else
+  });
+
+  it('swallows a resolver failure — a provider outage never breaks an add', async () => {
+    const room = makeRoom([]);
+    const { deps, emitted } = makeDeps(room, ['A']);
+    registerMetadataResolver(deps, {
+      resolve: async () => {
+        throw new Error('provider exploded');
+      },
+    });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: 'YouTube video',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    await service.settleEnrichment();
+
+    expect(room.queue.items).toHaveLength(1);
+    expect(emitted).toHaveLength(1);
+  });
+});
+

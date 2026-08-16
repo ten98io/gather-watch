@@ -12,7 +12,7 @@ import type { RtcPeerConnectionLike } from '@playin/p2p';
 import { RoomSocket } from '@playin/api-client';
 import type { RoomId, UserId } from '@playin/contracts';
 
-const WS_URL = 'ws://localhost:4000/ws';
+import { WS_URL } from './config';
 
 let mesh: MeshManager | null = null;
 let socket: RoomSocket | null = null;

@@ -2,17 +2,37 @@ import type { ReactElement, ReactNode } from 'react';
 import { cloneElement, isValidElement } from 'react';
 import { cn } from '@/lib/cn';
 
+export type TooltipAlign = 'center' | 'start' | 'end';
+
 export interface TooltipProps {
   content: string;
   children: ReactNode;
+  /**
+   * Horizontal anchoring of the bubble. Use `start`/`end` for controls that sit
+   * against a container edge (the transport bar's first and last buttons) so the
+   * bubble grows inward instead of overflowing the clipped stage.
+   */
+  align?: TooltipAlign;
   className?: string;
 }
 
+const alignClasses: Record<TooltipAlign, string> = {
+  center: 'left-1/2 -translate-x-1/2',
+  start: 'left-0',
+  end: 'right-0',
+};
+
 /**
  * CSS-only tooltip on hover/focus; also injects `aria-label` into a single
- * element child so the label is available to assistive tech.
+ * element child so the label is available to assistive tech. The bubble itself
+ * is `aria-hidden` — it only duplicates that label visually.
+ *
+ * Renders above the trigger (`-top-9`), which is what the bottom-docked player
+ * bar needs. Hover reveal is delayed 300 ms so sweeping the pointer across a row
+ * of controls doesn't flash a trail of bubbles; hiding and keyboard focus are
+ * instant.
  */
-export function Tooltip({ content, children, className }: TooltipProps) {
+export function Tooltip({ content, children, align = 'center', className }: TooltipProps) {
   const child = isValidElement(children)
     ? cloneElement(children as ReactElement<Record<string, unknown>>, {
         'aria-label': content,
@@ -22,11 +42,16 @@ export function Tooltip({ content, children, className }: TooltipProps) {
     <span className={cn('group relative inline-flex', className)}>
       {child}
       <span
-        role="tooltip"
+        aria-hidden
         className={cn(
-          'pointer-events-none absolute -top-9 left-1/2 z-[65] -translate-x-1/2 whitespace-nowrap',
-          'glass-raised rounded-ctl px-2.5 py-1 text-xs text-hi opacity-0 transition-opacity duration-150',
-          'group-hover:opacity-100 group-focus-within:opacity-100',
+          // pointer-events-none: the bubble must never swallow the hover (or the
+          // click) meant for the control it describes.
+          'pointer-events-none absolute -top-9 z-[65] whitespace-nowrap',
+          'glass-raised rounded-ctl px-2.5 py-1 text-xs text-hi',
+          'opacity-0 transition-opacity duration-150 [transition-delay:0ms]',
+          'group-hover:opacity-100 group-hover:[transition-delay:300ms]',
+          'group-focus-within:opacity-100 group-focus-within:[transition-delay:0ms]',
+          alignClasses[align],
         )}
       >
         {content}

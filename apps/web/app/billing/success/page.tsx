@@ -12,8 +12,9 @@ export default function BillingSuccessPage() {
         <Logo size={56} />
         <h1 className="font-display text-display font-bold">Theater mode unlocked</h1>
         <p className="text-sm text-mid">
-          Premium is active on your account — relay capacity, bigger rooms, higher quotas.
-          The badge in your rooms switches to “Relayed · Theater”.
+          Premium is active on your account — bigger rooms, more people on camera, higher
+          upload limits. In Theater rooms the stage badge reads “Relayed · Theater” instead
+          of “Private · device-to-device”.
         </p>
         <Link href="/home" className="w-full">
           <Button size="lg" className="w-full">Back to your rooms</Button>

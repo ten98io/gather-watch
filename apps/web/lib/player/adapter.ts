@@ -6,7 +6,15 @@
  */
 import type { MediaRef } from '@playin/contracts';
 
-/** Playback lifecycle events every adapter emits. */
+/**
+ * Playback lifecycle events every adapter emits.
+ *
+ * Contract notes (all adapters, no exceptions):
+ *  - `ended` MUST fire when the source runs out, so the room can auto-advance.
+ *  - `blocked` MUST fire when the browser refuses a play() we asked for
+ *    (autoplay policy). The stage turns it into one "start watching" tap
+ *    instead of a silently dead player.
+ */
 export type AdapterEvent =
   | 'ready' // source loaded, position/duration meaningful
   | 'playing'
@@ -14,6 +22,7 @@ export type AdapterEvent =
   | 'ended'
   | 'buffering' // stalled / waiting
   | 'buffered' // recovered from a stall
+  | 'blocked' // the browser refused to start playback without a gesture
   | 'durationchange'
   | 'error';
 
@@ -24,10 +33,12 @@ export interface PlayerAdapter {
   load(ref: MediaRef): void;
   play(): void;
   pause(): void;
+  /** @param ms MILLISECONDS — every adapter converts to its own unit. */
   seekTo(ms: number): void;
   setRate(rate: number): void;
+  /** MILLISECONDS since the start of the source. */
   positionMs(): number;
-  /** 0 while unknown (pre-metadata / YouTube pre-ready). */
+  /** MILLISECONDS; 0 while unknown (pre-metadata / YouTube pre-ready). */
   durationMs(): number;
   setMuted(muted: boolean): void;
   isMuted(): boolean;
@@ -66,6 +77,35 @@ export function adapterKindFor(ref: MediaRef | null): AdapterKind | null {
 /** True when the adapter kind supports transport + drift correction. */
 export function isFullSyncKind(kind: AdapterKind | null): boolean {
   return kind === 'native' || kind === 'youtube' || kind === 'soundcloud' || kind === 'vimeo';
+}
+
+/**
+ * What the stage's click shield is showing over the provider surface
+ * (UX_OVERHAUL B2 — exactly one play affordance at a time):
+ *  - 'none'    → the shield is transparent; it only swallows pointer events so
+ *                the provider's own overlay can never be clicked.
+ *  - 'paused'  → the room is paused; our backdrop covers the provider's centre
+ *                overlay and shows the single centre play ring.
+ *  - 'blocked' → the room is playing but this browser refused to start; the
+ *                one affordance is "start watching/listening together".
+ */
+export type StageGate = 'none' | 'paused' | 'blocked';
+
+/** Pure gate decision, so the stage's overlay rules stay testable. */
+export function stageGate(input: {
+  /** A full-sync provider surface is on screen (shield mounted). */
+  active: boolean;
+  /** Room-authoritative: playback should be running. */
+  wantsPlay: boolean;
+  /** This device's player reports it is actually running. */
+  localPlaying: boolean;
+  /** play() was refused, or never started long after we asked. */
+  blocked: boolean;
+}): StageGate {
+  if (!input.active) return 'none';
+  if (!input.wantsPlay) return 'paused';
+  if (!input.localPlaying && input.blocked) return 'blocked';
+  return 'none';
 }
 
 /** True when the ref's bytes are HLS (m3u8) rather than progressive. */

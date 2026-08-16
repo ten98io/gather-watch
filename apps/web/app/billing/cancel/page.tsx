@@ -12,7 +12,7 @@ export default function BillingCancelPage() {
         <Logo size={56} />
         <h1 className="font-display text-display font-bold">No charge made</h1>
         <p className="text-sm text-mid">
-          Checkout was canceled. The Free plan is the full product — mesh physics limits and
+          Checkout was canceled. The Free plan is the full product — group-size limits and
           all — so nothing is lost by staying.
         </p>
         <div className="flex w-full gap-2">
