@@ -1,5 +1,5 @@
 /**
- * Public surface of @playin/p2p — the isomorphic WebRTC mesh engine.
+ * Public surface of @gather/p2p — the isomorphic WebRTC mesh engine.
  *
  * The internal base64 codec (b64.ts) is deliberately NOT exported.
  */

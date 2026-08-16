@@ -13,7 +13,7 @@
  *
  * Provider ids mirror apps/web/lib/providers.ts so a client can map id → icon.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 
 export interface OEmbedEndpoint {
   /** Absolute endpoint URL; the item URL is added as the `url` query param. */

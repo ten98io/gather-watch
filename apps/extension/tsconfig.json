@@ -18,7 +18,7 @@
     // module is dependency-free TypeScript, so bundling it costs nothing.
     // vitest.config.ts carries the same alias for the test runner.
     "paths": {
-      "@playin/sync-core": ["../../packages/sync-core/src/index.ts"]
+      "@gather/sync-core": ["../../packages/sync-core/src/index.ts"]
     }
   },
   "include": ["src", "test"]

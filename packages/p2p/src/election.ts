@@ -8,7 +8,7 @@
  * verdict (sync.masterChanged) always overrides local state.
  */
 
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import type { NowFn } from './types';
 
 /** A connected remote peer as election input. */

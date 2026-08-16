@@ -4,7 +4,7 @@
  * server-only realtime snapshots (playback/queue/restream/master) and
  * MemberDoc's internal fields (id, per-room mute) can never leak to clients.
  */
-import type { Member, Room } from '@playin/contracts';
+import type { Member, Room } from '@gather/contracts';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only

@@ -150,7 +150,7 @@ interface FakeNavigator {
   userAgentData?: { brands: { brand: string; version: string }[]; mobile: boolean };
 }
 
-/** A browser with no Playin extension: chrome object, but no runtime channel. */
+/** A browser with no Gather extension: chrome object, but no runtime channel. */
 function installExtensionlessWindow(navigator: FakeNavigator, hasChromeObject = true): void {
   (globalThis as unknown as { window?: unknown }).window = {
     ...(hasChromeObject ? { chrome: {} } : {}),
@@ -166,7 +166,7 @@ function installExtensionlessWindow(navigator: FakeNavigator, hasChromeObject = 
  *  inlines it at build time instead, so the shape is the same either way).
  *  Must await inside the try, or the id is gone before detection settles. */
 async function withInstallId<T>(run: () => Promise<T>): Promise<T> {
-  const key = 'NEXT_PUBLIC_PLAYIN_EXTENSION_ID';
+  const key = 'NEXT_PUBLIC_GATHER_EXTENSION_ID';
   const previous = process.env[key];
   process.env[key] = EXT_ID;
   try {
@@ -323,7 +323,7 @@ describe('detection states (fake chrome)', () => {
     if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
     expect(state.reason).toBe('unsupported-browser');
     expect(state.canInstall).toBe(false);
-    expect(state.message).toContain('Playin app');
+    expect(state.message).toContain('Gather app');
     off();
   });
 
@@ -492,7 +492,7 @@ describe('which browser this is (no extension present)', () => {
       expect(state.reason).toBe('unsupported-browser');
       expect(state.canInstall).toBe(false);
       expect(state.installUrl).toBeNull();
-      expect(state.message).toContain('Playin app');
+      expect(state.message).toContain('Gather app');
     }
   });
 

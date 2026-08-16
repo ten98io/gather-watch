@@ -45,7 +45,7 @@ const room = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('@playin/api-client', () => ({
+vi.mock('@gather/api-client', () => ({
   RoomSocket: class {
     readonly clock = { serverNow: (now: number) => now };
 

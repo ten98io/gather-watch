@@ -11,7 +11,7 @@
  * map is surfaced in the hints).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { PlaybackState } from '@playin/contracts';
+import type { PlaybackState } from '@gather/contracts';
 import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { Tooltip } from '@/components/ui/tooltip';

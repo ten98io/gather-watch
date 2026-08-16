@@ -1,10 +1,10 @@
 /**
  * RTC REST endpoints. Registered WITHOUT a prefix — paths must match
- * @playin/api-client exactly. Both routes require a verified identity;
+ * @gather/api-client exactly. Both routes require a verified identity;
  * guests are allowed (livekit-token confines them to their invite room).
  */
 import type { FastifyPluginAsync } from 'fastify';
-import { LivekitTokenBody } from '@playin/contracts';
+import { LivekitTokenBody } from '@gather/contracts';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import { serviceFor } from './index';

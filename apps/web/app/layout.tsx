@@ -15,12 +15,12 @@ const sans = Inter({ subsets: ['latin'], variable: '--font-sans' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' });
 
 export const metadata: Metadata = {
-  title: { default: 'Playin', template: '%s · Playin' },
+  title: { default: 'Gather', template: '%s · Gather' },
   description:
-    'Playin — self-hosted watch parties. Synced playback, calls and chat in a private cinema drifting through space.',
+    'Gather — self-hosted watch parties. Synced playback, calls and chat in a private cinema drifting through space.',
   manifest: '/manifest.webmanifest',
-  applicationName: 'Playin',
-  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'Playin' },
+  applicationName: 'Gather',
+  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'Gather' },
   formatDetection: { telephone: false },
 };
 
@@ -35,7 +35,7 @@ export const viewport: Viewport = {
 };
 
 /** Set data-theme before first paint so the dark default never flashes light. */
-const themeInit = `(function(){try{var t=localStorage.getItem('playin:theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='dark';}})();`;
+const themeInit = `(function(){try{var t=localStorage.getItem('gather:theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='dark';}})();`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (

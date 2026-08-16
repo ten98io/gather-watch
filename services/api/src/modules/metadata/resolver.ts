@@ -21,7 +21,7 @@
  * fail a queue add. It returns null only when the input is not a link we can
  * classify at all.
  */
-import type { MediaRef, ResolvedMedia } from '@playin/contracts';
+import type { MediaRef, ResolvedMedia } from '@gather/contracts';
 import { createSafeFetcher } from '../../lib/safe-fetch';
 import type { LookupFn, SafeFetcher } from '../../lib/safe-fetch';
 import { absoluteImageUrl, parseOgTags } from '../chat/unfurl';
@@ -208,7 +208,7 @@ export function createMetadataResolver(options: MetadataResolverOptions = {}): M
       ? {}
       : { allowPrivateAddresses: options.allowPrivateAddresses }),
     timeoutMs: options.timeoutMs ?? 4000,
-    userAgent: 'playin-metadata/1.0',
+    userAgent: 'gather-metadata/1.0',
     label: 'metadata lookup',
   };
 

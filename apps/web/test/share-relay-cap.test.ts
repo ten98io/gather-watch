@@ -6,7 +6,7 @@
  * premium path has to be explicit.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
 import {
   CallMesh,
   FREE_SHARE_RELAY_KBPS,

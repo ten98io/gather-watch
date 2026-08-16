@@ -5,8 +5,8 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { formatInviteCode, normalizeInviteCode } from '@playin/contracts';
-import type { Room } from '@playin/contracts';
+import { formatInviteCode, normalizeInviteCode } from '@gather/contracts';
+import type { Room } from '@gather/contracts';
 import { makeApp, signupUser } from './helpers';
 import type { TestApp } from './helpers';
 import { sweepExpiredRooms } from '../src/modules/rooms/service';

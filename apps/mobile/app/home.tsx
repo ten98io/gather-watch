@@ -7,7 +7,7 @@ import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-na
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import type { InviteCode, RoomKind } from '@playin/contracts';
+import type { InviteCode, RoomKind } from '@gather/contracts';
 import { api } from '../src/api';
 import { useAuth } from '../src/auth';
 import { palette, radii, spacing, type as typeScale } from '../src/theme';

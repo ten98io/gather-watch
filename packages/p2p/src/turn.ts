@@ -5,7 +5,7 @@
  * fraction of the TTL, and backs off (with doubling) on fetch failures.
  */
 
-import type { TurnCredentialsResponse } from '@playin/contracts';
+import type { TurnCredentialsResponse } from '@gather/contracts';
 import type { ClearTimeoutFn, IceServerLike, NowFn, SetTimeoutFn, TimeoutHandle } from './types';
 
 /** Options for {@link TurnCredentialManager}. */

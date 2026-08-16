@@ -5,13 +5,13 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import {
   AdminMetricsResponse,
   AdminOverviewResponse,
   AdminReportsResponse,
   AdminUsageResponse,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { makeApp, seedRoom, signupUser, testConfig } from '../../../test/helpers';
 import type { TestApp } from '../../../test/helpers';
 import { newId } from '../../../src/lib/tokens';

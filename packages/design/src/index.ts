@@ -1,5 +1,5 @@
 /**
- * @playin/design — the single source of truth for the Playin design system.
+ * @gather/design — the single source of truth for the Gather design system.
  *
  * Owns: every colour, scale and emitter the product renders from. DESIGN.md
  * stays the prose statement of intent; this package is the executable one.

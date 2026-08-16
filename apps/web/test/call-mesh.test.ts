@@ -4,7 +4,7 @@
  * happens to negotiate; a pane that subscribed later used to miss it forever.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
 import { CallMesh, closeCallMesh, getCallMesh } from '@/lib/call-mesh';
 import type { RoomConnection } from '@/lib/room-connection';
 

@@ -7,7 +7,7 @@
  */
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { CreateCheckoutSessionBody } from '@playin/contracts';
+import { CreateCheckoutSessionBody } from '@gather/contracts';
 import { newId } from '../../lib/tokens';
 import { parseWith } from '../../plugins/error-mapper';
 import { requireAuth } from '../../plugins/auth';
@@ -16,7 +16,7 @@ import { billingServiceFor } from './service';
 import { processStripeWebhook, stashRawBody } from './webhook';
 
 // ── Usage metering body (NO contract exists yet — defined here per the brief
-//    and EXPORTED for a later promotion into @playin/contracts) ─────────────
+//    and EXPORTED for a later promotion into @gather/contracts) ─────────────
 
 /** Per-unit per-sample caps: nothing a client may meter exceeds a "1 TB/day"
  *  order of magnitude; negative amounts are rejected by the schema itself. */

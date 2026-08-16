@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Playin — Watch Together",
+  "name": "Gather — Watch Together",
   "version": "0.1.0",
   "description": "Watch and listen together in sync on any site — everyone plays their own copy, signed in to their own account. Or share a tab, a window or your screen with the room.",
   "permissions": [
@@ -25,15 +25,15 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Playin"
+    "default_title": "Gather"
   },
   "externally_connectable": {
     "matches": [
       "http://localhost:3000/*",
       "http://127.0.0.1:3000/*",
-      "https://playin.app/*",
-      "https://www.playin.app/*",
-      "https://app.playin.app/*"
+      "https://gather.watch/*",
+      "https://www.gather.watch/*",
+      "https://app.gather.watch/*"
     ]
   },
   "icons": {}

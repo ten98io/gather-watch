@@ -12,7 +12,7 @@ export const billingModule: ModulePlugin = {
 export default billingModule;
 
 // Public seams: rooms policy evaluation (getCaps) and the usage body schema
-// slated for promotion into @playin/contracts.
+// slated for promotion into @gather/contracts.
 export { getCaps, wireEntitlementsPort } from './entitlements';
 export type { RoomCaps } from './entitlements';
 export { UsageIngestBody, USAGE_UNIT_MAX_AMOUNT } from './routes';

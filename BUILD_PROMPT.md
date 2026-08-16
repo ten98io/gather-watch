@@ -1,4 +1,4 @@
-# Playin — Build Spec v3 (FULL SCOPE)
+# Gather — Build Spec v3 (FULL SCOPE)
 
 > The build bible. Worker briefs are cut from this document. No MVP trimming — every
 > feature below ships. Decisions are locked; do not re-litigate them in worker output.
@@ -76,7 +76,7 @@ TURN cannot raise viewer counts — the host still uploads one copy per peer thr
 relay. Removing the host-uplink ceiling requires an SFU: **Cloudflare Realtime SFU**
 (same platform, same $0.05/GB + 1 TB free) is the premium engine. In "Theater mode"
 the host publishes ONE copy to the nearest Cloudflare edge and the SFU fans out to
-50+ viewers with per-viewer adaptation. `@playin/p2p` exposes a `RelayProvider`
+50+ viewers with per-viewer adaptation. `@gather/p2p` exposes a `RelayProvider`
 abstraction: `mesh` (default) ↔ `cf-sfu` (premium) per room, switchable mid-session;
 sync beacons ride DataChannels in both topologies with WS as last-resort transport.
 LiveKit remains a third, self-host `RelayProvider` behind `ENABLE_SFU` (default off)
@@ -98,7 +98,7 @@ for sovereignty-minded deployments. Default deployment: zero media infrastructur
   enforcement. All billing state in Mongo; no Stripe calls in the hot path.
 
 ### New foundation package: `packages/p2p`
-`@playin/p2p` — isomorphic mesh engine (injected RTCPeerConnection: browser native /
+`@gather/p2p` — isomorphic mesh engine (injected RTCPeerConnection: browser native /
 react-native-webrtc): pair-wise perfect negotiation over WS signaling; DataChannel
 fabric (sync beacons, file chunks, emote fast-path); master election (join-order +
 epoch); ICE restart + reconnect; stats-driven bitrate adaptation; TURN credential
@@ -113,7 +113,7 @@ refresh. Pure logic testable with mock RTC.
 | Mobile | Expo (latest SDK), expo-router, `@livekit/react-native`, expo-video/expo-audio |
 | API | Node 22+, Fastify 5 + `@fastify/websocket`, Zod validation from contracts |
 | Data | MongoDB 7 (official driver), Redis 7 (ioredis) — **both behind adapter interfaces with in-memory fallbacks** so dev/tests run with zero installed services |
-| Media plane | **P2P WebRTC mesh (default, E2E-encrypted)** via `@playin/p2p`; coturn/managed TURN fallback; LiveKit OSS as opt-in SFU tier (`ENABLE_SFU`) |
+| Media plane | **P2P WebRTC mesh (default, E2E-encrypted)** via `@gather/p2p`; coturn/managed TURN fallback; LiveKit OSS as opt-in SFU tier (`ENABLE_SFU`) |
 | Media pipeline | Optional module (`ENABLE_MEDIA_PIPELINE`, default off): ffmpeg → HLS → S3; primary path is P2P file streaming from the owner's device |
 | Auth | Magic-link email → JWT (httpOnly) + refresh rotation; guest join via invite link |
 | Deploy | One `docker-compose.yml`: caddy, web, api, media, mongo, redis, livekit, coturn, minio |
@@ -226,7 +226,7 @@ limits; metrics counters endpoint; seed script with demo users/rooms/media.
 
 ## Repo layout
 ```
-playin/
+gather/
   apps/web/            apps/mobile/
   services/api/        services/media/      # media = optional module
   packages/contracts/  packages/sync-core/  packages/api-client/  packages/p2p/

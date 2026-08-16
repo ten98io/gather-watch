@@ -30,8 +30,8 @@ import type { ExtensionGateProps, ExtensionGateStatus } from '@/components/exten
 (globalThis as unknown as { React: typeof React }).React = React;
 const { ExtensionGate } = await import('@/components/extension/ExtensionGate');
 
-const INSTALL = 'https://store.example/playin-extension';
-const APP = 'https://apps.example/playin';
+const INSTALL = 'https://store.example/gather-extension';
+const APP = 'https://apps.example/gather';
 
 const ALL_STATUSES: readonly ExtensionGateStatus[] = ['detecting', 'not-installed', 'incompatible'];
 
@@ -132,7 +132,7 @@ function handlersOn(node: unknown): Array<() => void> {
 describe('ExtensionGate — the extension is missing', () => {
   it('names the thing to add and offers one way to add it', () => {
     const html = render({ status: 'not-installed' });
-    expect(html).toContain('Add the Playin extension to watch together');
+    expect(html).toContain('Add the Gather extension to watch together');
     expect(html).toContain('keeps everyone on the same second');
     expect(html).toContain('Add the extension');
     expect(html).toContain(`href="${INSTALL}"`);
@@ -149,7 +149,7 @@ describe('ExtensionGate — the extension is missing', () => {
 describe('ExtensionGate — the extension is too old', () => {
   it('asks for an update, not an install', () => {
     const html = render({ status: 'incompatible' });
-    expect(html).toContain('Update the Playin extension');
+    expect(html).toContain('Update the Gather extension');
     expect(html).toContain('older than this room needs');
     expect(html).toContain('Update the extension');
     expect(html).toContain(`href="${INSTALL}"`);
@@ -160,7 +160,7 @@ describe('ExtensionGate — the extension is too old', () => {
 describe('ExtensionGate — still checking', () => {
   it('says so calmly and asks for nothing', () => {
     const html = render({ status: 'detecting' });
-    expect(html).toContain('Looking for the Playin extension');
+    expect(html).toContain('Looking for the Gather extension');
     expect(html).toContain('This takes a second.');
     expect(html).toContain('aria-busy="true"');
   });
@@ -180,8 +180,8 @@ describe('ExtensionGate — phones', () => {
   it('routes to the app instead of an install it cannot satisfy', () => {
     for (const status of ALL_STATUSES) {
       const html = render({ platform: 'mobile', status });
-      expect(html).toContain('Watch together in the Playin app');
-      expect(html).toContain('Get the Playin app');
+      expect(html).toContain('Watch together in the Gather app');
+      expect(html).toContain('Get the Gather app');
       expect(html).toContain(`href="${APP}"`);
       expect(html).not.toContain(INSTALL);
       expect(html).not.toContain('Add the extension');
@@ -295,7 +295,7 @@ describe('ExtensionGate — accessibility', () => {
     const html = render({ status: 'not-installed' });
     expect(html).toContain('<section');
     expect(html).toContain('aria-live="polite"');
-    expect(html).toContain('aria-label="Add the Playin extension to watch together"');
+    expect(html).toContain('aria-label="Add the Gather extension to watch together"');
   });
 
   it('uses a link for a destination and a button for an action', () => {

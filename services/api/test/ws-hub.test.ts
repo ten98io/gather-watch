@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { FastifyInstance } from 'fastify';
-import { ServerEvent } from '@playin/contracts';
+import { ServerEvent } from '@gather/contracts';
 import { buildApp } from '../src/app';
 import type { RoomHub } from '../src/ws/hub';
 import type { Deps } from '../src/modules/types';

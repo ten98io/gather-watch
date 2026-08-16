@@ -26,20 +26,20 @@ importers:
 
   apps/extension:
     dependencies:
-      '@playin/api-client':
+      '@gather/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@playin/p2p':
+      '@gather/p2p':
         specifier: workspace:*
         version: link:../../packages/p2p
-      '@playin/sync-core':
+      '@gather/sync-core':
         specifier: workspace:*
         version: link:../../packages/sync-core
     devDependencies:
-      '@playin/design':
+      '@gather/design':
         specifier: workspace:*
         version: link:../../packages/design
       '@types/chrome':
@@ -57,19 +57,19 @@ importers:
 
   apps/mobile:
     dependencies:
-      '@playin/api-client':
+      '@gather/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@playin/design':
+      '@gather/design':
         specifier: workspace:*
         version: link:../../packages/design
-      '@playin/p2p':
+      '@gather/p2p':
         specifier: workspace:*
         version: link:../../packages/p2p
-      '@playin/sync-core':
+      '@gather/sync-core':
         specifier: workspace:*
         version: link:../../packages/sync-core
       '@react-navigation/native':
@@ -142,19 +142,19 @@ importers:
 
   apps/web:
     dependencies:
-      '@playin/api-client':
+      '@gather/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@playin/design':
+      '@gather/design':
         specifier: workspace:*
         version: link:../../packages/design
-      '@playin/p2p':
+      '@gather/p2p':
         specifier: workspace:*
         version: link:../../packages/p2p
-      '@playin/sync-core':
+      '@gather/sync-core':
         specifier: workspace:*
         version: link:../../packages/sync-core
       '@tanstack/react-query':
@@ -218,10 +218,10 @@ importers:
 
   packages/api-client:
     dependencies:
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@playin/sync-core':
+      '@gather/sync-core':
         specifier: workspace:*
         version: link:../sync-core
     devDependencies:
@@ -265,10 +265,10 @@ importers:
 
   packages/p2p:
     dependencies:
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@playin/sync-core':
+      '@gather/sync-core':
         specifier: workspace:*
         version: link:../sync-core
     devDependencies:
@@ -284,7 +284,7 @@ importers:
 
   packages/sync-core:
     dependencies:
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../contracts
       zod:
@@ -315,10 +315,10 @@ importers:
       '@fastify/websocket':
         specifier: ^11.0.0
         version: 11.3.0
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@playin/sync-core':
+      '@gather/sync-core':
         specifier: workspace:*
         version: link:../../packages/sync-core
       fastify:
@@ -391,7 +391,7 @@ importers:
       '@fastify/rate-limit':
         specifier: ^10.0.0
         version: 10.3.0
-      '@playin/contracts':
+      '@gather/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       fastify:

@@ -4,7 +4,7 @@
  * app built here runs on MemoryStore + MemoryBus.
  */
 import type { FastifyInstance } from 'fastify';
-import type { InviteCode, Member, RoomId, User, UserId } from '@playin/contracts';
+import type { InviteCode, Member, RoomId, User, UserId } from '@gather/contracts';
 import { buildApp } from '../src/app';
 import type { BuiltApp } from '../src/app';
 import { loadConfig } from '../src/config';
@@ -126,7 +126,7 @@ export async function addMember(
 export interface SignedUpUser {
   user: User;
   accessToken: string;
-  /** Raw playin_rt refresh-cookie value. */
+  /** Raw gather_rt refresh-cookie value. */
   cookie: string;
 }
 
@@ -150,9 +150,9 @@ export async function signupUser(app: FastifyInstance, email: string): Promise<S
     throw new Error(`verify failed: ${verifyRes.statusCode} ${verifyRes.body}`);
   }
   const body = verifyRes.json() as { user: User; accessToken: string };
-  const cookie = verifyRes.cookies.find((c) => c.name === 'playin_rt');
+  const cookie = verifyRes.cookies.find((c) => c.name === 'gather_rt');
   if (cookie === undefined) {
-    throw new Error('playin_rt cookie missing from verify response');
+    throw new Error('gather_rt cookie missing from verify response');
   }
   return { user: body.user, accessToken: body.accessToken, cookie: cookie.value };
 }

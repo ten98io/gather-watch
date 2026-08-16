@@ -1,4 +1,4 @@
-import type { PlaybackState } from '@playin/contracts';
+import type { PlaybackState } from '@gather/contracts';
 
 /** Where the media should be right now given an authoritative state and the current
  *  server-clock time. Paused → positionMs. Playing → positionMs + (serverNowTs - serverTs) * rate,

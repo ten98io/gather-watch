@@ -7,7 +7,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TokenVerifier } from 'livekit-server-sdk';
-import { TurnCredentialsResponse } from '@playin/contracts';
+import { TurnCredentialsResponse } from '@gather/contracts';
 import type { AppConfig } from '../../config';
 import { newId } from '../../lib/tokens';
 import type { TestApp } from '../../../test/helpers';

@@ -1,4 +1,4 @@
-# Playin
+# Gather
 
 A self-hosted shared living-room: watch parties, listen-together sessions, video
 calls, and an iMessage-grade chat — one room, every device.

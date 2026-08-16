@@ -21,9 +21,9 @@ import {
   AdminRoomsResponse,
   AdminUsageResponse,
   AdminUsersResponse,
-} from '@playin/contracts';
-import type { AdminReport } from '@playin/contracts';
-import { ApiError } from '@playin/api-client';
+} from '@gather/contracts';
+import type { AdminReport } from '@gather/contracts';
+import { ApiError } from '@gather/api-client';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { Badge } from '@/components/ui/badge';

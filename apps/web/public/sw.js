@@ -1,13 +1,13 @@
 /* global self, caches, clients, fetch, URL, Response */
 
 /*
- * Playin service worker — deliberately small:
+ * Gather service worker — deliberately small:
  *  1. App-shell cache: navigations are network-first, falling back to the
  *     cached shell when offline.
  *  2. Push stub: shows notifications; click focuses/opens the room.
  * API and websocket traffic is never intercepted.
  */
-const SHELL_CACHE = 'playin-shell-v1';
+const SHELL_CACHE = 'gather-shell-v1';
 const SHELL_URLS = ['/', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -61,7 +61,7 @@ self.addEventListener('fetch', (event) => {
 });
 
 self.addEventListener('push', (event) => {
-  let data = { title: 'Playin', body: 'Something moved in a room.', url: '/home', tag: '' };
+  let data = { title: 'Gather', body: 'Something moved in a room.', url: '/home', tag: '' };
   if (event.data) {
     try {
       data = { ...data, ...event.data.json() };

@@ -8,7 +8,7 @@ import { useEffect, useRef } from 'react';
 import { Animated, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useStore } from 'zustand';
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
 import { api } from '../api';
 import type { RoomConnection } from '../room-connection';
 import { layout, palette, spacing, type as typeScale } from '../theme';

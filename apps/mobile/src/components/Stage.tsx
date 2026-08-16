@@ -19,7 +19,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import type { VideoPlayer } from 'expo-video';
 import { WebView } from 'react-native-webview';
 import { useStore } from 'zustand';
-import type { MemberRole, PlaybackState, RoomKind } from '@playin/contracts';
+import type { MemberRole, PlaybackState, RoomKind } from '@gather/contracts';
 import type { RoomConnection } from '../room-connection';
 import { canAct } from '../permissions';
 import { useSyncEngine } from '../sync/useSyncEngine';

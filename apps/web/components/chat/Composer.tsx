@@ -13,7 +13,7 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import type { Message, RoomId, UserId } from '@playin/contracts';
+import type { Message, RoomId, UserId } from '@gather/contracts';
 import { Button } from '@/components/ui/button';
 import {
   MicIcon,

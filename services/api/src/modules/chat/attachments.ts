@@ -14,7 +14,7 @@ import type {
   MediaAsset,
   RoomId,
   UserId,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { AppConfig } from '../../config';

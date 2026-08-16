@@ -12,7 +12,7 @@
  * All guard failures surface as AppError('VALIDATION'); the unfurler never
  * throws anything else on purpose.
  */
-import type { UnfurlResponse } from '@playin/contracts';
+import type { UnfurlResponse } from '@gather/contracts';
 import { createSafeFetcher } from '../../lib/safe-fetch';
 import type { SafeFetchOptions } from '../../lib/safe-fetch';
 

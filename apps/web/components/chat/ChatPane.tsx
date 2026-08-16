@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { Message, MessageId, RoomId, UserId } from '@playin/contracts';
+import type { Message, MessageId, RoomId, UserId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { canAct } from '@/lib/permissions';
 import { useRoom, useRoomConnection } from '@/lib/room-context';

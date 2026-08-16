@@ -1,6 +1,6 @@
 /**
  * Access-token verification — a deliberate COPY of services/api's scheme
- * (jose, HS256, issuer 'playin', audience 'playin-api'). Tokens are issued by
+ * (jose, HS256, issuer 'gather', audience 'gather-api'). Tokens are issued by
  * the api; this service only verifies. Do not import services/api code.
  *
  * NOTE: unlike the api's auth plugin, verification here is JWT-only — the
@@ -20,8 +20,8 @@ export interface AccessClaims {
   guestRoomId: string | null;
 }
 
-const ISSUER = 'playin';
-const AUDIENCE = 'playin-api';
+const ISSUER = 'gather';
+const AUDIENCE = 'gather-api';
 
 function secretKey(secret: string): Uint8Array {
   return new TextEncoder().encode(secret);

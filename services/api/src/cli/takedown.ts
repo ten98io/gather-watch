@@ -3,9 +3,9 @@
  * content-report endpoint + admin takedown CLI ... actually disable
  * content"). Reads the reports mailbox and disables the reported target:
  *
- *   pnpm --filter playin-api exec tsx src/cli/takedown.ts list
- *   pnpm --filter playin-api exec tsx src/cli/takedown.ts resolve <reportId>
- *   pnpm --filter playin-api exec tsx src/cli/takedown.ts resolve <reportId> --dismiss
+ *   pnpm --filter gather-api exec tsx src/cli/takedown.ts list
+ *   pnpm --filter gather-api exec tsx src/cli/takedown.ts resolve <reportId>
+ *   pnpm --filter gather-api exec tsx src/cli/takedown.ts resolve <reportId> --dismiss
  *
  * Actions per target kind (all mark report.resolvedAt):
  *   message → tombstoned (same patch shape as GDPR erasure)
@@ -21,7 +21,7 @@
 import { loadConfig } from '../config';
 import { createStore } from '../adapters/index';
 import type { ReportDoc, StorePort } from '../adapters/ports';
-import type { MessageId, UserId } from '@playin/contracts';
+import type { MessageId, UserId } from '@gather/contracts';
 
 export interface TakedownResult {
   report: ReportDoc;

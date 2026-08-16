@@ -1,5 +1,5 @@
 /**
- * The injected room overlay: Playin's room UI, put onto the site the user is
+ * The injected room overlay: Gather's room UI, put onto the site the user is
  * actually watching (docs/EXTENSION_FIRST.md, Part 2, Model C).
  *
  * The content cannot come to us — Netflix and most large sites refuse to be
@@ -71,7 +71,7 @@ export interface OverlayHandle {
   destroy(): void;
 }
 
-const HANDLE_NAME = 'Playin';
+const HANDLE_NAME = 'Gather';
 const SEND_FAILED = 'That message did not send. Try again.';
 const CHAT_PLACEHOLDER = 'Message the room';
 const OFFLINE_PLACEHOLDER = 'You can chat once you are back in the room';
@@ -107,7 +107,7 @@ function isRecordLike(value: unknown): boolean {
 export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   const doc = opts.document;
   const container: Element | null = opts.container ?? doc.body ?? doc.documentElement;
-  if (container === null) throw new Error('Playin needs a page to put the room on');
+  if (container === null) throw new Error('Gather needs a page to put the room on');
   const view = doc.defaultView;
   const storage = opts.storage ?? null;
   const key = memoryKey(opts.siteKey ?? doc.location?.hostname ?? '');
@@ -179,7 +179,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
 
   const panel = make('section', 'panel');
   panel.setAttribute('role', 'complementary');
-  panel.setAttribute('aria-label', 'Playin room');
+  panel.setAttribute('aria-label', 'Gather room');
 
   const head = make('header', 'head');
   const headText = make('div', 'head-text');
@@ -192,7 +192,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   const hideBtn = doc.createElement('button');
   hideBtn.className = 'hide';
   hideBtn.setAttribute('type', 'button');
-  hideBtn.setAttribute('aria-label', 'Hide the Playin panel');
+  hideBtn.setAttribute('aria-label', 'Hide the Gather panel');
   hideBtn.textContent = 'Hide';
   headText.appendChild(roomEl);
   headText.appendChild(statusEl);
@@ -238,7 +238,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   const openBtn = doc.createElement('button');
   openBtn.className = 'link';
   openBtn.setAttribute('type', 'button');
-  openBtn.textContent = 'Open Playin';
+  openBtn.textContent = 'Open Gather';
   const leaveBtn = doc.createElement('button');
   leaveBtn.className = 'link';
   leaveBtn.setAttribute('type', 'button');
@@ -327,7 +327,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     const waiting = unread > 0 ? `. ${badge} new messages` : '';
     handle.setAttribute(
       'aria-label',
-      `Show the Playin panel. ${describePeople(current.people)}${waiting}`,
+      `Show the Gather panel. ${describePeople(current.people)}${waiting}`,
     );
   };
 

@@ -1,5 +1,5 @@
 /**
- * Storage + bus ports for the Playin API. FROZEN SEAM — module workers and
+ * Storage + bus ports for the Gather API. FROZEN SEAM — module workers and
  * both adapter pairs (Mongo/Memory, Redis/Memory) implement or consume these
  * interfaces; do not change shapes without an orchestrator-level decision.
  *
@@ -19,7 +19,7 @@ import type {
   RestreamState,
   Room,
   User,
-} from '@playin/contracts';
+} from '@gather/contracts';
 
 // ── Query DSL ────────────────────────────────────────────────────────────────
 

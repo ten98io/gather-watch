@@ -1,6 +1,6 @@
 /**
  * Media metadata REST surface. Registered WITHOUT a prefix — the path below
- * is full and must match @playin/api-client (`media.resolveMedia`) exactly.
+ * is full and must match @gather/api-client (`media.resolveMedia`) exactly.
  *
  * POST /media/resolve is the "paste a link and see what it is" endpoint: the
  * client shows a real title, artwork and duration BEFORE anything is queued.
@@ -9,7 +9,7 @@
  * outbound request.
  */
 import type { FastifyPluginAsync } from 'fastify';
-import { ResolveMediaBody } from '@playin/contracts';
+import { ResolveMediaBody } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';

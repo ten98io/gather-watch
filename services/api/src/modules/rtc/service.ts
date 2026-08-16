@@ -15,7 +15,7 @@
  */
 import { createHmac } from 'node:crypto';
 import { AccessToken } from 'livekit-server-sdk';
-import type { LivekitTokenResponse, TurnCredentialsResponse } from '@playin/contracts';
+import type { LivekitTokenResponse, TurnCredentialsResponse } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { memberDocId } from '../../adapters/ports';
 import { getEntitlementsPort } from '../rooms/deps';

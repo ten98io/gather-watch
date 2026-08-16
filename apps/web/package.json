@@ -1,5 +1,5 @@
 {
-  "name": "@playin/web",
+  "name": "@gather/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,11 +13,11 @@
     "tokens:generate": "UPDATE_TOKENS=1 vitest run test/design-tokens.test.ts"
   },
   "dependencies": {
-    "@playin/api-client": "workspace:*",
-    "@playin/contracts": "workspace:*",
-    "@playin/design": "workspace:*",
-    "@playin/p2p": "workspace:*",
-    "@playin/sync-core": "workspace:*",
+    "@gather/api-client": "workspace:*",
+    "@gather/contracts": "workspace:*",
+    "@gather/design": "workspace:*",
+    "@gather/p2p": "workspace:*",
+    "@gather/sync-core": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
     "framer-motion": "^12.0.0",
     "hls.js": "^1.5.18",

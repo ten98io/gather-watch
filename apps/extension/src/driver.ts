@@ -57,9 +57,9 @@
  * licence and stalls for seconds).
  */
 
-import { DriftController, LISTEN_ELASTIC, STRICT_SYNC, WATCH_ELASTIC } from '@playin/sync-core';
-import type { ElasticDriftOptions } from '@playin/sync-core';
-import type { MediaRef } from '@playin/contracts';
+import { DriftController, LISTEN_ELASTIC, STRICT_SYNC, WATCH_ELASTIC } from '@gather/sync-core';
+import type { ElasticDriftOptions } from '@gather/sync-core';
+import type { MediaRef } from '@gather/contracts';
 
 import type { DriveDecision } from './mediaDriver';
 

@@ -6,9 +6,9 @@ export default function LegalLayout({ children }: { children: ReactNode }) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-8 px-4 py-8">
       <header className="flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2.5" aria-label="Playin home">
+        <Link href="/" className="flex items-center gap-2.5" aria-label="Gather home">
           <Logo size={30} />
-          <span className="font-display text-lg font-bold">Playin</span>
+          <span className="font-display text-lg font-bold">Gather</span>
         </Link>
         <nav aria-label="Legal" className="flex gap-4 text-sm text-low">
           <Link className="transition-colors hover:text-hi" href="/legal/terms">Terms</Link>

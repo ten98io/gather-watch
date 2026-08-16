@@ -3,9 +3,9 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { ApiError } from '@playin/api-client';
-import { formatInviteCode } from '@playin/contracts';
-import type { InviteCode } from '@playin/contracts';
+import { ApiError } from '@gather/api-client';
+import { formatInviteCode } from '@gather/contracts';
+import type { InviteCode } from '@gather/contracts';
 import { api, guestJoin } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { Button } from '@/components/ui/button';

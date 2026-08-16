@@ -44,7 +44,7 @@ export interface SafeFetchOptions {
    * hop. Undefined means "any public host" (the link-preview case).
    */
   hostAllowlist?: readonly string[];
-  userAgent?: string; // default 'playin-unfurl/1.0'
+  userAgent?: string; // default 'gather-unfurl/1.0'
   /** Prefix for operation-scoped failure messages. Default 'unfurl'. */
   label?: string;
 }
@@ -183,7 +183,7 @@ export function createSafeFetcher(options: SafeFetchOptions = {}): SafeFetcher {
   const timeoutMs = options.timeoutMs ?? 3000;
   const maxBytes = options.maxBytes ?? 512 * 1024;
   const maxRedirects = options.maxRedirects ?? 3;
-  const userAgent = options.userAgent ?? 'playin-unfurl/1.0';
+  const userAgent = options.userAgent ?? 'gather-unfurl/1.0';
   const label = options.label ?? 'unfurl';
   const allowlist =
     options.hostAllowlist === undefined

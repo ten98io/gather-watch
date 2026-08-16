@@ -5,8 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AdminOverviewResponse, normalizeInviteCode } from '@playin/contracts';
-import type { RoomKind } from '@playin/contracts';
+import { AdminOverviewResponse, normalizeInviteCode } from '@gather/contracts';
+import type { RoomKind } from '@gather/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/hooks/useTheme';
@@ -135,7 +135,7 @@ export default function HomePage() {
       <header className="flex items-center gap-3">
         <Link href="/home" className="flex items-center gap-2.5">
           <Logo size={34} />
-          <span className="font-display text-lg font-bold tracking-tight">Playin</span>
+          <span className="font-display text-lg font-bold tracking-tight">Gather</span>
         </Link>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="ghost" size="icon" aria-label="Toggle theme" onClick={toggle}>

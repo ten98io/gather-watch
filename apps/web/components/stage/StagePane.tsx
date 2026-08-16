@@ -9,7 +9,7 @@
  * playing media (§5.1) with an aurora fallback; emote bursts float above.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { RoomId } from '@playin/contracts';
+import type { RoomId } from '@gather/contracts';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { RELAY_LABEL } from '@/lib/labels';
 import { canAct } from '@/lib/permissions';
@@ -490,7 +490,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     if (!('mediaSession' in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: currentItem?.title ?? room.name,
-      artist: `${room.name} · Playin`,
+      artist: `${room.name} · Gather`,
       ...(currentItem?.artworkUrl != null
         ? { artwork: [{ src: currentItem.artworkUrl }] }
         : {}),

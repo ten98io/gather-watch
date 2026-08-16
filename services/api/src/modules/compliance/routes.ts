@@ -1,6 +1,6 @@
 /**
  * Compliance REST endpoints (registered WITHOUT a prefix — full paths,
- * matching @playin/api-client): the content-report mailbox and the GDPR
+ * matching @gather/api-client): the content-report mailbox and the GDPR
  * self-service surface.
  *
  * Auth policy: reporting and export accept any verified identity (guests have
@@ -8,12 +8,12 @@
  * guests are room-scoped and ephemeral, there is no account to erase (403).
  */
 import type { FastifyPluginAsync } from 'fastify';
-import { ReportBody } from '@playin/contracts';
+import { ReportBody } from '@gather/contracts';
 import type {
   DeleteMeResponse,
   MeExportResponse,
   ReportResponse,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { parseWith } from '../../plugins/error-mapper';
 import { requireAccount, requireAuth } from '../../plugins/auth';
 import { ComplianceService } from './service';

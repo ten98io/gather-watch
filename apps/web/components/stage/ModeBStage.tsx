@@ -15,7 +15,7 @@
  * NOT_ENABLED until ENABLE_SFU) — nothing here is simulated.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { RestreamState, UserId } from '@playin/contracts';
+import type { RestreamState, UserId } from '@gather/contracts';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,

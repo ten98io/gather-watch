@@ -5,7 +5,7 @@
  * apply. The stage badges this tier as "approximate sync" and hides the seek
  * bar; transport commands simply don't exist for these players.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
 
 export class EmbedAdapter implements PlayerAdapter {

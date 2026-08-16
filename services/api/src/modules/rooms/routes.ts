@@ -1,6 +1,6 @@
 /**
  * Rooms REST endpoints. Registered WITHOUT a prefix — the paths below are full
- * and must match @playin/api-client exactly. Guests hold room-scoped tokens:
+ * and must match @gather/api-client exactly. Guests hold room-scoped tokens:
  * every room-scoped route runs assertGuestScope so a guest token can only act
  * on the one room it was issued for.
  */
@@ -17,7 +17,7 @@ import {
   TransferHostBody,
   UpdatePoliciesBody,
   UpdateRoomBody,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { requireAccount, requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';

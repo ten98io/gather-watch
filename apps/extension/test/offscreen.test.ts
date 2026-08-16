@@ -20,8 +20,8 @@ import type {
   ShareStream,
   ShareTrack,
 } from '../src/offscreen';
-import type { InboundSignal, MediaStreamTrackLike, MeshLinkState, TrackRole } from '@playin/p2p';
-import type { UserId } from '@playin/contracts';
+import type { InboundSignal, MediaStreamTrackLike, MeshLinkState, TrackRole } from '@gather/p2p';
+import type { UserId } from '@gather/contracts';
 
 /* ── fakes ────────────────────────────────────────────────────────────── */
 

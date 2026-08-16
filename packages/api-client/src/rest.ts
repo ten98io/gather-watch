@@ -68,8 +68,8 @@ import {
   UpgradeGuestResponse,
   VerifyTokenBody,
   VerifyTokenResponse,
-} from '@playin/contracts';
-import type { AssetId, PlaylistId, RoomId, SessionId } from '@playin/contracts';
+} from '@gather/contracts';
+import type { AssetId, PlaylistId, RoomId, SessionId } from '@gather/contracts';
 import { ApiError, apiErrorFromStatus } from './errors';
 import { defaultFetch } from './types';
 import type { FetchInitLike, FetchLike } from './types';
@@ -98,7 +98,7 @@ interface RequestArgs<T> {
 }
 
 /**
- * Isomorphic REST client for the Playin API. Responses are validated against
+ * Isomorphic REST client for the Gather API. Responses are validated against
  * the contracts zod schemas; errors are thrown as {@link ApiError}. A 401 on
  * a non-auth-exempt endpoint triggers a single-flight refresh followed by one
  * replay of the original request.

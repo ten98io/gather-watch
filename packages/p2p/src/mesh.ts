@@ -8,7 +8,7 @@
  * never as an exception escaping an event path.
  */
 
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
 import { applyMaxBitrate, clearMaxBitrate } from './adaptation';
 import { CHANNEL_IDS, ChannelFabric } from './channels';
 import type { ChannelFabricOptions, ChannelLabel } from './channels';

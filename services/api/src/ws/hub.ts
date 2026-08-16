@@ -8,8 +8,8 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { WebSocket } from 'ws';
-import type { ApiError, Member, RoomId, UserId } from '@playin/contracts';
-import { ClientEvent, ReplayEventsQuery, ServerEvent, makeApiError } from '@playin/contracts';
+import type { ApiError, Member, RoomId, UserId } from '@gather/contracts';
+import { ClientEvent, ReplayEventsQuery, ServerEvent, makeApiError } from '@gather/contracts';
 import { memberDocId, roomChannel } from '../adapters/ports';
 import type { RoomBusMessage } from '../adapters/ports';
 import { AppError, isAppError } from '../lib/errors';

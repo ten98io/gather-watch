@@ -97,10 +97,10 @@ function copyFor(props: {
   if (props.platform === 'mobile') {
     return {
       icon: <VideoIcon size={20} />,
-      title: 'Watch together in the Playin app',
+      title: 'Watch together in the Gather app',
       description:
         'Phone browsers can’t run extensions, so the app is where the video plays. It’s the same room.',
-      actionLabel: 'Get the Playin app',
+      actionLabel: 'Get the Gather app',
       actionHref: props.appUrl,
       recheckLabel: null,
       reassurance: ROOM_WORKS,
@@ -110,7 +110,7 @@ function copyFor(props: {
   if (props.status === 'detecting') {
     return {
       icon: <SearchIcon size={20} />,
-      title: 'Looking for the Playin extension',
+      title: 'Looking for the Gather extension',
       description: 'This takes a second.',
       actionLabel: null,
       actionHref: props.installUrl,
@@ -127,7 +127,7 @@ function copyFor(props: {
       icon: <VideoIcon size={20} />,
       title: 'This browser can’t play the video',
       description:
-        'Playin plays video through a browser extension, and this browser doesn’t support them. Chrome, Edge, Brave and Arc all do.',
+        'Gather plays video through a browser extension, and this browser doesn’t support them. Chrome, Edge, Brave and Arc all do.',
       actionLabel: null,
       actionHref: props.installUrl,
       recheckLabel: null,
@@ -138,7 +138,7 @@ function copyFor(props: {
   if (props.status === 'incompatible') {
     return {
       icon: <HistoryIcon size={20} />,
-      title: 'Update the Playin extension',
+      title: 'Update the Gather extension',
       description:
         'The one installed in this browser is older than this room needs. Updating takes a moment.',
       actionLabel: 'Update the extension',
@@ -150,7 +150,7 @@ function copyFor(props: {
 
   return {
     icon: <FilmIcon size={20} />,
-    title: 'Add the Playin extension to watch together',
+    title: 'Add the Gather extension to watch together',
     description:
       'It plays the video in your own browser and keeps everyone on the same second.',
     actionLabel: 'Add the extension',

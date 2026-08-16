@@ -4,7 +4,7 @@
  * resolved reports leave the open list.
  */
 import { describe, expect, it } from 'vitest';
-import type { MessageId, ReportTarget, UserId } from '@playin/contracts';
+import type { MessageId, ReportTarget, UserId } from '@gather/contracts';
 import { MemoryStore } from '../src/adapters/memory-store';
 import type { ReportDoc, StorePort } from '../src/adapters/ports';
 import { memberDocId } from '../src/adapters/ports';

@@ -608,7 +608,7 @@ setInterval(() => {
 }, HEARTBEAT_MS);
 
 // ---------------------------------------------------------------------------
-// Extension-id announcement — Playin's own origins, top frame only
+// Extension-id announcement — Gather's own origins, top frame only
 // ---------------------------------------------------------------------------
 
 /**
@@ -619,11 +619,11 @@ setInterval(() => {
  *
  * What crosses: the extension id (public — it is in the store URL), its
  * version, and the supported protocol range. Never a token, a session, a tab
- * or anything about another origin. It happens ONLY on the allowlisted Playin
+ * or anything about another origin. It happens ONLY on the allowlisted Gather
  * origins and only from the top frame, so no third-party site — and no
  * embedded frame — ever learns the extension is installed this way.
  */
-function announceToPlayin(): void {
+function announceToGather(): void {
   try {
     window.postMessage(
       buildAnnounce({
@@ -644,9 +644,9 @@ if (window.top === window && WEB_ORIGINS.includes(location.origin)) {
   window.addEventListener('message', (ev: MessageEvent) => {
     if (ev.source !== window || ev.origin !== location.origin) return;
     if (!isAnnounceRequest(ev.data)) return;
-    announceToPlayin();
+    announceToGather();
   });
-  announceToPlayin();
+  announceToGather();
 }
 
 reportProvider();

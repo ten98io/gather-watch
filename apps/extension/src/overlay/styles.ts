@@ -6,7 +6,7 @@
  * Owns: every rule the panel is drawn with, and the host-level layout
  * guarantees.
  *
- * Deliberately NOT: colour. Every value comes from @playin/design through
+ * Deliberately NOT: colour. Every value comes from @gather/design through
  * tokens.generated.ts — the same palette web and mobile render. A hex literal
  * here is how the overlay became a third design system once already, and
  * test/design-tokens.test.ts now fails if one comes back.

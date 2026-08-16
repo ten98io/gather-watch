@@ -30,7 +30,7 @@ function LoadingGate(props: { children: React.ReactNode }) {
   if (status === 'loading') {
     return (
       <View style={styles.gate}>
-        <Text style={styles.gateTitle}>Playin</Text>
+        <Text style={styles.gateTitle}>Gather</Text>
         <Text style={styles.gateSub}>Warming up the projector…</Text>
       </View>
     );

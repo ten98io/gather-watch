@@ -1,6 +1,6 @@
 /**
  * QueueService: shared-queue authority. add/remove/reorder run through the
- * pure @playin/sync-core queueReducer (version bumps by exactly 1 per
+ * pure @gather/sync-core queueReducer (version bumps by exactly 1 per
  * effective change); voteSkip implements the server's own math — a fraction
  * threshold over presence-alive members with stale-vote pruning — which the
  * core reducer deliberately does not model. Every effective mutation is
@@ -22,9 +22,9 @@ import type {
   ResolvedMedia,
   RoomId,
   UserId,
-} from '@playin/contracts';
-import { queueReducer } from '@playin/sync-core';
-import type { QueueState } from '@playin/sync-core';
+} from '@gather/contracts';
+import { queueReducer } from '@gather/sync-core';
+import type { QueueState } from '@gather/sync-core';
 import { memberDocId } from '../../adapters/ports';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';

@@ -1,11 +1,11 @@
 /* ────────────────────────────────────────────────────────────────────────────
-   Playin design tokens — DESIGN.md §2 (BINDING).
+   Gather design tokens — DESIGN.md §2 (BINDING).
 
    The palette is NOT written here any more. `--bg-void`, the surface ladder,
    the text steps, the aurora hues and `--accent` are emitted from
    packages/design (the executable source of truth) into tokens.generated.css;
    test/design-tokens.test.ts fails the build when that file goes stale, and
-   `pnpm --filter @playin/web tokens:generate` refreshes it.
+   `pnpm --filter @gather/web tokens:generate` refreshes it.
 
    Everything after the import is hand-written CSS that is NOT a token — it
    only ever references the custom properties, never a colour literal. Keep it

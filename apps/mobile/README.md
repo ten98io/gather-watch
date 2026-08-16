@@ -1,4 +1,4 @@
-# @playin/mobile — Playin Expo app (iOS + Android, one codebase)
+# @gather/mobile — Gather Expo app (iOS + Android, one codebase)
 
 Expo SDK 53 line (expo ~53 / RN 0.79 / React 19), expo-router, strict TS.
 Full participant: Mode A playback, chat, queue, presence, room management.
@@ -8,8 +8,8 @@ Calls / Mode-B hosting are documented scaffolds (see Boundaries below).
 
 ```bash
 pnpm install
-pnpm build            # REQUIRED first: @playin/* resolve to dist via exports
-pnpm --filter @playin/mobile start
+pnpm build            # REQUIRED first: @gather/* resolve to dist via exports
+pnpm --filter @gather/mobile start
 ```
 
 Server URL: `EXPO_PUBLIC_API_URL` env (bundled at build time) →
@@ -21,14 +21,14 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 - The api authenticates REST **and** WS exclusively via
   `Authorization: Bearer <accessToken>` (`src/plugins/auth.ts` reads only that
   header; WS takes the same access JWT as `?token=`). **Bearer is supported.**
-- The only cookie is `playin_rt` (httpOnly, path=/auth) — the refresh token.
+- The only cookie is `gather_rt` (httpOnly, path=/auth) — the refresh token.
   RN has no cookie jar, so `src/api.ts#captureFetch` (a) scrapes `Set-Cookie`
   on `/auth/verify|/auth/guest|/auth/refresh`, (b) re-attaches
-  `Cookie: playin_rt=…` on refresh, and (c) captures
+  `Cookie: gather_rt=…` on refresh, and (c) captures
   `accessToken`/`accessTokenExpiresAt` from the raw JSON body before the
   contracts zod schemas strip them. Tokens live in `expo-secure-store`.
-- Deep link: scheme `playin` (app.json). Production magic links should target
-  `playin://login?token=…` — expo-router parses it into the login screen,
+- Deep link: scheme `gather` (app.json). Production magic links should target
+  `gather://login?token=…` — expo-router parses it into the login screen,
   which verifies automatically. In dev the api echoes the link (`devLink`);
   the login screen also accepts a pasted token or full link.
 
@@ -45,7 +45,7 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 - **YouTube playback**: renders via `react-native-webview` embed; NOT
   drift-corrected (no position sampling without a postMessage bridge). The UI
   says so. Direct/HLS sources are drift-corrected via sync-core.
-- **P2P beacons**: `useSyncEngine` references `@playin/p2p` **types only**
+- **P2P beacons**: `useSyncEngine` references `@gather/p2p` **types only**
   (BeaconState) as the seam; sync beacons ride the WS until
   react-native-webrtc lands. No p2p runtime code ships.
 - **Ambient glow**: static aurora wash; per-media color sampling (§5.1) is a

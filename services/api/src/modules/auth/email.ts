@@ -46,7 +46,7 @@ export const CF_EMAIL_TIMEOUT_MS = 8000;
 /** Cloudflare error bodies are logged truncated to this many characters. */
 const CF_ERROR_BODY_MAX = 512;
 
-const SUBJECT = 'Your Playin sign-in link';
+const SUBJECT = 'Your Gather sign-in link';
 
 /** The ONLY failure the caller sees: no status, no provider body, no token. */
 function sendFailed(): AppError {
@@ -54,11 +54,11 @@ function sendFailed(): AppError {
 }
 
 function textBody(link: string): string {
-  return `Sign in to Playin: ${link}`;
+  return `Sign in to Gather: ${link}`;
 }
 
 function htmlBody(link: string): string {
-  return `<p>Sign in to Playin: <a href="${link}">${link}</a></p>`;
+  return `<p>Sign in to Gather: <a href="${link}">${link}</a></p>`;
 }
 
 /**

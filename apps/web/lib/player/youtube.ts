@@ -12,7 +12,7 @@
  * both pointer and keyboard. The stage's click shield is the only surface the
  * user can hit, so exactly one play affordance exists and it is ours.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
 
 /* Minimal ambient typings for the iframe API surface we use (no @types dep). */

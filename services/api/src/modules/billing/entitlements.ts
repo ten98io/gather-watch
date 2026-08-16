@@ -5,7 +5,7 @@
  * policy evaluation will call, and the wiring of rooms' EntitlementsPort
  * seam so the rooms module stops using its free/premium fallback.
  */
-import type { Entitlements, Plan, Subscription } from '@playin/contracts';
+import type { Entitlements, Plan, Subscription } from '@gather/contracts';
 import type { AppConfig } from '../../config';
 import type { SubscriptionDoc } from '../../adapters/ports';
 import { registerEntitlementsPort } from '../rooms/deps';

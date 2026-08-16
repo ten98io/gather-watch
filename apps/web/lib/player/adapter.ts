@@ -4,7 +4,7 @@
  * engine (useSyncEngine) drives whichever adapter is mounted; panes never
  * touch element APIs directly.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 
 /**
  * Playback lifecycle events every adapter emits.

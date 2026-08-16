@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import type { InviteCode } from '@playin/contracts';
+import type { InviteCode } from '@gather/contracts';
 import { JoinClient } from './join-client';
 
 export const metadata: Metadata = { title: 'Join the room' };

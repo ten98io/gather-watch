@@ -4,7 +4,7 @@
  * AssetDoc is EXACTLY the api's shape (contracts MediaAsset + object-storage
  * bookkeeping) so both services read/write the same documents.
  */
-import type { MediaAsset } from '@playin/contracts';
+import type { MediaAsset } from '@gather/contracts';
 
 /** Contracts asset + object-storage bookkeeping (same as api's AssetDoc). */
 export type AssetDoc = MediaAsset & {

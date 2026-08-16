@@ -215,7 +215,7 @@ describe('mountOverlay — isolation from the page', () => {
   });
 
   it('never takes focus from the page just by arriving', async () => {
-    const { doc, store } = mount({ store: new Map([['playin.overlay.v1:example.com', { x: 40, y: 60, collapsed: true }]]) });
+    const { doc, store } = mount({ store: new Map([['gather.overlay.v1:example.com', { x: 40, y: 60, collapsed: true }]]) });
     expect(doc.activeElement).toBeNull();
     await flush();
     expect(doc.activeElement).toBeNull();
@@ -457,10 +457,10 @@ describe('mountOverlay — collapsing', () => {
 
     const handle = oneByClass(host, 'handle');
     expect(handle.textContent).toContain('2 new');
-    expect(handle.getAttribute('aria-label')).toContain('Show the Playin panel');
+    expect(handle.getAttribute('aria-label')).toContain('Show the Gather panel');
 
     click(host, handle);
-    expect(oneByClass(host, 'handle').textContent).toBe('Playin');
+    expect(oneByClass(host, 'handle').textContent).toBe('Gather');
   });
 
   it('does not call the room’s backlog unread', async () => {
@@ -472,7 +472,7 @@ describe('mountOverlay — collapsing', () => {
     // the panel is collapsed — but every one of them was already said.
     click(host, oneByClass(host, 'hide'));
     await flush();
-    expect(handle.textContent).toBe('Playin');
+    expect(handle.textContent).toBe('Gather');
 
     overlay.update(room({ messages: [said('m1'), said('m2'), said('m3'), said('m4')] }));
     expect(handle.textContent).toContain('1 new');
@@ -550,7 +550,7 @@ describe('mountOverlay — moving and remembering', () => {
     click(first.host, oneByClass(first.host, 'hide'));
     first.overlay.destroy();
 
-    expect(store.get('playin.overlay.v1:example.com')).toEqual({
+    expect(store.get('gather.overlay.v1:example.com')).toEqual({
       x: VIEWPORT.width - PANEL_WIDTH - EDGE_MARGIN - 100,
       y: EDGE_MARGIN + 200,
       collapsed: true,
@@ -573,7 +573,7 @@ describe('mountOverlay — moving and remembering', () => {
 
   it('lets what the user just did beat what storage says a moment later', async () => {
     const store = new Map<string, unknown>([
-      ['playin.overlay.v1:example.com', { x: 40, y: 40, collapsed: true }],
+      ['gather.overlay.v1:example.com', { x: 40, y: 40, collapsed: true }],
     ]);
     const { host } = mount({ initialState: room(), store });
 

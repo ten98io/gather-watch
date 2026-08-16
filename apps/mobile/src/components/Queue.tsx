@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useStore } from 'zustand';
-import type { MemberRole, QueueItem, UserId } from '@playin/contracts';
+import type { MemberRole, QueueItem, UserId } from '@gather/contracts';
 import type { RoomConnection } from '../room-connection';
 import { canAct, mediaRefFromUrl } from '../permissions';
 import { palette, radii, spacing, type as typeScale } from '../theme';

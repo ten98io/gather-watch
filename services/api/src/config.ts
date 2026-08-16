@@ -15,8 +15,8 @@ export const configSchema = z.object({
   port: z.coerce.number().int().min(1).max(65535).default(4000),
   appUrl: z.string().min(1).default('http://localhost:3000'),
   apiUrl: z.string().min(1).default('http://localhost:4000'),
-  jwtSecret: z.string().min(1).default('dev-secret-playin-api'),
-  jwtRefreshSecret: z.string().min(1).default('dev-refresh-secret-playin-api'),
+  jwtSecret: z.string().min(1).default('dev-secret-gather-api'),
+  jwtRefreshSecret: z.string().min(1).default('dev-refresh-secret-gather-api'),
   magicLinkTtlMin: z.coerce.number().int().min(1).default(15),
   accessTokenTtlSec: z.coerce.number().int().min(1).default(900),
   refreshTtlDays: z.coerce.number().int().min(1).default(30),
@@ -26,7 +26,7 @@ export const configSchema = z.object({
       port: z.coerce.number().int().min(1).max(65535).default(587),
       user: z.string().min(1).nullable().default(null),
       pass: z.string().min(1).nullable().default(null),
-      from: z.string().min(1).default('Playin <no-reply@playin.local>'),
+      from: z.string().min(1).default('Gather <no-reply@gather.local>'),
     })
     .default({}),
   // null ⇒ the in-memory adapters are used (see adapters/index.ts).
@@ -44,10 +44,10 @@ export const configSchema = z.object({
   s3: z
     .object({
       endpoint: z.string().min(1).default('http://localhost:9000'),
-      accessKey: z.string().min(1).default('playin'),
-      secretKey: z.string().min(1).default('playin-secret'),
-      bucket: z.string().min(1).default('playin-media'),
-      publicBaseUrl: z.string().min(1).default('http://localhost:9000/playin-media'),
+      accessKey: z.string().min(1).default('gather'),
+      secretKey: z.string().min(1).default('gather-secret'),
+      bucket: z.string().min(1).default('gather-media'),
+      publicBaseUrl: z.string().min(1).default('http://localhost:9000/gather-media'),
     })
     .default({}),
   ffmpegPath: z.string().min(1).default('ffmpeg'),
@@ -63,7 +63,7 @@ export const configSchema = z.object({
       // emailApiToken is a SECRET and never leaves an Authorization header.
       emailAccountId: z.string().min(1).nullable().default(null),
       emailApiToken: z.string().min(1).nullable().default(null),
-      emailFrom: z.string().min(1).default('Playin <no-reply@playin.local>'),
+      emailFrom: z.string().min(1).default('Gather <no-reply@gather.local>'),
     })
     .default({}),
   freeTurnCapGbPerMonth: z.coerce.number().int().min(0).default(20),
@@ -81,7 +81,7 @@ export const configSchema = z.object({
     .object({
       publicKey: z.string().min(1).nullable().default(null),
       privateKey: z.string().min(1).nullable().default(null),
-      subject: z.string().min(1).default('mailto:admin@playin.local'),
+      subject: z.string().min(1).default('mailto:admin@gather.local'),
     })
     .default({}),
   rateLimit: z

@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import type { RoomId } from '@playin/contracts';
+import type { RoomId } from '@gather/contracts';
 import { RoomShell } from './room-shell';
 
 export const metadata: Metadata = { title: 'Room' };

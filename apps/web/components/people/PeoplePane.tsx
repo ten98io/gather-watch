@@ -8,8 +8,8 @@
  */
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { formatInviteCode } from '@playin/contracts';
-import type { MemberRole, PresenceEntry, RoomId } from '@playin/contracts';
+import { formatInviteCode } from '@gather/contracts';
+import type { MemberRole, PresenceEntry, RoomId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { ROLE_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';

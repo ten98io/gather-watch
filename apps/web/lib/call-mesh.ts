@@ -1,5 +1,5 @@
 /**
- * CallMesh — wires @playin/p2p's MeshManager to the browser: native
+ * CallMesh — wires @gather/p2p's MeshManager to the browser: native
  * RTCPeerConnection, TURN credentials from the API (TurnCredentialManager
  * keeps them fresh), signaling over the room's shared RoomConnection
  * (webrtc.offer/answer/ice), and peer-set reconciliation from presence.
@@ -18,15 +18,15 @@
  * new subscriber. Same for local tracks, so a remounted tile grid still finds
  * your own camera.
  */
-import { MeshManager, TurnCredentialManager } from '@playin/p2p';
+import { MeshManager, TurnCredentialManager } from '@gather/p2p';
 import type {
   IceServerLike,
   MeshConnectionState,
   RtcPeerConnectionLike,
   TrackRole,
-} from '@playin/p2p';
-import { GetEntitlementsResponse } from '@playin/contracts';
-import type { Plan, UserId } from '@playin/contracts';
+} from '@gather/p2p';
+import { GetEntitlementsResponse } from '@gather/contracts';
+import type { Plan, UserId } from '@gather/contracts';
 import { api, apiFetch } from './api';
 import type { RoomConnection } from './room-connection';
 

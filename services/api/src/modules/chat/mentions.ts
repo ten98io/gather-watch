@@ -4,7 +4,7 @@
  * re-derived here from the body plus the room's actual membership, so a
  * client cannot mint mentions of non-members or forge `<@userId>` tokens.
  */
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 
 export interface MentionCandidate {
   userId: UserId;

@@ -5,7 +5,7 @@
  * throws; routes decide whether auth is required via requireAuth.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { RoomId, UserId } from '@playin/contracts';
+import type { RoomId, UserId } from '@gather/contracts';
 import { AppError } from '../lib/errors';
 import { verifyAccessToken } from '../lib/tokens';
 import type { AuthContext } from '../modules/types';

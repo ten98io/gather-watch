@@ -9,7 +9,7 @@
  * SERVER increments — a lost CAS or a mismatched epoch means the claim was
  * stale and is rejected with CONFLICT.
  */
-import type { RoomId, UserId } from '@playin/contracts';
+import type { RoomId, UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import type { Deps } from '../types';
 

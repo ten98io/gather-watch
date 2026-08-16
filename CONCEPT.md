@@ -1,4 +1,4 @@
-# Playin — a shared living-room for the internet
+# Gather — a shared living-room for the internet
 
 One room where a group can watch, listen, talk, and text together — with the media, the
 call, and the chat treated as one session instead of three apps taped together.
@@ -6,7 +6,7 @@ call, and the chat treated as one session instead of three apps taped together.
 ## The core architectural insight
 
 "Watch/listen together from any source" is actually **two different products** with
-different architectures. Playin must support both as explicit modes:
+different architectures. Gather must support both as explicit modes:
 
 ### Mode A — Synced-source (default)
 Every participant's device plays the *same source locally* (YouTube embed, uploaded
@@ -28,7 +28,7 @@ and publishes it through an SFU; everyone else subscribes like a video call.
 - Host must be desktop Chrome/Edge (tab-audio capture support). Quality bounded by uplink.
 - **DRM is a hard wall**: Netflix/Disney+/Prime render black frames under capture
   (EME/HDCP). No hosted app can fix this. The honest answer for DRM services is a
-  "companion co-watch" mode (everyone plays their own subscription; Playin syncs
+  "companion co-watch" mode (everyone plays their own subscription; Gather syncs
   play/pause countdowns, chat, and call) — or a browser extension later.
 
 Layered over both modes: video/voice call bubbles, and an iMessage-grade chat
@@ -97,5 +97,5 @@ for the binding feature spec, quality gates, and the K3-swarm/Claude-review work
 - iOS web cannot capture the screen, and no web app keeps *capturing* while backgrounded.
 - Arbitrary WebRTC streams can't be AirPlayed/Cast from a web page; casting is a
   Mode A feature (real media elements) until there's a native app / Cast receiver.
-- "Full iMessage/WhatsApp/FaceTime" is a multi-year surface — Playin ships the 20%
+- "Full iMessage/WhatsApp/FaceTime" is a multi-year surface — Gather ships the 20%
   used during a watch party (chat, reactions, calls), not E2EE messaging infrastructure.

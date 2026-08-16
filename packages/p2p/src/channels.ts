@@ -5,10 +5,10 @@
  *
  * IMPORTANT: these messages ride E2E-encrypted DataChannels directly between
  * peers — the server NEVER sees them, so they are deliberately defined here
- * (locally) and not in `@playin/contracts`.
+ * (locally) and not in `@gather/contracts`.
  */
 
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import type { DataChannelLike } from './types';
 
 /** The fixed set of channel labels the mesh negotiates per peer. */

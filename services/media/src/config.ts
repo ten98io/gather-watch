@@ -14,9 +14,9 @@ import { defaultPathStyleFor, defaultPublicBaseUrl, defaultRegionFor } from './s
  *  (publicBaseUrl/region/pathStyle) that need the EFFECTIVE values. */
 const S3_DEFAULTS = {
   endpoint: 'http://localhost:9000',
-  accessKey: 'playin',
-  secretKey: 'playin-secret',
-  bucket: 'playin-media',
+  accessKey: 'gather',
+  secretKey: 'gather-secret',
+  bucket: 'gather-media',
 } as const;
 
 /**
@@ -64,7 +64,7 @@ export const configSchema = z.object({
   /** Browser origin allowed to call the upload API (the web app). */
   appUrl: z.string().min(1).default('http://localhost:3000'),
   /** SAME secret as services/api — access tokens are issued there. */
-  jwtSecret: z.string().min(1).default('dev-secret-playin-api'),
+  jwtSecret: z.string().min(1).default('dev-secret-gather-api'),
   /** null ⇒ the in-memory asset store is used (tests, storage-less dev). */
   mongoUrl: z.string().min(1).nullable().default(null),
   s3: z
@@ -74,7 +74,7 @@ export const configSchema = z.object({
       accessKey: z.string().min(1).default(S3_DEFAULTS.accessKey),
       secretKey: z.string().min(1).default(S3_DEFAULTS.secretKey),
       bucket: z.string().min(1).default(S3_DEFAULTS.bucket),
-      publicBaseUrl: z.string().min(1).default('http://localhost:9000/playin-media'),
+      publicBaseUrl: z.string().min(1).default('http://localhost:9000/gather-media'),
       /** true ⇒ /bucket/key (MinIO); false ⇒ bucket.host/key (Railway/Tigris,
        *  AWS, R2). Derived from the endpoint unless S3_FORCE_PATH_STYLE says. */
       pathStyle: z

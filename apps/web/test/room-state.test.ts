@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { RestClient } from '@playin/api-client';
-import type { FetchLike, WebSocketLike } from '@playin/api-client';
-import type { Message, RoomId, ServerEvent, UserId } from '@playin/contracts';
+import { RestClient } from '@gather/api-client';
+import type { FetchLike, WebSocketLike } from '@gather/api-client';
+import type { Message, RoomId, ServerEvent, UserId } from '@gather/contracts';
 import { RoomConnection } from '@/lib/room-connection';
 
 class FakeSocket implements WebSocketLike {

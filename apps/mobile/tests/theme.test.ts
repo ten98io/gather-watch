@@ -2,7 +2,7 @@
  * Theme invariants for the mobile adapter.
  *
  * These assert the two things that can actually break now that the values come
- * from @playin/design: that mobile really is reading the package (not a copy
+ * from @gather/design: that mobile really is reading the package (not a copy
  * that drifted again), and that the surface ladder mobile just gained holds
  * contrast at every step. The colour maths itself is the package's test.
  *
@@ -19,8 +19,8 @@ import {
   effectiveSurfaces,
   resolveColorToken,
   rnThemes,
-} from '@playin/design';
-import type { ColorTokenName, ThemeName } from '@playin/design';
+} from '@gather/design';
+import type { ColorTokenName, ThemeName } from '@gather/design';
 import {
   auroraGradient,
   contrastRatio,
@@ -38,7 +38,7 @@ import {
 
 const THEMES: readonly ThemeName[] = ['dark', 'light'];
 
-describe('the tokens come from @playin/design', () => {
+describe('the tokens come from @gather/design', () => {
   it('palette is the package palette, not a copy', () => {
     expect(palette).toBe(rnThemes.dark.palette);
     expect(paletteLight).toBe(rnThemes.light.palette);

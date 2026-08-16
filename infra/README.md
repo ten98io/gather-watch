@@ -1,4 +1,4 @@
-# Playin — infra
+# Gather — infra
 
 One `docker compose` file = the full self-hosted production stack: Caddy (TLS
 edge), Next.js web, Fastify API, media worker, MongoDB, Redis, LiveKit SFU,
@@ -53,14 +53,14 @@ Cross-file invariants (change one → change all):
    booting on the dev placeholders printed in this public repo.
 
    Leave `MONGO_URL`/`REDIS_URL` alone — compose pins the in-network
-   `mongodb://mongo:27017/playin` and `redis://redis:6379` per service, so the
+   `mongodb://mongo:27017/gather` and `redis://redis:6379` per service, so the
    empty dev defaults (in-memory adapters) can never leak into prod containers.
-2. **Domain.** In `infra/Caddyfile`, replace `playin.example.com` with your
+2. **Domain.** In `infra/Caddyfile`, replace `gather.example.com` with your
    domain (both the main block and, if used, the LiveKit subdomain block).
    Point DNS A/AAAA at the host. Update `APP_URL`, `S3_PUBLIC_BASE_URL`
-   (`https://your.domain/media/playin-media`) and `LIVEKIT_URL` in `.env`.
+   (`https://your.domain/media/gather-media`) and `LIVEKIT_URL` in `.env`.
    If you enable the (commented-out, opt-in) `rtc.turn_servers` block in
-   `infra/livekit.yaml`, replace its `playin.example.com` host too — the
+   `infra/livekit.yaml`, replace its `gather.example.com` host too — the
    Caddyfile step does not cover that file.
 3. **Launch** from the repo root (the `--env-file` flag is required — compose
    interpolation otherwise looks for `infra/.env`):
@@ -123,8 +123,8 @@ Open on the host firewall (inbound):
 | 49160–49200         | udp     | coturn relay range                                          |
 
 - **Signalling TLS:** browsers on an https page need `wss://`. Either
-  uncomment the `livekit.playin.example.com` block in the Caddyfile (then
-  `LIVEKIT_URL=wss://livekit.playin.example.com`, and 7880 can stay closed to
+  uncomment the `livekit.gather.example.com` block in the Caddyfile (then
+  `LIVEKIT_URL=wss://livekit.gather.example.com`, and 7880 can stay closed to
   the internet), or terminate TLS on 7880 some other way. Raw `ws://host:7880`
   only works for plain-HTTP dev.
 - **TURN credentials:** coturn runs `use-auth-secret` (time-limited HMAC creds

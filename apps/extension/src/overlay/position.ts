@@ -41,7 +41,7 @@ export const EDGE_MARGIN = 16;
 export const MIN_VISIBLE_HEIGHT = 56;
 /** Larger than any real screen; anything beyond it is corrupt, not a position. */
 const MAX_COORDINATE = 100_000;
-const KEY_PREFIX = 'playin.overlay.v1:';
+const KEY_PREFIX = 'gather.overlay.v1:';
 /** A hostname is page-controlled, so the key it produces is bounded. */
 const MAX_SITE_KEY = 100;
 

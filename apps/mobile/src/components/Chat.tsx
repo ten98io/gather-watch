@@ -18,7 +18,7 @@ import {
   View,
 } from 'react-native';
 import { useStore } from 'zustand';
-import type { Message, MessageId, UserId } from '@playin/contracts';
+import type { Message, MessageId, UserId } from '@gather/contracts';
 import type { RoomConnection } from '../room-connection';
 import { palette, radii, spacing, type as typeScale, layout } from '../theme';
 

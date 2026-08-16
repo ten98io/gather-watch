@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useStore } from 'zustand';
-import type { RoomId } from '@playin/contracts';
+import type { RoomId } from '@gather/contracts';
 import { api, tokenStore } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { WS_URL } from '../../src/config';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import { BeaconSender } from '../src/beacon';
 import { MasterElection } from '../src/election';
 import type { ElectionPeer } from '../src/election';

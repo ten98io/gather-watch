@@ -1125,7 +1125,7 @@ describe('rest.auth', () => {
     const res = {
       sessions: [
         { id: 'sess_1', device: 'Safari on macOS', createdAt: TS, lastSeenAt: TS, current: true },
-        { id: 'sess_2', device: 'Playin on iPhone', createdAt: TS, lastSeenAt: TS, current: false },
+        { id: 'sess_2', device: 'Gather on iPhone', createdAt: TS, lastSeenAt: TS, current: false },
       ],
     };
     expect(ListSessionsResponse.parse(res)).toEqual(res);

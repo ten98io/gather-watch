@@ -1,6 +1,6 @@
 /**
  * Chat REST endpoints. Registered WITHOUT a prefix — the paths below are
- * full and must match @playin/api-client exactly. Realtime sends happen over
+ * full and must match @gather/api-client exactly. Realtime sends happen over
  * WS (see index.ts); these routes cover history, search, pins, unfurling,
  * GIF search, and attachment upload tickets.
  *
@@ -16,8 +16,8 @@ import {
   SearchGifsQuery,
   SearchMessagesQuery,
   UnfurlBody,
-} from '@playin/contracts';
-import type { MemberRole, RoomId, RoomPolicyLevel } from '@playin/contracts';
+} from '@gather/contracts';
+import type { MemberRole, RoomId, RoomPolicyLevel } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';

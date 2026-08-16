@@ -1,6 +1,6 @@
-import { ServerEvent } from '@playin/contracts';
-import type { ClientEvent, RoomId, WsEnvelope } from '@playin/contracts';
-import { ClockEstimator } from '@playin/sync-core';
+import { ServerEvent } from '@gather/contracts';
+import type { ClientEvent, RoomId, WsEnvelope } from '@gather/contracts';
+import { ClockEstimator } from '@gather/sync-core';
 import { ApiError } from './errors';
 import { SeqTracker } from './seq';
 import { defaultClearTimeout, defaultSetTimeout, defaultWebSocketCtor } from './types';

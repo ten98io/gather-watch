@@ -20,7 +20,7 @@
  * orchestrator-level StorePort change (e.g. server-side fields on UserDoc or
  * a dedicated collection).
  */
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { getStripe, stripeConfigured } from '../billing/service';
 import { RoomsService } from '../rooms/service';

@@ -16,8 +16,8 @@ import {
   AdminRoomsResponse,
   AdminUsageResponse,
   AdminUsersResponse,
-} from '@playin/contracts';
-import type { UserId } from '@playin/contracts';
+} from '@gather/contracts';
+import type { UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { requireAccount } from '../../plugins/auth';
 import { snapshotMetrics } from '../../plugins/metrics';

@@ -10,7 +10,7 @@ import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { FastifyInstance } from 'fastify';
-import type { QueueItem, QueueItemId, UserId } from '@playin/contracts';
+import type { QueueItem, QueueItemId, UserId } from '@gather/contracts';
 import type { StorePort } from '../src/adapters/ports';
 import { memberDocId } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';

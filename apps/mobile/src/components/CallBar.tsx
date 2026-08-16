@@ -18,7 +18,7 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useStore } from 'zustand';
-import type { RoomId } from '@playin/contracts';
+import type { RoomId } from '@gather/contracts';
 import { api } from '../api';
 import type { RoomConnection } from '../room-connection';
 import { palette, radii, spacing, type as typeScale } from '../theme';

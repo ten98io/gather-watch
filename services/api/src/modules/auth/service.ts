@@ -4,7 +4,7 @@
  * detection, and profile updates. Pure logic over Deps.store — no Fastify
  * types in this file, so it is directly unit-testable.
  */
-import type { InviteCode, Session, SessionId, UserId } from '@playin/contracts';
+import type { InviteCode, Session, SessionId, UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { hashToken, newId, randomToken } from '../../lib/tokens';
 import { cursorDocId, memberDocId } from '../../adapters/ports';

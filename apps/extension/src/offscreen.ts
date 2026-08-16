@@ -3,7 +3,7 @@
  * RTCPeerConnection. Receives a capture stream id from the background —
  * either a tabCapture id or a desktopCapture id for a screen/window — grabs
  * the stream and fans it out to the room as the mesh 'share' track via
- * @playin/p2p's MeshManager. That is the exact Mode B path the web app uses,
+ * @gather/p2p's MeshManager. That is the exact Mode B path the web app uses,
  * so extension and web viewers interoperate.
  *
  * It owns: the capture constraints, the audio degradation policy, and the
@@ -26,7 +26,7 @@
  * audio was legitimately requested and failed anyway. A share that has picture
  * but no sound is a working share.
  */
-import { MeshManager } from '@playin/p2p';
+import { MeshManager } from '@gather/p2p';
 import type {
   InboundSignal,
   MediaStreamTrackLike,
@@ -34,9 +34,9 @@ import type {
   RtcPeerConnectionLike,
   SignalSend,
   TrackRole,
-} from '@playin/p2p';
-import { RoomSocket } from '@playin/api-client';
-import type { Plan, RoomId, UserId } from '@playin/contracts';
+} from '@gather/p2p';
+import { RoomSocket } from '@gather/api-client';
+import type { Plan, RoomId, UserId } from '@gather/contracts';
 
 import { WS_URL } from './config';
 

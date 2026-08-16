@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionId } from '@playin/contracts';
+import type { SessionId } from '@gather/contracts';
 import { ApiError, RestClient } from '../src';
 import type { FetchResponseLike } from '../src';
 import { FetchMock, demoUser, jsonResponse, rid, tick } from './helpers';

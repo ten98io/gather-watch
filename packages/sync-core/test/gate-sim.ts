@@ -1,4 +1,4 @@
-import type { PlaybackState } from '@playin/contracts';
+import type { PlaybackState } from '@gather/contracts';
 import { ClockEstimator } from '../src/clock';
 import type { ClockSample } from '../src/clock';
 import { DriftController } from '../src/drift';

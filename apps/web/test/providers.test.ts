@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MediaRef } from '@playin/contracts';
+import { MediaRef } from '@gather/contracts';
 import { adapterKindFor, isFullSyncKind, mediaKey } from '@/lib/player/adapter';
 import { parseProviderUrl, providerById } from '@/lib/providers';
 

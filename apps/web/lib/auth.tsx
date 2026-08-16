@@ -2,8 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { User } from '@playin/contracts';
-import { Ok } from '@playin/contracts';
+import type { User } from '@gather/contracts';
+import { Ok } from '@gather/contracts';
 import {
   apiFetch,
   clearAccessToken,

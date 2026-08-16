@@ -6,7 +6,7 @@ export default function AbusePage() {
   return (
     <>
       <h1>Abuse &amp; DMCA</h1>
-      <p><em>Playin is invite-only by design, which keeps the abuse surface small. Here is how to report what remains.</em></p>
+      <p><em>Gather is invite-only by design, which keeps the abuse surface small. Here is how to report what remains.</em></p>
 
       <h2>Reporting content</h2>
       <p>

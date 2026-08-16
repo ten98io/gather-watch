@@ -93,12 +93,12 @@ describe('origin allowlist', () => {
   it('rejects everything else — no suffix, prefix or subdomain matching', () => {
     for (const origin of [
       'https://evil.example',
-      'https://playin.app.evil.example',
-      'https://evilplayin.app',
-      'https://playin.app.co',
-      'https://staging.playin.app',
-      'http://playin.app',
-      'https://playin.app:8443',
+      'https://gather.watch.evil.example',
+      'https://evilgather.watch',
+      'https://gather.watch.co',
+      'https://staging.gather.watch',
+      'http://gather.watch',
+      'https://gather.watch:8443',
       'http://localhost:3001',
       'http://localhost',
       'file://',
@@ -111,8 +111,8 @@ describe('origin allowlist', () => {
   });
 
   it('derives the origin from browser-populated fields only', () => {
-    expect(senderOrigin({ origin: 'https://playin.app' })).toBe('https://playin.app');
-    expect(senderOrigin({ url: 'https://playin.app/room/x' })).toBe('https://playin.app');
+    expect(senderOrigin({ origin: 'https://gather.watch' })).toBe('https://gather.watch');
+    expect(senderOrigin({ url: 'https://gather.watch/room/x' })).toBe('https://gather.watch');
     // Opaque origin (sandboxed iframe) → no origin → not allowed.
     expect(senderOrigin({ origin: 'null', url: 'about:blank' })).toBeNull();
     expect(senderOrigin({})).toBeNull();
@@ -126,9 +126,9 @@ describe('screenExternal — a disallowed origin is rejected', () => {
     const host = makeHost();
     for (const origin of [
       'https://evil.example',
-      'https://staging.playin.app',
+      'https://staging.gather.watch',
       'http://localhost:8080',
-      'https://playin.app.evil.example',
+      'https://gather.watch.evil.example',
     ]) {
       const screened = screenExternal(request, senderFrom(origin, 7));
       expect(screened.action, origin).toBe('reject');
@@ -165,7 +165,7 @@ describe('screenExternal — a disallowed origin is rejected', () => {
 /* ── screening: envelope, version, payload, policy ── */
 
 describe('screenExternal', () => {
-  it('ignores non-Playin messages without answering them', () => {
+  it('ignores non-Gather messages without answering them', () => {
     for (const raw of [null, 'ping', { type: 'redux/INIT' }, { channel: 'other', id: 'r', type: 'x' }]) {
       const screened = screenExternal(raw, senderFrom(ALLOWED));
       expect(screened.action).toBe('ignore');
@@ -187,7 +187,7 @@ describe('screenExternal', () => {
   it('answers an unknown message type with UNSUPPORTED_TYPE and does nothing', async () => {
     const host = makeHost();
     const screened = screenExternal(
-      { channel: 'playin.ext', v: 1, id: 'r3', type: 'exec', payload: { cmd: 'rm -rf' } },
+      { channel: 'gather.ext', v: 1, id: 'r3', type: 'exec', payload: { cmd: 'rm -rf' } },
       senderFrom(ALLOWED),
     );
     expect(screened.action).toBe('reject');
@@ -200,7 +200,7 @@ describe('screenExternal', () => {
     for (const apiOrigin of [
       'https://evil.example',
       'http://localhost:4001',
-      'https://api.playin.app',
+      'https://api.gather.watch',
       'javascript:alert(1)',
     ]) {
       const screened = screenExternal(
@@ -301,7 +301,7 @@ describe('screenEventPort', () => {
   });
 
   it('refuses an unsupported port version audibly (so the page can downgrade)', () => {
-    const res = screenEventPort(`playin.ext.events.v${PROTOCOL_VERSION + 1}`, senderFrom(ALLOWED));
+    const res = screenEventPort(`gather.ext.events.v${PROTOCOL_VERSION + 1}`, senderFrom(ALLOWED));
     expect(res).toEqual({ ok: false, reason: 'unsupported-version', silent: false });
   });
 });

@@ -56,7 +56,7 @@ one. Required before step 4 lands:
 1. **Detect and state it plainly.** `lib/extension-bridge.ts`
    `detectExtension()` already returns `{installed, compatible, version}`
    SSR-safely with a short timeout. The room must render a clear, friendly
-   state: what Playin needs, why, and a one-click install link — never a
+   state: what Gather needs, why, and a one-click install link — never a
    broken player or a spinner.
 2. **The room stays usable without it.** Chat, call, queue and presence must
    all work with no extension. You can be in the room, talking to friends,
@@ -73,7 +73,7 @@ one. Required before step 4 lands:
 
 Target structure:
 
-- `README.md` — entry point: what Playin is, quick start, repo map, where to
+- `README.md` — entry point: what Gather is, quick start, repo map, where to
   go next. No architecture detail.
 - `docs/ARCHITECTURE.md` — **the technical spine**: the room model, the two
   playback modes, the `PlaybackDriver` contract and its three

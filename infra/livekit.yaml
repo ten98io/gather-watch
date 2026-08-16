@@ -1,4 +1,4 @@
-# ── Playin — LiveKit OSS server configuration ────────────────────────────────
+# ── Gather — LiveKit OSS server configuration ────────────────────────────────
 # Mounted read-only into the livekit service by infra/docker-compose.yml.
 #
 # SECRETS: the `keys:` block below holds DEV PLACEHOLDERS ONLY (they match
@@ -28,10 +28,10 @@ rtc:
   # see "First boot" in infra/README.md), (2) add a matching lt-cred-mech
   # user in turnserver.conf, then uncomment:
   # turn_servers:
-  #   - host: playin.example.com # public hostname (or IP) where coturn's 3478/udp is reachable
+  #   - host: gather.example.com # public hostname (or IP) where coturn's 3478/udp is reachable
   #     port: 3478
   #     protocol: udp
-  #     username: playin
+  #     username: gather
   #     credential: devsecret-at-least-32-characters-long
 
 # Built-in TURN stays off — coturn is the relay for this stack.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TurnCredentialsResponse } from '@playin/contracts';
+import type { TurnCredentialsResponse } from '@gather/contracts';
 import { TurnCredentialManager } from '../src/turn';
 import { VirtualClock } from './harness';
 

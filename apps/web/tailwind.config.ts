@@ -1,5 +1,5 @@
 import type { Config } from 'tailwindcss';
-import type { ColorTokenName, TypeStep } from '@playin/design';
+import type { ColorTokenName, TypeStep } from '@gather/design';
 import {
   COLOR_TOKEN_NAMES,
   cssVarName,
@@ -8,10 +8,10 @@ import {
   motion,
   radii,
   typeRamp,
-} from '@playin/design';
+} from '@gather/design';
 
 /**
- * Tailwind bindings for the Playin design tokens (DESIGN.md §2).
+ * Tailwind bindings for the Gather design tokens (DESIGN.md §2).
  *
  * Owns: the map from token to utility name — what `bg-surface-1`, `text-hi`
  * and `rounded-ctl` are called — and the web-only bits the package cannot
@@ -19,7 +19,7 @@ import {
  * fluid type step interpolates across.
  *
  * Deliberately NOT: a value. Every number and colour below is read from
- * @playin/design. Colours in particular stay `var(--token)` rather than the
+ * @gather/design. Colours in particular stay `var(--token)` rather than the
  * resolved colour, because the runtime depends on it twice over: `data-theme`
  * on <html> swaps the whole palette, and listen rooms rebind `--accent` inline
  * per track (components/stage/ListenStage.tsx) so the seek bar and the
@@ -73,7 +73,7 @@ function fontSizeValue(step: TypeStep): FontSizeValue {
 }
 
 /**
- * Token → utility suffix. Exhaustive by type: add a token to @playin/design
+ * Token → utility suffix. Exhaustive by type: add a token to @gather/design
  * and this file stops compiling until web decides what to call it, which is
  * the whole point — the old failure mode was a palette growing in one place
  * and quietly not in another.

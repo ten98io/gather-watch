@@ -1,6 +1,6 @@
-# Deploying Playin on Railway — step-by-step runbook
+# Deploying Gather on Railway — step-by-step runbook
 
-Project: **Playin-App** (already created and linked via `railway link`).
+Project: **Gather-App** (already created and linked via `railway link`).
 Data plane: **MongoDB Atlas** (external, existing) + **Railway Redis** (already
 provisioned). **Do not add Railway's Mongo template** — Mongo lives in Atlas.
 
@@ -56,7 +56,7 @@ tokens the api mints).
    Atlas + PaaS; rotate the password if you choose this).
 3. Copy the **connection string** (Drivers → Node.js), and put the database
    name in the path. It should look like:
-   `mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/playin?retryWrites=true&w=majority`
+   `mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/gather?retryWrites=true&w=majority`
 
 > ⚠️ Naming mismatch to watch: your local file uses `MONGODB_URI`, but the app
 > reads **`MONGO_URL`**. On Railway the variable must be named `MONGO_URL`.
@@ -292,17 +292,17 @@ The extension talks to the API directly, and MV3 bundles can't read env at
 runtime — the origin is inlined at build time:
 
 ```bash
-PLAYIN_API_URL=https://<api-domain> pnpm --filter ./apps/extension build
+GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build
 ```
 
 Load `apps/extension/dist` via chrome://extensions → Load unpacked (or zip it
-for the Web Store). Omitting `PLAYIN_API_URL` keeps the localhost dev default.
+for the Web Store). Omitting `GATHER_API_URL` keeps the localhost dev default.
 
 ## Custom domains (when ready)
 
-1. `web` → Settings → Networking → Custom Domain (e.g. `playin.app`), add the
+1. `web` → Settings → Networking → Custom Domain (e.g. `gather.watch`), add the
    CNAME Railway shows at your DNS.
-2. Same for `api` (e.g. `api.playin.app`).
+2. Same for `api` (e.g. `api.gather.watch`).
 3. Update `NEXT_PUBLIC_API_URL` (web, triggers rebuild), `APP_URL` + `API_URL`
    (api), and redeploy both.
 4. Optional edge caching: proxy the domains through Cloudflare and cache
@@ -322,7 +322,7 @@ for the Web Store). Omitting `PLAYIN_API_URL` keeps the localhost dev default.
 | Sign-in email never arrives | SMTP vars unset/wrong → magic link is in `railway logs --service api`. |
 | Data vanished after a redeploy | `MONGO_URL`/`REDIS_URL` empty at boot → api ran on in-memory adapters. Set them; check `/readyz`. |
 | Uploads say unavailable | `ENABLE_MEDIA_PIPELINE` must be `true` on **both** api and media, S3 vars on both. |
-| Browser extension can't connect | It was built without `PLAYIN_API_URL` and is pointing at localhost — rebuild it (see below). |
+| Browser extension can't connect | It was built without `GATHER_API_URL` and is pointing at localhost — rebuild it (see below). |
 
 ## Architecture notes (unchanged decisions)
 

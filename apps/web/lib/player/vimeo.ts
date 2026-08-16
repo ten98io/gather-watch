@@ -2,7 +2,7 @@
  * VimeoAdapter — full-sync Mode A over the official player.js API (Promise
  * methods + timeupdate events), drift-corrected like native media.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
 
 interface VimeoPlayer {

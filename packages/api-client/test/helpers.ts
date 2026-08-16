@@ -1,4 +1,4 @@
-import type { RoomId, ServerEvent, UserId } from '@playin/contracts';
+import type { RoomId, ServerEvent, UserId } from '@gather/contracts';
 import type {
   FetchInitLike,
   FetchLike,

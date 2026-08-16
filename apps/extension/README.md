@@ -1,4 +1,4 @@
-# @playin/extension — Playin for Chrome/Edge/Brave (MV3)
+# @gather/extension — Gather for Chrome/Edge/Brave (MV3)
 
 Mode A and Mode B on **any site**, from the browser — including DRM services
 (Netflix, Prime Video, Disney+, Max, Hulu…) through everyone's own player and
@@ -19,11 +19,11 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
 - **Cast**: on sites with their own cast control (YouTube, YouTube Music,
   Spotify Connect) the extension presses **that** button for you, so casting
   happens inside the site's own licensed session. Where a site has no such
-  control the button stays visible and says why — Playin never captures,
+  control the button stays visible and says why — Gather never captures,
   mirrors or re-encodes protected video, which would black-frame anyway.
 - **Mode B (share)**: captures the tab **with audio** via `chrome.tabCapture`
   (offscreen document) and fans it out as the room's mesh `share` track — the
-  exact same `@playin/p2p` path the web app uses, so web/mobile viewers see it.
+  exact same `@gather/p2p` path the web app uses, so web/mobile viewers see it.
 - **Guest identity**: connecting guest-joins as "Extension" (room-scoped, no
   account). Driving playback obeys the room's `playbackControl` policy like
   any guest (default `host` — the host drives; the extension follows).
@@ -32,11 +32,11 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
 
 ```bash
 pnpm install
-pnpm --filter @playin/extension build     # → apps/extension/dist
+pnpm --filter @gather/extension build     # → apps/extension/dist
 ```
 
 Chrome → `chrome://extensions` → Developer mode → **Load unpacked** → select
-`apps/extension/dist`. Open the site you want to watch, click the Playin
+`apps/extension/dist`. Open the site you want to watch, click the Gather
 toolbar icon, paste the room code (`XXXX-XXXX-XXXX`), Connect.
 
 ## Honest limits

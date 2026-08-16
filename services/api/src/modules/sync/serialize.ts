@@ -3,7 +3,7 @@
  * realtime snapshots (playback/queue/restream/master) that must never leave
  * the server, so every outbound room shape goes through this picker.
  */
-import type { Room } from '@playin/contracts';
+import type { Room } from '@gather/contracts';
 import type { RoomDoc } from '../../adapters/ports';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only

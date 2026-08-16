@@ -1,5 +1,5 @@
 /**
- * The drift guard between apps/web and @playin/design.
+ * The drift guard between apps/web and @gather/design.
  *
  * Owns: proving that app/tokens.generated.css is still what the package emits,
  * that globals.css writes no colour of its own, and that every token reaches
@@ -12,8 +12,8 @@
  * problem. This file only asserts that web is reading the same numbers.
  *
  * After changing packages/design/src, regenerate rather than hand-edit:
- *   pnpm --filter @playin/design build
- *   pnpm --filter @playin/web tokens:generate
+ *   pnpm --filter @gather/design build
+ *   pnpm --filter @gather/web tokens:generate
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -28,13 +28,13 @@ import {
   motion,
   radii,
   typeRamp,
-} from '@playin/design';
+} from '@gather/design';
 import tailwindConfig from '../tailwind.config';
 
 const GENERATED_CSS_PATH = fileURLToPath(new URL('../app/tokens.generated.css', import.meta.url));
 const GLOBALS_CSS_PATH = fileURLToPath(new URL('../app/globals.css', import.meta.url));
 
-/** `pnpm --filter @playin/web tokens:generate` sets this; CI never does. */
+/** `pnpm --filter @gather/web tokens:generate` sets this; CI never does. */
 const REGENERATE = process.env.UPDATE_TOKENS === '1';
 
 const globalsCss = readFileSync(GLOBALS_CSS_PATH, 'utf8');
@@ -59,7 +59,7 @@ const extend = (tailwindConfig.theme?.extend ?? {}) as unknown as {
 };
 
 describe('generated token stylesheet', () => {
-  it('is exactly what @playin/design emits', () => {
+  it('is exactly what @gather/design emits', () => {
     const expected = emitCssThemes();
     if (REGENERATE) {
       writeFileSync(GENERATED_CSS_PATH, expected, 'utf8');
@@ -67,7 +67,7 @@ describe('generated token stylesheet', () => {
     const actual = readGenerated();
     expect(
       actual,
-      'app/tokens.generated.css is stale — run `pnpm --filter @playin/web tokens:generate`',
+      'app/tokens.generated.css is stale — run `pnpm --filter @gather/web tokens:generate`',
     ).toBe(expected);
   });
 

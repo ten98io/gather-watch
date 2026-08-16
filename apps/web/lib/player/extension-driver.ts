@@ -72,24 +72,24 @@ import type {
  * second one appears.
  */
 export const EXTENSION_ERROR_MESSAGE: Record<ProtocolErrorCode, string> = {
-  UNSUPPORTED_VERSION: 'Your Playin extension is a different version — update it to keep watching.',
-  UNSUPPORTED_TYPE: 'Your Playin extension is too old for this room — update it.',
-  BAD_REQUEST: 'Playin couldn’t hand this room to the extension.',
-  FORBIDDEN_ORIGIN: 'The extension didn’t accept this page — open the room from your Playin site.',
-  API_ORIGIN_MISMATCH: 'That extension is set up for a different Playin server.',
+  UNSUPPORTED_VERSION: 'Your Gather extension is a different version — update it to keep watching.',
+  UNSUPPORTED_TYPE: 'Your Gather extension is too old for this room — update it.',
+  BAD_REQUEST: 'Gather couldn’t hand this room to the extension.',
+  FORBIDDEN_ORIGIN: 'The extension didn’t accept this page — open the room from your Gather site.',
+  API_ORIGIN_MISMATCH: 'That extension is set up for a different Gather server.',
   NOT_CONNECTED: 'The extension isn’t in this room yet.',
   INTERNAL: 'The extension ran into a problem.',
-  NOT_INSTALLED: 'Playin plays through its browser extension — add it to watch together.',
+  NOT_INSTALLED: 'Gather plays through its browser extension — add it to watch together.',
   NO_RESPONSE: 'The extension didn’t answer — try again.',
   UNAVAILABLE: 'The extension isn’t available right now.',
 };
 
 /** Shown when a request fails for a reason we have no specific sentence for. */
-const GENERIC_FAILURE = 'Playin couldn’t reach the extension.';
+const GENERIC_FAILURE = 'Gather couldn’t reach the extension.';
 
 const NOT_INSTALLED_MESSAGE = EXTENSION_ERROR_MESSAGE.NOT_INSTALLED;
 const UNSUPPORTED_BROWSER_MESSAGE =
-  'This browser can’t run the Playin extension. Use Chrome on a computer, or the Playin app on your phone.';
+  'This browser can’t run the Gather extension. Use Chrome on a computer, or the Gather app on your phone.';
 
 /** Turn a bridge failure into something a person can read. */
 export function describeExtensionError(error: BridgeError, fallback = GENERIC_FAILURE): string {
@@ -109,9 +109,9 @@ const CHROME_WEB_STORE_DETAIL = 'https://chromewebstore.google.com/detail/';
  * that is the only form Next inlines at build time.
  */
 export function extensionInstallUrl(): string | null {
-  const configured = process.env.NEXT_PUBLIC_PLAYIN_EXTENSION_INSTALL_URL;
+  const configured = process.env.NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL;
   if (typeof configured === 'string' && configured.trim().length > 0) return configured.trim();
-  const id = parseExtensionIds(process.env.NEXT_PUBLIC_PLAYIN_EXTENSION_ID)[0];
+  const id = parseExtensionIds(process.env.NEXT_PUBLIC_GATHER_EXTENSION_ID)[0];
   return id === undefined ? null : `${CHROME_WEB_STORE_DETAIL}${id}`;
 }
 
@@ -156,7 +156,7 @@ function brandsSayChromium(raw: unknown): boolean {
  * Chrome with nothing installed it is undefined. Its absence is therefore
  * evidence about the *extension*, never about the browser — reading it the
  * other way told every single person the install funnel exists to convert
- * "this browser can’t run Playin" and hid the link from them.
+ * "this browser can’t run Gather" and hid the link from them.
  *
  * Its presence is still evidence, in the one direction it can be: a browser
  * that injects an extension channel plainly hosts extensions.

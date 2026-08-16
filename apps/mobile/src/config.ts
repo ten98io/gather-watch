@@ -15,5 +15,5 @@ export const API_URL: string =
 export const WS_URL: string = `${API_URL.replace(/^http/i, 'ws')}/ws`;
 
 /** Deep-link scheme (app.json). Magic links for mobile target
- *  `playin://login?token=…`; in dev the link/token can be pasted manually. */
-export const DEEP_LINK_SCHEME = 'playin';
+ *  `gather://login?token=…`; in dev the link/token can be pasted manually. */
+export const DEEP_LINK_SCHEME = 'gather';

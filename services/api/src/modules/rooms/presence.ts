@@ -14,7 +14,7 @@
  * presence.diff events for it — mirrors never diff, or every instance would
  * broadcast the same change.
  */
-import type { PresenceEntry, PresenceState, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, PresenceState, RoomId, UserId } from '@gather/contracts';
 import { newId } from '../../lib/tokens';
 import type { Deps } from '../types';
 import { roomCtlChannel } from './deps';

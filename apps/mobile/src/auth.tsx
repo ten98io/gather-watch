@@ -2,15 +2,15 @@
  * AuthProvider / useAuth — magic-link + guest auth on top of src/api.ts.
  *
  * Session model (matches services/api): short-lived access JWT in secure
- * store (sent as Bearer), refresh token scraped from the `playin_rt`
+ * store (sent as Bearer), refresh token scraped from the `gather_rt`
  * Set-Cookie and re-attached manually on /auth/refresh (see api.ts header).
- * Deep link: production magic links target `playin://login?token=…`
- * (app.json scheme "playin"); the login screen also accepts a pasted
+ * Deep link: production magic links target `gather://login?token=…`
+ * (app.json scheme "gather"); the login screen also accepts a pasted
  * token or full link in dev.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { InviteCode, User } from '@playin/contracts';
+import type { InviteCode, User } from '@gather/contracts';
 import { api, setAuthExpiredHandler, tokenStore } from './api';
 
 export type AuthStatus = 'loading' | 'anon' | 'authed';
@@ -26,7 +26,7 @@ export interface AuthContextValue {
   guestJoin: (inviteCode: string, displayName: string) => Promise<{ roomId: string }>;
   /**
    * Local sign-out (secure store wiped). NOTE: the api exposes
-   * POST /auth/logout but @playin/api-client@0.1.0 does not surface it —
+   * POST /auth/logout but @gather/api-client@0.1.0 does not surface it —
    * server-side session revocation is an orchestrator TODO; the session
    * remains valid server-side until expiry.
    */

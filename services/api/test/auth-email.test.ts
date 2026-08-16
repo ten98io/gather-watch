@@ -86,11 +86,11 @@ function inspect(value: unknown): string {
 }
 
 const SMTP_SETTINGS: AppConfig['smtp'] = {
-  host: 'smtp.playin.test',
+  host: 'smtp.gather.test',
   port: 587,
   user: 'mailer',
   pass: SMTP_PASS,
-  from: 'Playin <no-reply@smtp.test>',
+  from: 'Gather <no-reply@smtp.test>',
 };
 
 function cfConfig(overrides: Partial<AppConfig['cloudflare']> = {}): AppConfig {
@@ -98,7 +98,7 @@ function cfConfig(overrides: Partial<AppConfig['cloudflare']> = {}): AppConfig {
     cloudflare: {
       emailAccountId: ACCOUNT_ID,
       emailApiToken: CF_TOKEN,
-      emailFrom: 'Playin <no-reply@playin.test>',
+      emailFrom: 'Gather <no-reply@gather.test>',
       ...overrides,
     },
   });
@@ -141,9 +141,9 @@ describe('magic-link mailer', () => {
       expect(String(call[0])).not.toContain(CF_TOKEN);
 
       const body = JSON.parse(String(init.body)) as Record<string, string>;
-      expect(body.from).toBe('Playin <no-reply@playin.test>');
+      expect(body.from).toBe('Gather <no-reply@gather.test>');
       expect(body.to).toBe('user@example.com');
-      expect(body.subject).toBe('Your Playin sign-in link');
+      expect(body.subject).toBe('Your Gather sign-in link');
       expect(body.text).toContain(LINK);
       expect(body.html).toContain(`href="${LINK}"`);
 
@@ -265,7 +265,7 @@ describe('magic-link mailer', () => {
       expect(fetchMock).not.toHaveBeenCalled();
       expect(nodemailerMock.createTransport).toHaveBeenCalledWith(
         expect.objectContaining({
-          host: 'smtp.playin.test',
+          host: 'smtp.gather.test',
           port: 587,
           secure: false,
           auth: { user: 'mailer', pass: SMTP_PASS },
@@ -273,9 +273,9 @@ describe('magic-link mailer', () => {
       );
       expect(nodemailerMock.sendMail).toHaveBeenCalledWith(
         expect.objectContaining({
-          from: 'Playin <no-reply@smtp.test>',
+          from: 'Gather <no-reply@smtp.test>',
           to: 'user@example.com',
-          subject: 'Your Playin sign-in link',
+          subject: 'Your Gather sign-in link',
         }),
       );
     });

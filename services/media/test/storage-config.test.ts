@@ -11,7 +11,7 @@ import { S3Storage } from '../src/storage/s3';
 
 /** A linked Railway Bucket injects exactly these five names. */
 const RAILWAY_ENV = {
-  BUCKET: 'playin-prod-bucket',
+  BUCKET: 'gather-prod-bucket',
   ACCESS_KEY_ID: 'railway-key-id',
   SECRET_ACCESS_KEY: 'railway-secret-value',
   REGION: 'auto',
@@ -20,16 +20,16 @@ const RAILWAY_ENV = {
 
 const MINIO_ENV = {
   S3_ENDPOINT: 'http://localhost:9000',
-  S3_ACCESS_KEY: 'playin',
-  S3_SECRET_KEY: 'playin-secret',
-  S3_BUCKET: 'playin-media',
+  S3_ACCESS_KEY: 'gather',
+  S3_SECRET_KEY: 'gather-secret',
+  S3_BUCKET: 'gather-media',
 };
 
 describe('s3 config sources', () => {
   it('reads a linked Railway bucket with no manual mapping', () => {
     const { s3 } = loadConfig({ NODE_ENV: 'test', ...RAILWAY_ENV });
     expect(s3.endpoint).toBe('https://storage.railway.app');
-    expect(s3.bucket).toBe('playin-prod-bucket');
+    expect(s3.bucket).toBe('gather-prod-bucket');
     expect(s3.accessKey).toBe('railway-key-id');
     expect(s3.secretKey).toBe('railway-secret-value');
     expect(s3.region).toBe('auto');
@@ -58,10 +58,10 @@ describe('s3 config sources', () => {
     const { s3 } = loadConfig({ NODE_ENV: 'test' });
     expect(s3).toMatchObject({
       endpoint: 'http://localhost:9000',
-      bucket: 'playin-media',
+      bucket: 'gather-media',
       region: 'us-east-1',
       pathStyle: true,
-      publicBaseUrl: 'http://localhost:9000/playin-media',
+      publicBaseUrl: 'http://localhost:9000/gather-media',
     });
   });
 });
@@ -95,9 +95,9 @@ describe('s3 addressing style', () => {
 describe('public base url', () => {
   it('defaults to the virtual-hosted object base on Railway', () => {
     const { s3 } = loadConfig({ NODE_ENV: 'test', ...RAILWAY_ENV });
-    expect(s3.publicBaseUrl).toBe('https://playin-prod-bucket.storage.railway.app');
+    expect(s3.publicBaseUrl).toBe('https://gather-prod-bucket.storage.railway.app');
     expect(new S3Storage(s3).publicUrl('hls/asset-1/master.m3u8')).toBe(
-      'https://playin-prod-bucket.storage.railway.app/hls/asset-1/master.m3u8',
+      'https://gather-prod-bucket.storage.railway.app/hls/asset-1/master.m3u8',
     );
   });
 
@@ -125,7 +125,7 @@ describe('the URL the client actually builds', () => {
     const { s3, presignTtlSec } = loadConfig({ NODE_ENV: 'test', ...RAILWAY_ENV });
     const storage = new S3Storage(s3, presignTtlSec);
     const url = new URL(storage.presignUploadPart('src/a b.mp4', 'up-1', 2));
-    expect(url.origin).toBe('https://playin-prod-bucket.storage.railway.app');
+    expect(url.origin).toBe('https://gather-prod-bucket.storage.railway.app');
     // The bucket is the subdomain and MUST NOT also be in the path.
     expect(url.pathname).toBe('/src/a%20b.mp4');
     expect(url.searchParams.get('X-Amz-Credential')).toContain('/auto/s3/aws4_request');
@@ -136,7 +136,7 @@ describe('the URL the client actually builds', () => {
     const { s3, presignTtlSec } = loadConfig({ NODE_ENV: 'test', ...MINIO_ENV });
     const url = new URL(new S3Storage(s3, presignTtlSec).presignUploadPart('src/a.mp4', 'up-1', 1));
     expect(url.origin).toBe('http://localhost:9000');
-    expect(url.pathname).toBe('/playin-media/src/a.mp4');
+    expect(url.pathname).toBe('/gather-media/src/a.mp4');
     expect(url.searchParams.get('X-Amz-Credential')).toContain('/us-east-1/s3/aws4_request');
   });
 
@@ -152,7 +152,7 @@ describe('the URL the client actually builds', () => {
     expect(await new S3Storage(s3).headObject('src/asset-1.mp4')).toBeNull();
 
     const call = calls[0];
-    expect(call?.url).toBe('https://playin-prod-bucket.storage.railway.app/src/asset-1.mp4');
+    expect(call?.url).toBe('https://gather-prod-bucket.storage.railway.app/src/asset-1.mp4');
     // SigV4 signs `host` implicitly from the request URL — the credential scope
     // is what proves the region came from config rather than a hardcoded one.
     expect(call?.headers.get('authorization')).toContain('/auto/s3/aws4_request');
@@ -173,8 +173,8 @@ describe('the URL the client actually builds', () => {
 
     const { s3 } = loadConfig({ NODE_ENV: 'test', ...RAILWAY_ENV });
     await new S3Storage(s3).deletePrefix('hls/asset-1/');
-    expect(urls[0]).toContain('https://playin-prod-bucket.storage.railway.app/?list-type=2');
-    expect(urls[0]).not.toContain('/playin-prod-bucket?');
+    expect(urls[0]).toContain('https://gather-prod-bucket.storage.railway.app/?list-type=2');
+    expect(urls[0]).not.toContain('/gather-prod-bucket?');
   });
 });
 
@@ -226,7 +226,7 @@ describe('fails closed instead of half-configuring', () => {
       ENABLE_MEDIA_PIPELINE: 'true',
     };
     expect(() => loadConfig(base)).toThrow(/incomplete object storage config/);
-    expect(loadConfig({ ...base, ...RAILWAY_ENV }).s3.bucket).toBe('playin-prod-bucket');
+    expect(loadConfig({ ...base, ...RAILWAY_ENV }).s3.bucket).toBe('gather-prod-bucket');
   });
 
   it('a production deploy with the pipeline OFF still boots (P2P path, no S3)', () => {

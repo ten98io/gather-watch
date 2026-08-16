@@ -158,7 +158,7 @@ async function refresh(): Promise<void> {
 
   renderShare(liveShare(status));
 
-  // The cast control is always visible: when Playin cannot act it says why,
+  // The cast control is always visible: when Gather cannot act it says why,
   // instead of disappearing (docs/EXTENSION_FIRST.md, Part 3).
   const affordance = castAffordanceFor(status.provider);
   const castBtn = $<HTMLButtonElement>('cast');

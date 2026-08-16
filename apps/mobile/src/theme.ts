@@ -1,5 +1,5 @@
 /**
- * Playin mobile theme — the React Native adapter over @playin/design.
+ * Gather mobile theme — the React Native adapter over @gather/design.
  *
  * Owns: the names apps/mobile imports (`palette`, `paletteLight`, `type`,
  * `radii`, `spacing`, `motion`, `layout`, `auroraGradient`, `glow`, `theme`),
@@ -7,7 +7,7 @@
  * (`type.bodyStrong`, `type.mono`) because they are RN-shaped, not system-level.
  *
  * Deliberately NOT: any colour, radius, spacing, duration or type value. Every
- * number below is imported from @playin/design, which authors them once in
+ * number below is imported from @gather/design, which authors them once in
  * OKLCH and renders them per-platform. A hex literal in this file is the exact
  * bug that let mobile ship `--text-low` at oklch 0.58 long after web raised it
  * to 0.65 for contrast — there is no longer anywhere for that bug to live.
@@ -21,15 +21,15 @@
  *    reconciled mobile's name with web's).
  */
 
-import type { RnTypeStep } from '@playin/design';
-import { fontFamily, layout, motion, radii, rnThemes, spacing } from '@playin/design';
+import type { RnTypeStep } from '@gather/design';
+import { fontFamily, layout, motion, radii, rnThemes, spacing } from '@gather/design';
 
 /**
- * WCAG maths used to live in this file. It now lives in @playin/design, where a
+ * WCAG maths used to live in this file. It now lives in @gather/design, where a
  * guard test walks the whole surface ladder — mobile had the maths and still
  * shipped a failing token, because nothing ran it over every pair.
  */
-export { contrastRatio, relativeLuminance } from '@playin/design';
+export { contrastRatio, relativeLuminance } from '@gather/design';
 
 export { layout, motion, radii, spacing };
 

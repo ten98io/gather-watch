@@ -19,7 +19,7 @@ import type {
   RoomId,
   RoomPolicyLevel,
   UserId,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { AppError, isAppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import { cursorDocId, memberDocId } from '../../adapters/ports';

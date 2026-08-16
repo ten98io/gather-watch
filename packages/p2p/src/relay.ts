@@ -6,7 +6,7 @@
  * topology.
  */
 
-import type { RelayMode, RoomId } from '@playin/contracts';
+import type { RelayMode, RoomId } from '@gather/contracts';
 import type { MeshManager } from './mesh';
 import type { ChannelLabel } from './channels';
 import type {

@@ -21,9 +21,9 @@
  * storage area is TRUSTED_CONTEXTS-only by default (no content-script read)
  * and is wiped when the browser closes.
  */
-import { RoomSocket } from '@playin/api-client';
-import { normalizeInviteCode } from '@playin/contracts';
-import type { MemberRole, PlaybackState, RestreamState, RoomPolicyLevel } from '@playin/contracts';
+import { RoomSocket } from '@gather/api-client';
+import { normalizeInviteCode } from '@gather/contracts';
+import type { MemberRole, PlaybackState, RestreamState, RoomPolicyLevel } from '@gather/contracts';
 
 import { API_URL, WEB_ORIGINS, WS_URL, originOfUrl } from './config';
 import { ElasticDriver, mediaKeyOf, profileForContent, voiceActiveFrom } from './driver';
@@ -152,7 +152,7 @@ let lastContentTabId: number | null = null;
 
 const MEDIA_FRESH_MS = 4000;
 
-/** A tab we may drive: http(s), and not the Playin web app itself. */
+/** A tab we may drive: http(s), and not the Gather web app itself. */
 function isDrivableTabUrl(url: string | undefined): boolean {
   const origin = originOfUrl(url ?? '');
   if (origin === null) return false;
@@ -757,7 +757,7 @@ async function sendRoomChat(tabId: number | null, text: string): Promise<null> {
 }
 
 /**
- * Open the room in the Playin web app. The first configured web origin is the
+ * Open the room in the Gather web app. The first configured web origin is the
  * app's own (see config.ts) — the extension never navigates anywhere else.
  */
 async function openRoomInWebApp(): Promise<null> {
@@ -900,7 +900,7 @@ async function connect(code: string, tabId: number): Promise<void> {
 
 const DRIVE_TICK_MS = 1000;
 /** 30s is MV3's floor; anything smaller is silently clamped by Chrome. */
-const KEEPALIVE_ALARM = 'playin.keepalive';
+const KEEPALIVE_ALARM = 'gather.keepalive';
 const KEEPALIVE_PERIOD_MINUTES = 0.5;
 
 /**
@@ -997,8 +997,8 @@ async function disconnect(): Promise<void> {
 
 /* ── chrome.storage.session mirror (survives service-worker death) ── */
 
-const SESSION_KEY = 'playin.session.v1';
-const SHARING_ROOM_KEY = 'playin.sharing-room.v1';
+const SESSION_KEY = 'gather.session.v1';
+const SHARING_ROOM_KEY = 'gather.sharing-room.v1';
 
 async function persistSharingRoom(): Promise<void> {
   try {
@@ -1242,7 +1242,7 @@ export async function planShare(
   if (surface === 'tab') {
     if (room.tabId === null) throw new Error('no tab selected');
     // Capturing a protected surface is refused up front: output protection
-    // black-frames it by design, and Playin never re-encodes protected media.
+    // black-frames it by design, and Gather never re-encodes protected media.
     // Mode A (everyone's own player, in sync) is the path that works.
     const summary = deps.providerOf(room.tabId);
     if (summary !== undefined && summary.tier === 'drm') {
@@ -1402,7 +1402,7 @@ async function castActiveTab(): Promise<{ clicked: boolean; reason: string }> {
     .sendMessage(tabId, { kind: 'castNative' }, { frameId })
     .catch(() => undefined)) as { clicked?: boolean; reason?: string } | undefined;
   if (res === undefined) {
-    return { clicked: false, reason: 'Playin is not running on this page yet — reload it and try again.' };
+    return { clicked: false, reason: 'Gather is not running on this page yet — reload it and try again.' };
   }
   return { clicked: res.clicked === true, reason: res.reason ?? '' };
 }

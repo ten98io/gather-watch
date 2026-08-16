@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# ── Playin web (Next.js 15) ───────────────────────────────────────────────────
+# ── Gather web (Next.js 15) ───────────────────────────────────────────────────
 # Build context MUST be the REPO ROOT (infra/docker-compose.yml sets
 # `context: ..`), because this is a full-workspace pnpm build:
 #

@@ -11,7 +11,7 @@
  * ephemeral presence.diff is broadcast; clients refetch the member list.
  */
 import { randomInt } from 'node:crypto';
-import { normalizeInviteCode } from '@playin/contracts';
+import { normalizeInviteCode } from '@gather/contracts';
 import type {
   InviteCode,
   MemberRole,
@@ -20,7 +20,7 @@ import type {
   RoomPolicies,
   UpdatePoliciesBody,
   UserId,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { AppError, isAppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import { cursorDocId, memberDocId } from '../../adapters/ports';

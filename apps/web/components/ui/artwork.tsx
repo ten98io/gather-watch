@@ -73,7 +73,7 @@ export function Artwork({
   const hasImage = typeof src === 'string' && src.length > 0 && src !== failedSrc;
   const Glyph = kind === 'music' ? MusicIcon : FilmIcon;
   const decorative = alt.length === 0;
-  const gradient = artworkGradient(decorative ? (src ?? 'playin') : alt);
+  const gradient = artworkGradient(decorative ? (src ?? 'gather') : alt);
 
   // Fixed sizes get explicit dimensions so the row never reflows while the
   // image loads; 'full' fills its container and takes height from the aspect.
