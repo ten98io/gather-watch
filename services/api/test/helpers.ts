@@ -4,7 +4,7 @@
  * app built here runs on MemoryStore + MemoryBus.
  */
 import type { FastifyInstance } from 'fastify';
-import type { InviteCode, Member, RoomId, User, UserId } from '@playin/contracts';
+import type { InviteCode, Member, RoomId, User, UserId } from '@gather/contracts';
 import { buildApp } from '../src/app';
 import type { BuiltApp } from '../src/app';
 import { loadConfig } from '../src/config';
@@ -15,17 +15,27 @@ import { memberDocId } from '../src/adapters/ports';
 import type { MemberDoc, RoomDoc, StorePort, UserDoc } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 
+export interface TestConfigOverrides extends Partial<Omit<AppConfig, 'cloudflare' | 'smtp'>> {
+  /** Merged over the defaults, so a test names only the settings it cares
+   *  about and a new field in the group doesn't break every call site. */
+  cloudflare?: Partial<AppConfig['cloudflare']>;
+  smtp?: Partial<AppConfig['smtp']>;
+}
+
 /**
  * Development config (dev magic links are echoed back as `devLink`) with rate
  * limits effectively disabled so no test flakes on a 429.
  */
-export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+export function testConfig(overrides: TestConfigOverrides = {}): AppConfig {
   const base = loadConfig({});
+  const { cloudflare, smtp, ...rest } = overrides;
   return {
     ...base,
     nodeEnv: 'development',
     rateLimit: { max: 100000, windowMs: 60000, authMax: 100000 },
-    ...overrides,
+    ...rest,
+    ...(cloudflare !== undefined ? { cloudflare: { ...base.cloudflare, ...cloudflare } } : {}),
+    ...(smtp !== undefined ? { smtp: { ...base.smtp, ...smtp } } : {}),
   };
 }
 
@@ -116,7 +126,7 @@ export async function addMember(
 export interface SignedUpUser {
   user: User;
   accessToken: string;
-  /** Raw playin_rt refresh-cookie value. */
+  /** Raw gather_rt refresh-cookie value. */
   cookie: string;
 }
 
@@ -140,9 +150,9 @@ export async function signupUser(app: FastifyInstance, email: string): Promise<S
     throw new Error(`verify failed: ${verifyRes.statusCode} ${verifyRes.body}`);
   }
   const body = verifyRes.json() as { user: User; accessToken: string };
-  const cookie = verifyRes.cookies.find((c) => c.name === 'playin_rt');
+  const cookie = verifyRes.cookies.find((c) => c.name === 'gather_rt');
   if (cookie === undefined) {
-    throw new Error('playin_rt cookie missing from verify response');
+    throw new Error('gather_rt cookie missing from verify response');
   }
   return { user: body.user, accessToken: body.accessToken, cookie: cookie.value };
 }

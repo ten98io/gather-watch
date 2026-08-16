@@ -1,9 +1,11 @@
 /**
- * Minimal S3-compatible client: raw SigV4 over global fetch, node:crypto only,
- * path-style URLs (MinIO-compatible, region default us-east-1). Implements the
- * ObjectStorage port. Extends the approach services/api's chat attachments
- * proved against MinIO (query-presigned PUT) with header-signed control calls
- * (initiate/complete/abort multipart, list, get, put, delete).
+ * Minimal S3-compatible client: raw SigV4 over global fetch, node:crypto only.
+ * Implements the ObjectStorage port. Extends the approach services/api's chat
+ * attachments proved against MinIO (query-presigned PUT) with header-signed
+ * control calls (initiate/complete/abort multipart, list, get, put, delete).
+ *
+ * Addressing (path-style vs virtual-hosted) and region come from config — see
+ * storage/url.ts; nothing here may assume either.
  *
  * Scope note: keys are service-generated ([A-Za-z0-9._/-]), so XML parsing is
  * regex-level and XML escaping is defensive only.
@@ -17,16 +19,9 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { AppConfig } from '../config';
 import { AppError } from '../lib/errors';
 import type { CompletedPart, ObjectStorage } from './ports';
+import { bucketPath, encodeKey, objectPath, requestHost, requestOrigin, uriEncode } from './url';
 
 type S3Config = AppConfig['s3'];
-
-/** S3 uriEncode: RFC 3986 — encodeURIComponent plus the missing !'()* chars. */
-function uriEncode(value: string): string {
-  return encodeURIComponent(value).replace(
-    /[!'()*]/g,
-    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-}
 
 function hmac(key: string | Buffer, data: string): Buffer {
   return createHmac('sha256', key).update(data).digest();
@@ -58,17 +53,21 @@ const REQUEST_TIMEOUT_MS = 60_000;
 
 export class S3Storage implements ObjectStorage {
   private readonly s3: S3Config;
+  /** Signed `host` header — carries the bucket subdomain when virtual-hosted. */
   private readonly host: string;
+  /** Scheme + authority every request URL is built on. */
+  private readonly origin: string;
   private readonly ttlSec: number;
 
   constructor(s3: S3Config, presignTtlSec = 900) {
     this.s3 = s3;
-    this.host = new URL(s3.endpoint).host;
+    this.host = requestHost(s3.endpoint, s3.bucket, s3.pathStyle);
+    this.origin = requestOrigin(s3.endpoint, s3.bucket, s3.pathStyle);
     this.ttlSec = presignTtlSec;
   }
 
   publicUrl(key: string): string {
-    return `${this.s3.publicBaseUrl}/${key.split('/').map(uriEncode).join('/')}`;
+    return `${this.s3.publicBaseUrl}/${encodeKey(key)}`;
   }
 
   // ── SigV4 primitives ───────────────────────────────────────────────────────
@@ -91,7 +90,12 @@ export class S3Storage implements ObjectStorage {
   }
 
   private canonicalUri(key: string): string {
-    return `/${this.s3.bucket}/${key.split('/').map(uriEncode).join('/')}`;
+    return objectPath(this.s3.endpoint, this.s3.bucket, key, this.s3.pathStyle);
+  }
+
+  /** Canonical URI of a bucket-level call ('/' when virtual-hosted). */
+  private bucketUri(): string {
+    return bucketPath(this.s3.endpoint, this.s3.bucket, this.s3.pathStyle);
   }
 
   private static canonicalQuery(params: Record<string, string>): string {
@@ -127,9 +131,10 @@ export class S3Storage implements ObjectStorage {
     const signedHeaders = signedNames.join(';');
 
     const canonicalQuery = S3Storage.canonicalQuery(query);
+    const path = key === null ? this.bucketUri() : this.canonicalUri(key);
     const canonicalRequest = [
       method,
-      key === null ? `/${this.s3.bucket}` : this.canonicalUri(key),
+      path,
       canonicalQuery,
       canonicalHeaders,
       signedHeaders,
@@ -147,12 +152,8 @@ export class S3Storage implements ObjectStorage {
       .digest('hex');
 
     const queryString = canonicalQuery === '' ? '' : `?${canonicalQuery}`;
-    const url =
-      key === null
-        ? `${this.s3.endpoint}/${this.s3.bucket}${queryString}`
-        : `${this.s3.endpoint}${this.canonicalUri(key)}${queryString}`;
 
-    return fetch(url, {
+    return fetch(`${this.origin}${path}${queryString}`, {
       method,
       headers: {
         ...extraHeaders,
@@ -247,7 +248,7 @@ export class S3Storage implements ObjectStorage {
       .update(stringToSign)
       .digest('hex');
 
-    return `${this.s3.endpoint}${this.canonicalUri(key)}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+    return `${this.origin}${this.canonicalUri(key)}?${canonicalQuery}&X-Amz-Signature=${signature}`;
   }
 
   async completeMultipartUpload(

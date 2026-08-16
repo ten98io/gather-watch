@@ -26,7 +26,7 @@ export type TabProviderTier = 'api' | 'drm' | 'generic';
 
 /**
  * Per-site casting capability. Declarative on purpose: adding a site is data,
- * not code. `native: false` means Playin cannot act and must say why —
+ * not code. `native: false` means Gather cannot act and must say why —
  * capturing or re-encoding a protected surface is never an option.
  */
 export interface CastCapability {
@@ -37,7 +37,7 @@ export interface CastCapability {
   /** Cast-button selectors, first visible match wins. Matched through open
    *  shadow roots by the content script. */
   buttons: readonly string[];
-  /** Plain-language reason shown when Playin cannot cast from here. */
+  /** Plain-language reason shown when Gather cannot cast from here. */
   reason: string;
 }
 
@@ -77,19 +77,19 @@ const NO_CAST = (reason: string): CastCapability => ({
 
 /** Fallback for any site we don't know: drivable, not castable by us. */
 export const GENERIC_CAST: CastCapability = NO_CAST(
-  "This site has no cast control Playin can reach — use your browser's own Cast… menu, which casts the tab.",
+  "This site has no cast control Gather can reach — use your browser's own Cast… menu, which casts the tab.",
 );
 
 const DRM_NO_CAST = (name: string): CastCapability =>
   NO_CAST(
-    `${name} casts from its own apps. Protected video can't be cast from here — Playin never captures a protected player.`,
+    `${name} casts from its own apps. Protected video can't be cast from here — Gather never captures a protected player.`,
   );
 
 // Notes are copied verbatim from the web registry so the two data sets stay
 // interchangeable (the eventual goal is one shared module).
 const SYNC_NOTE = 'Plays in sync for everyone';
 const APPROX_NOTE = 'Starts together — may drift slightly';
-const EXT_NOTE = 'Needs the Playin browser extension';
+const EXT_NOTE = 'Needs the Gather browser extension';
 
 export const PROVIDERS: readonly Provider[] = [
   {
@@ -206,14 +206,14 @@ export const PROVIDERS: readonly Provider[] = [
     icon: 'Ⓝ',
     capability: 'extension',
     drm: true,
-    note: 'Needs the Playin browser extension — everyone uses their own account',
+    note: 'Needs the Gather browser extension — everyone uses their own account',
     hosts: [/^(.*\.)?netflix\.com$/],
     cast: {
       native: false,
       reveal: [],
       buttons: ['[data-uia="control-cast"]', 'button[aria-label*="cast" i]'],
       reason:
-        "Netflix casts from its own mobile and TV apps. Its web player has no cast control Playin can press, and protected video can't be mirrored.",
+        "Netflix casts from its own mobile and TV apps. Its web player has no cast control Gather can press, and protected video can't be mirrored.",
     },
   },
   {

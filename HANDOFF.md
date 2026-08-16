@@ -1,4 +1,4 @@
-# Session handoff — Playin, 2026-08-16
+# Session handoff — Gather, 2026-08-16
 
 Pick this up in a fresh session. Read this file first, then
 `docs/WEB_SLIMMING.md` (the active migration) and `docs/EXTENSION_FIRST.md`
@@ -65,7 +65,7 @@ Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
 - Player bar: one row, tooltips on every control, proper slider styling.
 - ~30 jargon leaks removed; `lib/describe-error.ts` + `lib/labels.ts` now
   gate all user-facing error and enum copy.
-- Extension: build-time `PLAYIN_API_URL`, elastic sync controller in
+- Extension: build-time `GATHER_API_URL`, elastic sync controller in
   `packages/sync-core`, `all_frames` + frame election, SPA/shadow-DOM
   detection, MV3 session persistence + alarms keepalive, site-native cast
   clicking, and the **web↔extension handoff channel** with a documented
@@ -102,7 +102,7 @@ Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
 ## Installing the extension (it now actually runs)
 
 ```bash
-pnpm --filter @playin/extension build
+pnpm --filter @gather/extension build
 ```
 
 Then in Chrome: `chrome://extensions` → turn on **Developer mode** → **Load
@@ -117,7 +117,7 @@ is fine for a throwaway verification profile and not something to do to your
 real browser.
 
 The web app finds the extension **without any configuration**: the content
-script announces its id on Playin origins. `NEXT_PUBLIC_PLAYIN_EXTENSION_ID`
+script announces its id on Gather origins. `NEXT_PUBLIC_GATHER_EXTENSION_ID`
 only pins it (build-time id wins over the announcement).
 
 Verified end-to-end in a real Chrome, not just in tests:
@@ -140,8 +140,8 @@ the remaining gate on WEB_SLIMMING step 1.
    was built and verified in a real browser.
 3. **Finish the extension overlay wave** (driver contract → overlay UI →
    hardening). The script is
-   `~/.claude/projects/-Users-mg-Desktop-playin/2583c315-*/workflows/scripts/playin-elastic-extension-wf_2780b452-bb4.js`
-   — note there is **no** `playin-overlay-wf_*.js`; that filename in the old
+   `~/.claude/projects/-Users-mg-Desktop-gather/2583c315-*/workflows/scripts/gather-elastic-extension-wf_2780b452-bb4.js`
+   — note there is **no** `gather-overlay-wf_*.js`; that filename in the old
    handoff was wrong.
 4. **Web slimming is PART DONE.** Step 1 (`desktopCapture`) and step 3 (the
    install funnel component + the `useExtensionDriver` hook) are built,
@@ -212,10 +212,10 @@ audit against the ≤3-step budget, media-anchored chat's **server** half
 ## Environment notes
 
 - All three services run locally: web :3000, api :4000, media :4500.
-- Railway project **Playin-App** (workspace Ten98) is linked; services
+- Railway project **Gather-App** (workspace Ten98) is linked; services
   web/api/media exist, Redis online, never deployed. Two detached
   `mongodb-volume*` leftovers should be deleted (they still bill).
 - Atlas Network Access still needs a decision: static outbound IPs on
   api/media, or `0.0.0.0/0` with a strong password.
 - Extension prod build:
-  `PLAYIN_API_URL=https://<api-domain> pnpm --filter ./apps/extension build`.
+  `GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build`.

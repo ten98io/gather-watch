@@ -12,7 +12,7 @@
  *              content-script path (everyone's own player, everyone's own
  *              account). In the web app they queue as informational rows.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 
 export type ProviderCapability = 'full-sync' | 'approximate' | 'extension';
 
@@ -34,14 +34,14 @@ export const PROVIDERS: readonly Provider[] = [
   { id: 'applemusic', name: 'Apple Music', icon: '◆', capability: 'approximate', note: 'Starts together — may drift slightly' },
   { id: 'tidal', name: 'Tidal', icon: '≈', capability: 'approximate', note: 'Starts together — may drift slightly' },
   { id: 'deezer', name: 'Deezer', icon: '▤', capability: 'approximate', note: 'Starts together — may drift slightly' },
-  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: 'Needs the Playin browser extension — everyone uses their own account' },
-  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: 'Needs the Playin browser extension' },
-  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: 'Needs the Playin browser extension' },
-  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: 'Needs the Playin browser extension' },
-  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: 'Needs the Playin browser extension' },
-  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: 'Needs the Playin browser extension' },
-  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'Needs the Playin browser extension' },
-  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'Needs the Playin browser extension' },
+  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: 'Needs the Gather browser extension — everyone uses their own account' },
+  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: 'Needs the Gather browser extension' },
+  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: 'Needs the Gather browser extension' },
+  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: 'Needs the Gather browser extension' },
+  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: 'Needs the Gather browser extension' },
+  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: 'Needs the Gather browser extension' },
+  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'Needs the Gather browser extension' },
+  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'Needs the Gather browser extension' },
   { id: 'direct', name: 'Direct link or upload', icon: '🔗', capability: 'full-sync', note: 'Plays in sync for everyone' },
 ] as const;
 

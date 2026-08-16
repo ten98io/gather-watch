@@ -5,7 +5,7 @@
  * instead of thrown — a broken pair must never take the mesh down with it.
  */
 
-import type { IceCandidateInit, RoomId, UserId } from '@playin/contracts';
+import type { IceCandidateInit, RoomId, UserId } from '@gather/contracts';
 import type { InboundSignal, NowFn, RtcPeerConnectionLike, SignalSend } from './types';
 
 /** Options for {@link PerfectNegotiator}. */

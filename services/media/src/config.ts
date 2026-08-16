@@ -8,6 +8,55 @@
  */
 import { z } from 'zod';
 import { AppError } from './lib/errors';
+import { defaultPathStyleFor, defaultPublicBaseUrl, defaultRegionFor } from './storage/url';
+
+/** Dev/compose defaults, shared by the schema and by the derived settings
+ *  (publicBaseUrl/region/pathStyle) that need the EFFECTIVE values. */
+const S3_DEFAULTS = {
+  endpoint: 'http://localhost:9000',
+  accessKey: 'gather',
+  secretKey: 'gather-secret',
+  bucket: 'gather-media',
+} as const;
+
+/**
+ * Each setting's accepted env names, most explicit first. The second name is
+ * what a linked Railway Bucket injects, so a linked bucket needs no manual
+ * mapping — and an existing deploy that sets S3_* by hand always wins.
+ */
+const S3_ENV_NAMES = {
+  endpoint: ['S3_ENDPOINT', 'ENDPOINT'],
+  region: ['S3_REGION', 'REGION'],
+  accessKey: ['S3_ACCESS_KEY', 'ACCESS_KEY_ID'],
+  secretKey: ['S3_SECRET_KEY', 'SECRET_ACCESS_KEY'],
+  bucket: ['S3_BUCKET', 'BUCKET'],
+} as const;
+
+/** Settings without which the storage client cannot address or sign anything.
+ *  region/publicBaseUrl/pathStyle are all derivable, so they are not here. */
+const S3_REQUIRED: readonly (keyof typeof S3_ENV_NAMES)[] = [
+  'endpoint',
+  'accessKey',
+  'secretKey',
+  'bucket',
+];
+
+/** Presence of any of these means storage is MEANT to be configured, so a
+ *  partial set must fail closed instead of silently falling back to the dev
+ *  defaults. Railway's generic names are narrowed to the three that cannot
+ *  plausibly belong to another service (REGION/ENDPOINT alone prove nothing). */
+const S3_SIGNAL_VARS = [
+  'S3_ENDPOINT',
+  'S3_REGION',
+  'S3_ACCESS_KEY',
+  'S3_SECRET_KEY',
+  'S3_BUCKET',
+  'S3_PUBLIC_BASE_URL',
+  'S3_FORCE_PATH_STYLE',
+  'BUCKET',
+  'ACCESS_KEY_ID',
+  'SECRET_ACCESS_KEY',
+] as const;
 
 export const configSchema = z.object({
   nodeEnv: z.enum(['development', 'test', 'production']).default('development'),
@@ -15,17 +64,22 @@ export const configSchema = z.object({
   /** Browser origin allowed to call the upload API (the web app). */
   appUrl: z.string().min(1).default('http://localhost:3000'),
   /** SAME secret as services/api — access tokens are issued there. */
-  jwtSecret: z.string().min(1).default('dev-secret-playin-api'),
+  jwtSecret: z.string().min(1).default('dev-secret-gather-api'),
   /** null ⇒ the in-memory asset store is used (tests, storage-less dev). */
   mongoUrl: z.string().min(1).nullable().default(null),
   s3: z
     .object({
-      endpoint: z.string().min(1).default('http://localhost:9000'),
+      endpoint: z.string().min(1).default(S3_DEFAULTS.endpoint),
       region: z.string().min(1).default('us-east-1'),
-      accessKey: z.string().min(1).default('playin'),
-      secretKey: z.string().min(1).default('playin-secret'),
-      bucket: z.string().min(1).default('playin-media'),
-      publicBaseUrl: z.string().min(1).default('http://localhost:9000/playin-media'),
+      accessKey: z.string().min(1).default(S3_DEFAULTS.accessKey),
+      secretKey: z.string().min(1).default(S3_DEFAULTS.secretKey),
+      bucket: z.string().min(1).default(S3_DEFAULTS.bucket),
+      publicBaseUrl: z.string().min(1).default('http://localhost:9000/gather-media'),
+      /** true ⇒ /bucket/key (MinIO); false ⇒ bucket.host/key (Railway/Tigris,
+       *  AWS, R2). Derived from the endpoint unless S3_FORCE_PATH_STYLE says. */
+      pathStyle: z
+        .boolean({ invalid_type_error: "S3_FORCE_PATH_STYLE must be 'true' or 'false'" })
+        .default(true),
     })
     .default({}),
   ffmpegPath: z.string().min(1).default('ffmpeg'),
@@ -65,6 +119,94 @@ function envBool(env: Record<string, string | undefined>, key: string): boolean 
   return lowered === 'true' || lowered === '1';
 }
 
+/** First non-empty of `keys`, in order — earlier names win. */
+function envFirst(
+  env: Record<string, string | undefined>,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = envStr(env, key);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+/** Tri-state flag: unset ⇒ undefined, 'true'/'1' ⇒ true, 'false'/'0' ⇒ false.
+ *  Anything else is returned verbatim so the schema rejects it by name. */
+function envFlag(
+  env: Record<string, string | undefined>,
+  key: string,
+): boolean | string | undefined {
+  const value = envStr(env, key);
+  if (value === undefined) return undefined;
+  const lowered = value.toLowerCase();
+  if (lowered === 'true' || lowered === '1') return true;
+  if (lowered === 'false' || lowered === '0') return false;
+  return value;
+}
+
+/**
+ * Resolve the storage block from either env-var family. Fails closed: once
+ * ANY storage var is present (or the pipeline is enabled in production), the
+ * whole addressing/credential set must be present too, so a half-mapped
+ * Railway link cannot silently fall back to the local MinIO defaults and then
+ * 404 at upload time. Only var NAMES are ever put in the message.
+ */
+function resolveS3(
+  env: Record<string, string | undefined>,
+  requireExplicit: boolean,
+): {
+  endpoint: string | undefined;
+  region: string;
+  accessKey: string | undefined;
+  secretKey: string | undefined;
+  bucket: string | undefined;
+  publicBaseUrl: string;
+  pathStyle: boolean | string;
+} {
+  const resolved = {
+    endpoint: envFirst(env, S3_ENV_NAMES.endpoint),
+    region: envFirst(env, S3_ENV_NAMES.region),
+    accessKey: envFirst(env, S3_ENV_NAMES.accessKey),
+    secretKey: envFirst(env, S3_ENV_NAMES.secretKey),
+    bucket: envFirst(env, S3_ENV_NAMES.bucket),
+  };
+
+  const configured = S3_SIGNAL_VARS.some((name) => envStr(env, name) !== undefined);
+  if (configured || requireExplicit) {
+    const missing = S3_REQUIRED.filter((field) => resolved[field] === undefined).map((field) =>
+      S3_ENV_NAMES[field].join(' or '),
+    );
+    if (missing.length > 0) {
+      const names = missing.join(', ');
+      throw new AppError(
+        'VALIDATION',
+        `Invalid configuration — incomplete object storage config, missing: ${names}`,
+      );
+    }
+  }
+
+  // Derived settings need the EFFECTIVE endpoint/bucket, defaults included.
+  const endpoint = resolved.endpoint ?? S3_DEFAULTS.endpoint;
+  const bucket = resolved.bucket ?? S3_DEFAULTS.bucket;
+  if (!URL.canParse(endpoint)) {
+    throw new AppError(
+      'VALIDATION',
+      'Invalid configuration — S3_ENDPOINT (or ENDPOINT) must be an absolute URL',
+    );
+  }
+  const pathStyle = envFlag(env, 'S3_FORCE_PATH_STYLE') ?? defaultPathStyleFor(endpoint);
+
+  return {
+    ...resolved,
+    region: resolved.region ?? defaultRegionFor(endpoint),
+    publicBaseUrl:
+      envStr(env, 'S3_PUBLIC_BASE_URL') ??
+      defaultPublicBaseUrl(endpoint, bucket, pathStyle === true),
+    pathStyle,
+  };
+}
+
 /**
  * Parse and validate an env dict into an AppConfig. Throws
  * AppError('VALIDATION') listing every offending setting when invalid, so a
@@ -73,6 +215,10 @@ function envBool(env: Record<string, string | undefined>, key: string): boolean 
 export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
   // Railway-style platforms inject PORT; the repo's own var is MEDIA_PORT.
   const port = envStr(env, 'PORT') ?? envStr(env, 'MEDIA_PORT');
+  // A production deploy that actually runs the pipeline must not boot on the
+  // dev MinIO credentials; with the pipeline off the service never touches S3.
+  const pipelineOn = envBool(env, 'ENABLE_MEDIA_PIPELINE') ?? false;
+  const s3 = resolveS3(env, envStr(env, 'NODE_ENV') === 'production' && pipelineOn);
 
   const input = {
     nodeEnv: envStr(env, 'NODE_ENV'),
@@ -80,14 +226,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     appUrl: envStr(env, 'APP_URL'),
     jwtSecret: envStr(env, 'JWT_SECRET'),
     mongoUrl: envStr(env, 'MONGO_URL'),
-    s3: {
-      endpoint: envStr(env, 'S3_ENDPOINT'),
-      region: envStr(env, 'S3_REGION'),
-      accessKey: envStr(env, 'S3_ACCESS_KEY'),
-      secretKey: envStr(env, 'S3_SECRET_KEY'),
-      bucket: envStr(env, 'S3_BUCKET'),
-      publicBaseUrl: envStr(env, 'S3_PUBLIC_BASE_URL'),
-    },
+    s3,
     ffmpegPath: envStr(env, 'FFMPEG_PATH'),
     ffprobePath: envStr(env, 'FFPROBE_PATH'),
     storageQuotaGb: envStr(env, 'STORAGE_QUOTA_GB'),

@@ -1,4 +1,4 @@
-import type { MediaAsset } from '@playin/contracts';
+import type { MediaAsset } from '@gather/contracts';
 import type { RestClient } from './rest';
 import { defaultFetch, defaultSetTimeout } from './types';
 import type { FetchLike, SetTimeoutFn } from './types';

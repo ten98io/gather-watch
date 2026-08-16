@@ -6,7 +6,7 @@ export default function PrivacyPage() {
   return (
     <>
       <h1>Privacy Policy</h1>
-      <p><em>Last updated: 2026. Playin is designed to be private by architecture, not by promise.</em></p>
+      <p><em>Last updated: 2026. Gather is designed to be private by architecture, not by promise.</em></p>
 
       <h2>What we store</h2>
       <p>
@@ -25,7 +25,7 @@ export default function PrivacyPage() {
       <h2>What we do not do</h2>
       <p>
         No trackers, no analytics SDKs, no ad networks, no chat content filtering, no media
-        scanning, no telemetry on what you watch. The only cookie Playin sets is the httpOnly
+        scanning, no telemetry on what you watch. The only cookie Gather sets is the httpOnly
         authentication cookie — strictly necessary, so there is no consent banner circus.
       </p>
 
@@ -38,7 +38,7 @@ export default function PrivacyPage() {
 
       <h2>Self-hosted instances</h2>
       <p>
-        Playin is open, self-hosted software. If you are using someone else’s instance, its
+        Gather is open, self-hosted software. If you are using someone else’s instance, its
         operator is the data controller for your data.
       </p>
     </>

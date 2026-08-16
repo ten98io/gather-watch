@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const { app } = await buildApp({ config });
   const address = await app.listen({ port: config.port, host: '0.0.0.0' });
-  app.log.info({ address }, 'playin-api listening');
+  app.log.info({ address }, 'gather-api listening');
 
   let shuttingDown = false;
   const onSignal = (): void => {
@@ -28,6 +28,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error('failed to boot playin-api', err);
+  console.error('failed to boot gather-api', err);
   process.exit(1);
 });

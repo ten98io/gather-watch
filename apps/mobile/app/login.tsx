@@ -2,8 +2,8 @@
  * Login — magic-link email sign-in, guest join via invite code, and a dev
  * token/link paste box.
  *
- * Deep link: production magic links target `playin://login?token=…`
- * (scheme "playin", app.json); expo-router parses the query into this
+ * Deep link: production magic links target `gather://login?token=…`
+ * (scheme "gather", app.json); expo-router parses the query into this
  * screen's params and the effect below verifies it automatically. In dev the
  * api echoes the link (devLink) — surfaced here so no mailbox is needed.
  */
@@ -45,7 +45,7 @@ export default function LoginScreen() {
       .finally(() => setBusy(false));
   };
 
-  // Deep-link: playin://login?token=…
+  // Deep-link: gather://login?token=…
   useEffect(() => {
     const token = typeof params.token === 'string' ? params.token : null;
     if (token !== null && auth.status === 'anon') {
@@ -65,7 +65,7 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.logo}>Playin</Text>
+        <Text style={styles.logo}>Gather</Text>
         <Text style={styles.tagline}>Your private cinema, drifting in space.</Text>
 
         <View style={styles.card}>
@@ -177,7 +177,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: palette.bgVoid },
   container: { padding: spacing.lg, paddingTop: spacing.xxl * 2 },
-  logo: { ...typeScale.displayL, color: palette.textHi, textAlign: 'center' },
+  logo: { ...typeScale.hero, color: palette.textHi, textAlign: 'center' },
   tagline: {
     ...typeScale.body,
     color: palette.textMid,
@@ -224,7 +224,7 @@ const styles = StyleSheet.create({
   },
   secondaryText: { ...typeScale.bodyStrong, color: palette.textHi },
   dimmed: { opacity: 0.45 },
-  note: { ...typeScale.caption, color: palette.textMid },
+  note: { ...typeScale.label, color: palette.textMid },
   devLink: { ...typeScale.mono, fontSize: 12, color: palette.aurora3 },
-  error: { ...typeScale.caption, color: palette.danger, textAlign: 'center' },
+  error: { ...typeScale.label, color: palette.danger, textAlign: 'center' },
 });

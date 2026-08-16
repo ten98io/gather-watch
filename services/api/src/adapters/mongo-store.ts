@@ -155,9 +155,9 @@ class MongoCollection<T extends { id: string }> implements DocCollection<T> {
 function dbNameFromUrl(url: string): string {
   try {
     const path = new URL(url).pathname.replace(/^\//, '');
-    return path === '' ? 'playin' : path;
+    return path === '' ? 'gather' : path;
   } catch {
-    return 'playin';
+    return 'gather';
   }
 }
 

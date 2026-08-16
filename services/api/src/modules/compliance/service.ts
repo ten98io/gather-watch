@@ -7,7 +7,7 @@
  * or act on the reported content itself (floods are already covered by the
  * global rate-limit plugin).
  */
-import type { ReportBody, ReportTarget } from '@playin/contracts';
+import type { ReportBody, ReportTarget } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { ReportDoc } from '../../adapters/ports';

@@ -1,5 +1,5 @@
-import { makeApiError } from '@playin/contracts';
-import type { ApiError, ErrorCode } from '@playin/contracts';
+import { makeApiError } from '@gather/contracts';
+import type { ApiError, ErrorCode } from '@gather/contracts';
 
 /** HTTP status for each contracts error code (mirrors services/api). */
 export const ERROR_STATUS: Record<ErrorCode, number> = {

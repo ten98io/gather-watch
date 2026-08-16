@@ -65,7 +65,7 @@ export interface ArtworkGradient {
  * (white at low opacity) reads on top of it in either theme.
  */
 export function artworkGradient(seed: string): ArtworkGradient {
-  const hash = seedHash(seed.length > 0 ? seed : 'playin');
+  const hash = seedHash(seed.length > 0 ? seed : 'gather');
   const hueA = hash % 360;
   // 28°–92° apart: enough separation to read as a gradient, never a clash.
   const hueB = (hueA + 28 + ((hash >>> 9) % 64)) % 360;

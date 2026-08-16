@@ -15,8 +15,8 @@ import type {
   ServerEvent,
   UserId,
   WsEnvelope,
-} from '@playin/contracts';
-import type { RestClient, WebSocketLike } from '@playin/api-client';
+} from '@gather/contracts';
+import type { RestClient, WebSocketLike } from '@gather/api-client';
 import { RoomConnection, applyReaction, insertMessage } from '../src/room-connection';
 
 const ROOM = 'r1' as RoomId;

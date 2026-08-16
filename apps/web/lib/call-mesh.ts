@@ -1,5 +1,5 @@
 /**
- * CallMesh — wires @playin/p2p's MeshManager to the browser: native
+ * CallMesh — wires @gather/p2p's MeshManager to the browser: native
  * RTCPeerConnection, TURN credentials from the API (TurnCredentialManager
  * keeps them fresh), signaling over the room's shared RoomConnection
  * (webrtc.offer/answer/ice), and peer-set reconciliation from presence.
@@ -18,21 +18,61 @@
  * new subscriber. Same for local tracks, so a remounted tile grid still finds
  * your own camera.
  */
-import { MeshManager, TurnCredentialManager } from '@playin/p2p';
+import { MeshManager, TurnCredentialManager } from '@gather/p2p';
 import type {
   IceServerLike,
   MeshConnectionState,
   RtcPeerConnectionLike,
   TrackRole,
-} from '@playin/p2p';
-import type { UserId } from '@playin/contracts';
-import { api } from './api';
+} from '@gather/p2p';
+import { GetEntitlementsResponse } from '@gather/contracts';
+import type { Plan, UserId } from '@gather/contracts';
+import { api, apiFetch } from './api';
 import type { RoomConnection } from './room-connection';
 
 const browserRtcFactory = (config: { iceServers: IceServerLike[] }): RtcPeerConnectionLike =>
   new RTCPeerConnection({
     iceServers: config.iceServers as RTCIceServer[],
   }) as unknown as RtcPeerConnectionLike;
+
+/** Free-tier ceiling for a screen-share encode over a relayed link
+ *  (docs/COST_MODEL.md: an uncapped relayed share costs the operator close to
+ *  the full premium price, so the free plan degrades instead of refusing). */
+export const FREE_SHARE_RELAY_KBPS = 400;
+
+/** Link classification happens only inside MeshManager.pollStats(), and the
+ *  app layer owns the interval — without this cadence the cap never applies. */
+const LINK_POLL_MS = 5_000;
+
+/** Shown once per share, only on a capped plan over a relayed link. The
+ *  extension's share reply carries this exact sentence too — keep them in step. */
+export const SHARE_RELAY_NOTE =
+  'Sharing at reduced quality on this connection — Premium removes the limit.';
+
+/* The account plan gates the relay cap. Fail-closed: until the plan is known
+   to be premium, shares are capped — an undetermined plan is the operator's
+   cost risk, and the premium path must be explicit. */
+let sharePlan: Plan | null = null;
+let sharePlanFetch: Promise<void> | null = null;
+
+/** Seed the plan directly (tests, or a caller that already has entitlements). */
+export function seedSharePlan(plan: Plan | null): void {
+  sharePlan = plan;
+}
+
+/** Resolve the plan in the background. Cheap to call often; a failed fetch
+ *  leaves the plan unknown (capped) and the next call retries. */
+export function primeSharePlan(): void {
+  if (sharePlan !== null || sharePlanFetch !== null) return;
+  sharePlanFetch = apiFetch('/billing/entitlements', { schema: GetEntitlementsResponse })
+    .then((res) => {
+      sharePlan = res.entitlements.plan;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      sharePlanFetch = null;
+    });
+}
 
 /** A remote track and the peer publishing it. */
 export interface RemoteTrackEntry {
@@ -56,11 +96,17 @@ export class CallMesh {
   private readonly localTracks = new Map<TrackRole, MediaStreamTrack>();
   private started = false;
   private closedFlag = false;
+  /** Whether this mesh carries the free-tier relay cap. Fixed at construction —
+   *  MeshManager takes the cap as a constructor option — from the plan known
+   *  at that moment (unknown counts as capped). */
+  private readonly relayCapped: boolean;
+  private pollHandle: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly conn: RoomConnection,
     private readonly localUserId: UserId,
   ) {
+    this.relayCapped = sharePlan !== 'premium';
     this.turn = new TurnCredentialManager({
       getTurnCredentials: () => api.rtc.turnCredentials(),
       now: () => Date.now(),
@@ -82,6 +128,7 @@ export class CallMesh {
         // Per-link failures are surfaced through connectionStates(); the room
         // stays usable when one peer can't be reached.
       },
+      ...(this.relayCapped ? { capRelayedVideoKbps: FREE_SHARE_RELAY_KBPS } : {}),
     });
 
     // Retention starts at construction, BEFORE any pane subscribes — a track
@@ -125,6 +172,56 @@ export class CallMesh {
         }),
       );
     }
+
+    // Polling starts with the mesh, not with a share: the pre-share (voice)
+    // link must already be classified so a share onto a relayed link is
+    // capped before its first frame.
+    this.schedulePoll();
+  }
+
+  /**
+   * Run one link-stats poll now (classification and the relay cap both live in
+   * the p2p layer and only advance inside pollStats). A premium plan never
+   * polls: its links may stay 'unknown', and skipping the poll also keeps a
+   * mesh that was built before the plan resolved from ever applying its cap.
+   */
+  async pollLinkStats(): Promise<void> {
+    if (this.closedFlag || sharePlan === 'premium') return;
+    await this.mesh.pollStats();
+  }
+
+  /**
+   * Notify AT MOST ONCE when a share from this mesh is (or becomes) limited
+   * because a link runs relayed on a capped plan. Links that were already
+   * relayed when the share started never re-fire onLinkState, so the snapshot
+   * is checked first. Never fires on premium, even when premium resolved after
+   * this mesh was built.
+   */
+  onShareRelayed(fn: () => void): () => void {
+    if (!this.relayCapped) return () => undefined;
+    for (const state of this.mesh.linkStates().values()) {
+      if (state === 'relayed' && sharePlan !== 'premium') {
+        fn();
+        return () => undefined;
+      }
+    }
+    let fired = false;
+    return this.mesh.onLinkState((_peerId, state) => {
+      if (fired || state !== 'relayed' || sharePlan === 'premium') return;
+      fired = true;
+      fn();
+    });
+  }
+
+  private schedulePoll(): void {
+    if (this.closedFlag) return;
+    this.pollHandle = setTimeout(() => {
+      void this.pollLinkStats()
+        .catch(() => undefined)
+        .then(() => {
+          this.schedulePoll();
+        });
+    }, LINK_POLL_MS);
   }
 
   /** True once close() ran; a closed mesh is inert and must be replaced. */
@@ -204,6 +301,10 @@ export class CallMesh {
   close(): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
+    if (this.pollHandle !== null) {
+      clearTimeout(this.pollHandle);
+      this.pollHandle = null;
+    }
     for (const off of this.unsubscribers.splice(0)) off();
     this.mesh.close();
     this.turn.stop();
@@ -257,6 +358,9 @@ export class CallMesh {
 const meshes = new WeakMap<RoomConnection, CallMesh>();
 
 export function getCallMesh(conn: RoomConnection, localUserId: UserId): CallMesh {
+  // Kick the plan lookup on every acquire: the earlier it resolves, the more
+  // likely the mesh a premium share rides was built uncapped.
+  primeSharePlan();
   const existing = meshes.get(conn);
   // A closed mesh is inert (StrictMode double-effects close then re-acquire),
   // so replace it rather than hand back a dead one.

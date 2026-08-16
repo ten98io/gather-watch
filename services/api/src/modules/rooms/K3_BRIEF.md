@@ -1,4 +1,4 @@
-# K3 Brief — Playin API "rooms" module, part B (realtime: presence + master election)
+# K3 Brief — Gather API "rooms" module, part B (realtime: presence + master election)
 
 Part A (serialize.ts, deps.ts, service.ts, routes.ts, index.ts) is DONE and in
 this directory. You are adding the realtime surface. Repo root:
@@ -9,7 +9,7 @@ this directory. You are adding the realtime surface. Repo root:
   Modify ONLY: `index.ts` and `routes.ts` (small wiring edits described below).
 - NEVER touch any other file anywhere. Contracts, adapters, hub, plugins,
   other modules: frozen. Do not touch `src/modules/index.ts`.
-- No package installs. Self-check with `CI=1 pnpm --filter playin-api typecheck`
+- No package installs. Self-check with `CI=1 pnpm --filter gather-api typecheck`
   and `CI=1 npx eslint src/modules/rooms` (from services/api).
 - Match repo style (file-header comments, AppError, strict TS with
   exactOptionalPropertyTypes + noUncheckedIndexedAccess, no `any`).
@@ -163,6 +163,6 @@ app.addHook('onClose', async () => { await runtime.close(); });
 ```
 
 ## ACCEPTANCE
-- `CI=1 pnpm --filter playin-api typecheck` clean; eslint clean on this dir.
-- `CI=1 pnpm --filter playin-api test` still green (existing suites must not break).
+- `CI=1 pnpm --filter gather-api typecheck` clean; eslint clean on this dir.
+- `CI=1 pnpm --filter gather-api test` still green (existing suites must not break).
 - Only the six named files touched.

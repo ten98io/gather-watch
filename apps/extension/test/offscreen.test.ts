@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  FREE_SHARE_RELAY_KBPS,
   MAX_FRAME_RATE,
   MAX_HEIGHT,
   MAX_WIDTH,
+  SHARE_RELAY_NOTE,
   captureShare,
   handleShareCommand,
   parseStartShare,
@@ -18,7 +20,8 @@ import type {
   ShareStream,
   ShareTrack,
 } from '../src/offscreen';
-import type { InboundSignal, MediaStreamTrackLike, TrackRole } from '@playin/p2p';
+import type { InboundSignal, MediaStreamTrackLike, MeshLinkState, TrackRole } from '@gather/p2p';
+import type { UserId } from '@gather/contracts';
 
 /* ── fakes ────────────────────────────────────────────────────────────── */
 
@@ -100,14 +103,19 @@ interface FakeMesh extends ShareMesh {
   tracks: Map<TrackRole, MediaStreamTrackLike | null>;
   peers: string[][];
   signals: InboundSignal[];
+  /** How many times the document ran a link poll against this mesh. */
+  polls: number;
+  links: Map<UserId, MeshLinkState>;
   closed: boolean;
 }
 
-function fakeMesh(): FakeMesh {
+function fakeMesh(links: Map<UserId, MeshLinkState>): FakeMesh {
   const mesh: FakeMesh = {
     tracks: new Map(),
     peers: [],
     signals: [],
+    polls: 0,
+    links,
     closed: false,
     syncPeers: (userIds) => {
       mesh.peers.push([...userIds]);
@@ -118,6 +126,11 @@ function fakeMesh(): FakeMesh {
     setLocalTrack: (role, track) => {
       mesh.tracks.set(role, track);
     },
+    pollStats: () => {
+      mesh.polls += 1;
+      return Promise.resolve(new Map<UserId, unknown>());
+    },
+    linkStates: () => mesh.links,
     close: () => {
       mesh.closed = true;
     },
@@ -130,20 +143,28 @@ interface Harness {
   requests: CaptureRequest[];
   sockets: FakeSocket[];
   meshes: FakeMesh[];
+  /** What each createMesh call was configured with. */
+  meshOptions: Array<{ capRelayedVideoKbps?: number }>;
   /** How many times the runtime was told the capture ended on its own. */
   notices: { ended: number };
 }
 
-/** `media` is consulted per getUserMedia attempt: throw to reject that attempt. */
-function harness(media: Array<() => ShareStream>): Harness {
+/** `media` is consulted per getUserMedia attempt: throw to reject that attempt.
+ *  `links` seeds every created mesh's link-state map (default: none known). */
+function harness(
+  media: Array<() => ShareStream>,
+  links: Array<[string, MeshLinkState]> = [],
+): Harness {
   const requests: CaptureRequest[] = [];
   const sockets: FakeSocket[] = [];
   const meshes: FakeMesh[] = [];
+  const meshOptions: Array<{ capRelayedVideoKbps?: number }> = [];
   const notices = { ended: 0 };
   return {
     requests,
     sockets,
     meshes,
+    meshOptions,
     notices,
     runtime: {
       getUserMedia: async (request) => {
@@ -157,8 +178,13 @@ function harness(media: Array<() => ShareStream>): Harness {
         sockets.push(s);
         return s.socket;
       },
-      createMesh: () => {
-        const m = fakeMesh();
+      createMesh: (opts) => {
+        meshOptions.push(
+          opts.capRelayedVideoKbps === undefined
+            ? {}
+            : { capRelayedVideoKbps: opts.capRelayedVideoKbps },
+        );
+        const m = fakeMesh(new Map(links.map(([id, state]) => [id as UserId, state])));
         meshes.push(m);
         return m;
       },
@@ -179,6 +205,7 @@ const request = (over: Partial<Parameters<typeof startShare>[0]> = {}) => ({
   accessToken: 'token_1',
   source: 'tab' as const,
   canRequestAudioTrack: true,
+  plan: 'free' as const,
   ...over,
 });
 
@@ -207,6 +234,7 @@ describe('parseStartShare', () => {
       accessToken: 't',
       source: 'tab',
       canRequestAudioTrack: true,
+      plan: 'free',
     });
   });
 
@@ -227,6 +255,15 @@ describe('parseStartShare', () => {
       true,
     );
     expect(parseStartShare(base)?.canRequestAudioTrack).toBe(true);
+  });
+
+  it('lifts the relay cap only on the exact string premium — anything else is capped', () => {
+    const base = { kind: 'startShare', streamId: 's', roomId: 'r', accessToken: 't' };
+    expect(parseStartShare({ ...base, plan: 'premium' })?.plan).toBe('premium');
+    expect(parseStartShare({ ...base, plan: 'free' })?.plan).toBe('free');
+    expect(parseStartShare({ ...base, plan: 'Premium' })?.plan).toBe('free');
+    expect(parseStartShare({ ...base, plan: 42 })?.plan).toBe('free');
+    expect(parseStartShare(base)?.plan).toBe('free');
   });
 });
 
@@ -437,6 +474,89 @@ describe('startShare', () => {
       { type: 'presence.update', payload: { sharing: false } },
     ]);
     expect(second.sockets[0]?.closed).toBe(false);
+  });
+});
+
+/* ── the free-tier relay quality cap ──────────────────────────────────── */
+
+describe('relayed-share cap', () => {
+  it('builds the mesh with the free-tier cap on a free plan', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])]);
+    await startShare(request({ plan: 'free' }), h.runtime);
+
+    expect(h.meshOptions).toEqual([{ capRelayedVideoKbps: FREE_SHARE_RELAY_KBPS }]);
+  });
+
+  it('builds the mesh uncapped on premium', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])]);
+    await startShare(request({ plan: 'premium' }), h.runtime);
+
+    expect(h.meshOptions).toEqual([{}]);
+  });
+
+  it('caps a startShare message that never mentions a plan — today’s background', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])]);
+    const message = startMessage();
+    delete (message as Record<string, unknown>)['plan'];
+    await handleShareCommand(message, h.runtime);
+
+    expect(h.meshOptions).toEqual([{ capRelayedVideoKbps: FREE_SHARE_RELAY_KBPS }]);
+  });
+
+  it('carries the reduced-quality sentence in the reply when a link runs relayed', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])], [['viewer_1', 'relayed']]);
+    const started = await startShare(request({ plan: 'free' }), h.runtime);
+
+    expect(started.note).toBe(SHARE_RELAY_NOTE);
+  });
+
+  it('appends the sentence after the silence note when both apply', async () => {
+    const h = harness([() => fakeStream(['video'])], [['viewer_1', 'relayed']]);
+    const started = await startShare(request({ plan: 'free' }), h.runtime);
+
+    expect(started.note).toMatch(/^Sharing video without sound —/);
+    expect(started.note.endsWith(SHARE_RELAY_NOTE)).toBe(true);
+  });
+
+  it('says nothing about quality on premium, or when every link is direct', async () => {
+    const premium = harness([() => fakeStream(['video', 'audio'])], [['viewer_1', 'relayed']]);
+    const direct = harness([() => fakeStream(['video', 'audio'])], [['viewer_1', 'direct']]);
+
+    expect((await startShare(request({ plan: 'premium' }), premium.runtime)).note).toBe('');
+    await stopShare();
+    expect((await startShare(request({ plan: 'free' }), direct.runtime)).note).toBe('');
+  });
+
+  it('keeps polling link stats while a capped share lives, and stops with it', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness([() => fakeStream(['video', 'audio'])]);
+      await startShare(request({ plan: 'free' }), h.runtime);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.meshes[0]?.polls).toBe(1);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.meshes[0]?.polls).toBe(2);
+
+      await stopShare();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(h.meshes[0]?.polls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never polls an uncapped premium share — there is no cap to drive', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness([() => fakeStream(['video', 'audio'])]);
+      await startShare(request({ plan: 'premium' }), h.runtime);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(h.meshes[0]?.polls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

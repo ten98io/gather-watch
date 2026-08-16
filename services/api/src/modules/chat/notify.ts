@@ -9,7 +9,7 @@
  * no-op port.
  */
 import webPush from 'web-push';
-import type { MessageId, RoomId, UserId } from '@playin/contracts';
+import type { MessageId, RoomId, UserId } from '@gather/contracts';
 import { memberDocId } from '../../adapters/ports';
 import type { Deps } from '../types';
 

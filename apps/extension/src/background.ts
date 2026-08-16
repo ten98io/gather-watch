@@ -21,13 +21,13 @@
  * storage area is TRUSTED_CONTEXTS-only by default (no content-script read)
  * and is wiped when the browser closes.
  */
-import { RoomSocket } from '@playin/api-client';
-import { normalizeInviteCode } from '@playin/contracts';
-import type { PlaybackState, RestreamState } from '@playin/contracts';
+import { RoomSocket } from '@gather/api-client';
+import { normalizeInviteCode } from '@gather/contracts';
+import type { MemberRole, PlaybackState, RestreamState, RoomPolicyLevel } from '@gather/contracts';
 
 import { API_URL, WEB_ORIGINS, WS_URL, originOfUrl } from './config';
 import { ElasticDriver, mediaKeyOf, profileForContent, voiceActiveFrom } from './driver';
-import type { DriverTelemetry, PresenceLike } from './driver';
+import type { DriverTelemetry, ElasticDriverState, PresenceLike } from './driver';
 import {
   EventPortRegistry,
   ProtocolFault,
@@ -39,6 +39,14 @@ import type { ExternalHost, HandoffInput } from './external';
 import { electFrame, pruneClaims } from './frameElection';
 import type { FrameClaim } from './frameElection';
 import { expectedPositionMs, parseMetrics } from './mediaDriver';
+// Types only — the worker builds the overlay's state, it never draws anything,
+// so none of the overlay's DOM code is pulled into this bundle.
+import type {
+  OverlayConnection,
+  OverlayMessage,
+  OverlayPerson,
+  OverlayRoomState,
+} from './overlay';
 import {
   EXTENSION_CAPABILITIES,
   PROTOCOL_MIN_VERSION,
@@ -77,6 +85,27 @@ interface Session {
   presence: Map<string, PresenceLike>;
   /** `tabId:frameId` the driver's learned state belongs to; a change resets it. */
   driverTarget: string | null;
+  /** Who we are in this room; null when nothing told us (the handoff path). */
+  userId: string | null;
+  /** The room's playbackControl policy and OUR role in the room, read from the
+   *  room's own record when the session opens (see {@link loadRoomAccess}).
+   *  null = not known, and unknown DENIES: a member we cannot place in the
+   *  permission model does not speak for the room. */
+  playbackPolicy: RoomPolicyLevel | null;
+  role: MemberRole | null;
+  /** userId → display name, for the overlay. See {@link loadRoomNames}. */
+  names: Map<string, string>;
+  /** When that directory was last read, so a miss cannot become a fetch loop. */
+  namesAt: number;
+  /** The tail of the room's chat, oldest first — what the overlay shows. */
+  chat: RoomChatLine[];
+}
+
+/** One chat line, kept by author ID so a name that arrives late fixes it. */
+interface RoomChatLine {
+  id: string;
+  authorId: string;
+  text: string;
 }
 
 let session: Session | null = null;
@@ -123,7 +152,7 @@ let lastContentTabId: number | null = null;
 
 const MEDIA_FRESH_MS = 4000;
 
-/** A tab we may drive: http(s), and not the Playin web app itself. */
+/** A tab we may drive: http(s), and not the Gather web app itself. */
 function isDrivableTabUrl(url: string | undefined): boolean {
   const origin = originOfUrl(url ?? '');
   if (origin === null) return false;
@@ -191,6 +220,8 @@ async function adoptTabIfArmed(): Promise<void> {
   await persistSession();
   driveTab();
   broadcastStatus();
+  // The room now has a tab to live on; that tab gets the panel.
+  pushOverlay();
 }
 
 /* ── Frame election (the content script runs in EVERY frame) ── */
@@ -205,8 +236,11 @@ async function adoptTabIfArmed(): Promise<void> {
  * so this map is deliberately NOT persisted across service-worker deaths.
  */
 const tabClaims = new Map<number, Map<number, FrameClaim>>();
-/** Elected frame per tab; null = nothing plausible, fall back to the top. */
+/** Elected frame per tab; null = no frame here holds a plausible player. */
 const tabWinner = new Map<number, number | null>();
+
+/** A tab's own document. Chrome numbers it 0 and never renumbers it. */
+const TOP_FRAME_ID = 0;
 
 function claimsFor(tabId: number): Map<number, FrameClaim> {
   const existing = tabClaims.get(tabId);
@@ -216,13 +250,38 @@ function claimsFor(tabId: number): Map<number, FrameClaim> {
   return created;
 }
 
-/** Frame currently driven in this tab (0 = top frame fallback). */
-function drivenFrameId(tabId: number): number {
-  return tabWinner.get(tabId) ?? 0;
+/**
+ * The frame this tab elected, or null when it elected nobody.
+ *
+ * There is deliberately NO fallback to the top frame, and that is the whole of
+ * the rule: a frame is driven if and only if it was elected, and being elected
+ * is the only thing that sends it `frameRole: 'driver'` — the one grant the
+ * content script accepts. So "may this frame drive?" has a single answer, held
+ * in one place, and both sides of the message channel read the same one.
+ *
+ * Falling back to frame 0 broke that twice over. It drove pages where no frame
+ * had ever claimed plausibly (a page whose only media is a muted hero loop or
+ * an ad slot scores below the claim floor — see mediaDriver's MIN_CLAIM_SCORE),
+ * and it drove a frame that had never been told it was the driver, which is
+ * exactly the gap a demoted frame used to slip back in through.
+ *
+ * Waiting costs almost nothing: every frame claims as soon as it loads and
+ * re-claims on a few-second heartbeat, so a tab that really holds a player is
+ * elected within a heartbeat — and a tab that holds none is never driven at
+ * all, which is the honest outcome.
+ */
+function drivenFrameId(tabId: number): number | null {
+  return tabWinner.get(tabId) ?? null;
 }
 
 function sendToFrame(tabId: number, frameId: number, msg: Record<string, unknown>): void {
   void chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => undefined);
+}
+
+/** Tell a frame it is the driver. The election is the only caller — see
+ *  {@link drivenFrameId}. */
+function grantDriver(tabId: number, frameId: number): void {
+  sendToFrame(tabId, frameId, { kind: 'frameRole', role: 'driver' });
 }
 
 function setWinner(tabId: number, winner: number | null): void {
@@ -233,7 +292,7 @@ function setWinner(tabId: number, winner: number | null): void {
     sendToFrame(tabId, previous, { kind: 'frameRole', role: 'idle' });
     sendToFrame(tabId, previous, { kind: 'driveOff' });
   }
-  if (winner !== null) sendToFrame(tabId, winner, { kind: 'frameRole', role: 'driver' });
+  if (winner !== null) grantDriver(tabId, winner);
   if (session !== null && session.drivenTabId === tabId) driveTab();
 }
 
@@ -272,6 +331,12 @@ function onFrameClaim(tabId: number, frameId: number, msg: Record<string, unknow
     tabMediaSeenAt.set(tabId, Date.now());
   }
   reelect(tabId);
+  // Re-state the grant to the frame that just claimed, when it is the one
+  // holding it. A player iframe that re-navigates comes back as a fresh,
+  // idle content script while the election still points at that frame id;
+  // with the role as the only licence to drive, saying nothing here would
+  // leave the room's own player permanently unable to follow.
+  if (tabWinner.get(tabId) === frameId) grantDriver(tabId, frameId);
 }
 
 /** A navigation (including an SPA route change) invalidates every claim. */
@@ -317,6 +382,7 @@ function notePresence(entry: { userId: string; state: string; micOn: boolean }):
     state: entry.state,
     micOn: entry.micOn,
   });
+  noteUnknownName(entry.userId);
 }
 
 /**
@@ -347,9 +413,8 @@ function localTelemetry(): DriverTelemetry | null {
  * media tag from the winning frame's claim), so this runs every tick and is a
  * no-op once they have settled.
  */
-function refreshDriverContext(tabId: number): void {
+function refreshDriverContext(tabId: number, frameId: number): void {
   if (session === null) return;
-  const frameId = drivenFrameId(tabId);
   const targetKey = `${tabId}:${frameId}`;
   if (session.driverTarget !== targetKey) {
     // A different tab or a different elected frame: different element,
@@ -382,8 +447,26 @@ function driveTab(): void {
   const p = session.playback;
   if (p.mediaRef === null) return;
   const tabId = session.drivenTabId;
+  const frameId = drivenFrameId(tabId);
+  // No frame in this tab has claimed a plausible player (or every claim went
+  // stale). There is nothing here to drive, and picking a frame anyway means
+  // seeking an element nobody identified as the film. See drivenFrameId.
+  if (frameId === null) {
+    // Forget the driver context on the way out, not on the way back in. This
+    // return skips refreshDriverContext, so if the election later lands on the
+    // SAME frame id — an in-room navigation is the ordinary case — the target
+    // key compares equal, nothing resets, and the worker drives the new page
+    // using the anchor it learned on the old one and a telemetry sample that
+    // predates the navigation.
+    if (session.driverTarget !== null) {
+      session.driverTarget = null;
+      session.driver.reset();
+      lastTelemetry = null;
+    }
+    return;
+  }
   const now = Date.now();
-  refreshDriverContext(tabId);
+  refreshDriverContext(tabId, frameId);
 
   const cmd = session.driver.tick(
     {
@@ -401,9 +484,9 @@ function driveTab(): void {
   // room on its own local bands because nothing is reporting back to us.
   if (cmd.idle && cmd.reason !== 'no-telemetry') return;
 
-  // Only the elected frame is driven; the top frame is the fallback while a
-  // freshly loaded (or freshly revived) tab has not claimed yet.
-  sendToFrame(tabId, drivenFrameId(tabId), {
+  // Only the elected frame is ever driven, and it has already been told it is
+  // the driver — the command carries no authority of its own.
+  sendToFrame(tabId, frameId, {
     kind: 'drive',
     playing: p.playing,
     // Chosen so a content script running the OLD fixed bands reproduces this
@@ -422,6 +505,268 @@ function driveTab(): void {
   });
 }
 
+/* ── The room overlay, injected into the driven tab (content.ts mounts it) ── */
+
+/**
+ * The worker owns the room; the overlay only draws it. So everything the panel
+ * shows is built here and pushed to ONE frame of ONE tab — the top frame of
+ * the driven tab, which is the only place a person is watching the room's
+ * content. Every other tab asking gets null, and shows nothing.
+ */
+
+/** The tail of the chat the overlay keeps. Older lines are memory, not UI. */
+const OVERLAY_CHAT_MAX = 100;
+/** Floor between reads of the member directory when a name is missing. */
+const NAMES_REFRESH_MS = 30_000;
+
+/** The last state pushed, so the 1 Hz tick only talks when something changed. */
+let lastOverlayPush: { tabId: number; signature: string } | null = null;
+
+function overlayConnection(): OverlayConnection {
+  switch (session?.socket.status) {
+    case 'open':
+      return 'live';
+    case 'reconnecting':
+      return 'reconnecting';
+    case 'closed':
+      return 'offline';
+    default:
+      return 'connecting';
+  }
+}
+
+/** Who is here, from presence. People marked offline are not here. */
+function overlayPeople(): OverlayPerson[] {
+  if (session === null) return [];
+  const s = session;
+  const out: OverlayPerson[] = [];
+  for (const entry of s.presence.values()) {
+    if (entry.state === 'offline') continue;
+    out.push({
+      id: entry.userId,
+      // An unknown id renders as "Someone" rather than as an id — see
+      // loadRoomNames for why one is usually known by now.
+      name: s.names.get(entry.userId) ?? '',
+      you: s.userId !== null && entry.userId === s.userId,
+      micOn: entry.micOn,
+      away: entry.state === 'away',
+    });
+  }
+  return out;
+}
+
+function overlayMessages(): OverlayMessage[] {
+  if (session === null) return [];
+  const s = session;
+  return s.chat.map((line) => ({
+    id: line.id,
+    author: s.names.get(line.authorId) ?? '',
+    text: line.text,
+    mine: s.userId !== null && line.authorId === s.userId,
+  }));
+}
+
+/**
+ * The driver's state at the resolution the overlay actually speaks in.
+ *
+ * `syncStatusLabel` says whole seconds and nothing finer, so sending raw
+ * millisecond drift would change the pushed state every single tick to produce
+ * the very same sentence. Rounding here is what lets the push below stay
+ * silent while nothing a person can see has changed.
+ */
+function overlaySync(): ElasticDriverState | null {
+  if (session === null) return null;
+  const state = session.driver.state();
+  return {
+    ...state,
+    anchorOffsetMs: Math.round(state.anchorOffsetMs / 1000) * 1000,
+    driftMs: Math.round(state.driftMs / 1000) * 1000,
+  };
+}
+
+/** The room as the overlay shows it — or null when this tab is not the tab
+ *  the room is being watched in, which is every tab but one. */
+function overlayStateFor(tabId: number | null): OverlayRoomState | null {
+  if (session === null || tabId === null || tabId !== session.drivenTabId) return null;
+  return {
+    connection: overlayConnection(),
+    roomName: session.roomName,
+    people: overlayPeople(),
+    messages: overlayMessages(),
+    sync: overlaySync(),
+  };
+}
+
+/** Send the room to the tab it is being watched in, and only when it changed. */
+function pushOverlay(): void {
+  const tabId = session?.drivenTabId ?? null;
+  const state = overlayStateFor(tabId);
+  if (tabId === null || state === null) return;
+  const signature = JSON.stringify(state);
+  if (lastOverlayPush?.tabId === tabId && lastOverlayPush.signature === signature) return;
+  lastOverlayPush = { tabId, signature };
+  sendToFrame(tabId, TOP_FRAME_ID, { kind: 'overlay', state });
+}
+
+/** A message with no words still says something; a deleted one says nothing. */
+function chatLineOf(m: {
+  id: string;
+  authorId: string;
+  kind: string;
+  body: string;
+  deletedAt: number | null;
+}): RoomChatLine | null {
+  if (m.deletedAt !== null) return null;
+  const body = m.body.trim();
+  const text = body.length > 0 ? body : wordlessLine(m.kind);
+  if (text.length === 0) return null;
+  return { id: m.id, authorId: m.authorId, text };
+}
+
+function wordlessLine(kind: string): string {
+  switch (kind) {
+    case 'gif':
+      return 'Sent a GIF';
+    case 'voice':
+      return 'Sent a voice message';
+    case 'attachment':
+      return 'Sent a file';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Names for the overlay.
+ *
+ * Presence and chat carry user ids and nothing else, and a panel that says
+ * "Someone, Someone and Someone are here" is worse than no panel — so the
+ * room's member list is read once when the room opens, and re-read (rarely)
+ * when an id turns up that it cannot explain. Failing is survivable: the names
+ * fall back to "Someone" and every other part of the room still works.
+ */
+async function loadRoomNames(): Promise<void> {
+  if (session === null) return;
+  const roomId = session.roomId;
+  const token = session.accessToken;
+  session.namesAt = Date.now();
+  const res = await fetch(`${API_URL}/rooms/${encodeURIComponent(roomId)}/members`, {
+    headers: { authorization: `Bearer ${token}` },
+  }).catch(() => null);
+  if (res === null || !res.ok) return;
+  const body = (await res.json().catch(() => null)) as {
+    members?: Array<{ user?: { id?: unknown; displayName?: unknown } }>;
+  } | null;
+  // The user may have left, or moved rooms, while this was in flight.
+  if (session === null || session.roomId !== roomId) return;
+  if (body === null || !Array.isArray(body.members)) return;
+  for (const entry of body.members) {
+    const id = entry.user?.id;
+    const name = entry.user?.displayName;
+    if (typeof id === 'string' && typeof name === 'string' && name.length > 0) {
+      session.names.set(id, name);
+    }
+  }
+  pushOverlay();
+}
+
+/** Somebody we have no name for. Re-read the directory, at most rarely. */
+function noteUnknownName(userId: string): void {
+  if (session === null || session.names.has(userId)) return;
+  if (Date.now() - session.namesAt < NAMES_REFRESH_MS) return;
+  void loadRoomNames();
+}
+
+/* ── The room's permission model, for intent this worker forwards ── */
+
+/** Mirrors apps/web/lib/permissions.ts (canAct) — keep the two in sync. */
+const ROLE_RANK: Record<MemberRole, number> = { guest: 0, member: 1, moderator: 2, host: 3 };
+const LEVEL_MIN_RANK: Record<RoomPolicyLevel, number> = { everyone: 0, mods: 2, host: 3 };
+
+/**
+ * May this member drive the room's playback? The same gate the web app puts
+ * in front of every transport send. Unknown policy or role denies — the
+ * intent is then simply not forwarded, and the driver corrects the local
+ * player exactly as it corrects any other viewer's.
+ */
+export function canControlPlayback(
+  level: RoomPolicyLevel | null,
+  role: MemberRole | null,
+): boolean {
+  if (level === null || role === null) return false;
+  return ROLE_RANK[role] >= LEVEL_MIN_RANK[level];
+}
+
+function parsePolicyLevel(value: unknown): RoomPolicyLevel | null {
+  return value === 'everyone' || value === 'mods' || value === 'host' ? value : null;
+}
+
+function parseMemberRole(value: unknown): MemberRole | null {
+  return value === 'guest' || value === 'member' || value === 'moderator' || value === 'host'
+    ? value
+    : null;
+}
+
+/**
+ * Read the room's playbackControl policy and our own membership from the
+ * room's record — the token names us, so this works on the handoff path too,
+ * where no page is allowed to tell this worker who the user is. Failing is
+ * survivable: both fields stay null, null denies, and every other part of the
+ * room still works.
+ */
+async function loadRoomAccess(): Promise<void> {
+  if (session === null) return;
+  const roomId = session.roomId;
+  const res = await fetch(`${API_URL}/rooms/${encodeURIComponent(roomId)}`, {
+    headers: { authorization: `Bearer ${session.accessToken}` },
+  }).catch(() => null);
+  if (res === null || !res.ok) return;
+  const body = (await res.json().catch(() => null)) as {
+    room?: { policies?: { playbackControl?: unknown } };
+    member?: { role?: unknown };
+  } | null;
+  // The user may have left, or moved rooms, while this was in flight.
+  if (session === null || session.roomId !== roomId) return;
+  session.playbackPolicy = parsePolicyLevel(body?.room?.policies?.playbackControl);
+  session.role = parseMemberRole(body?.member?.role);
+}
+
+/** Longest body the room accepts (contracts: ClientChatSend). */
+const MAX_CHAT_BODY = 8000;
+
+/**
+ * Chat typed into the overlay. Only the tab that holds the room may send —
+ * the panel exists in exactly one tab, and a message from anywhere else would
+ * be a message from a tab that is not in this room.
+ */
+async function sendRoomChat(tabId: number | null, text: string): Promise<null> {
+  if (session === null || tabId === null || tabId !== session.drivenTabId) {
+    throw new Error('This tab is not in the room.');
+  }
+  const body = text.trim().slice(0, MAX_CHAT_BODY);
+  if (body.length === 0) throw new Error('There was nothing to send.');
+  session.socket.send('chat.send', {
+    kind: 'text',
+    body,
+    gifUrl: null,
+    attachment: null,
+    replyTo: null,
+    mentions: [],
+  });
+  return null;
+}
+
+/**
+ * Open the room in the Gather web app. The first configured web origin is the
+ * app's own (see config.ts) — the extension never navigates anywhere else.
+ */
+async function openRoomInWebApp(): Promise<null> {
+  const origin = WEB_ORIGINS[0];
+  if (session === null || origin === undefined) throw new Error('No room to open.');
+  await chrome.tabs.create({ url: `${origin}/room/${encodeURIComponent(session.roomId)}` });
+  return null;
+}
+
 /* ── Session lifecycle ── */
 
 interface OpenSessionInput {
@@ -431,6 +776,8 @@ interface OpenSessionInput {
   tabId: number | null;
   source: 'popup' | 'web';
   target: 'auto' | 'sender';
+  /** Who we are in the room. Known on the popup path; null on a web handoff. */
+  userId: string | null;
 }
 
 /**
@@ -470,12 +817,33 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     driver: new ElasticDriver(),
     presence: new Map(),
     driverTarget: null,
+    userId: input.userId,
+    playbackPolicy: null,
+    role: null,
+    names: new Map(),
+    namesAt: 0,
+    chat: [],
   };
 
   socket.on('sync.state', (ev) => {
     if (session === null) return;
     session.playback = ev.payload;
     driveTab();
+    pushOverlay();
+  });
+  // Chat is the overlay's reason to exist: the room's conversation, on the page
+  // the film is playing on. It is kept here because the panel is torn down and
+  // rebuilt with every reload of the site, and a reload must not lose it.
+  socket.on('chat.message', (ev) => {
+    if (session === null) return;
+    const line = chatLineOf(ev.payload);
+    if (line === null) return;
+    session.chat.push(line);
+    if (session.chat.length > OVERLAY_CHAT_MAX) {
+      session.chat.splice(0, session.chat.length - OVERLAY_CHAT_MAX);
+    }
+    noteUnknownName(line.authorId);
+    pushOverlay();
   });
   socket.on('restream.state', (ev) => {
     if (session === null) return;
@@ -489,12 +857,14 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     session.presence.clear();
     for (const entry of ev.payload.entries) notePresence(entry);
     applyVoiceActivity();
+    pushOverlay();
   });
   socket.on('presence.diff', (ev) => {
     if (session === null) return;
     for (const entry of ev.payload.upserts) notePresence(entry);
     for (const userId of ev.payload.removed) session.presence.delete(userId);
     applyVoiceActivity();
+    pushOverlay();
   });
   socket.connect(input.roomId as never, input.accessToken);
 
@@ -502,8 +872,15 @@ async function openSession(input: OpenSessionInput): Promise<void> {
   startDriveTimer();
   await startKeepalive();
 
+  // Who is in the room, by name (see loadRoomNames). Nothing waits on it.
+  void loadRoomNames();
+  // Whether WE may drive playback (see loadRoomAccess). Until it lands, a
+  // user intent is dropped rather than guessed about.
+  void loadRoomAccess();
+
   await persistSession();
   broadcastStatus();
+  pushOverlay();
 }
 
 async function connect(code: string, tabId: number): Promise<void> {
@@ -515,6 +892,7 @@ async function connect(code: string, tabId: number): Promise<void> {
     tabId,
     source: 'popup',
     target: 'sender',
+    userId: typeof joined.user?.id === 'string' ? joined.user.id : null,
   });
 }
 
@@ -522,7 +900,7 @@ async function connect(code: string, tabId: number): Promise<void> {
 
 const DRIVE_TICK_MS = 1000;
 /** 30s is MV3's floor; anything smaller is silently clamped by Chrome. */
-const KEEPALIVE_ALARM = 'playin.keepalive';
+const KEEPALIVE_ALARM = 'gather.keepalive';
 const KEEPALIVE_PERIOD_MINUTES = 0.5;
 
 /**
@@ -536,6 +914,10 @@ function startDriveTimer(): void {
   driveTimer = setInterval(() => {
     expireClaims();
     driveTab();
+    // The sync sentence ("Buffering — holding your place") changes without any
+    // room event at all, so the overlay is refreshed on the same beat. It only
+    // sends when the state actually differs — see pushOverlay.
+    pushOverlay();
   }, DRIVE_TICK_MS);
 }
 
@@ -590,11 +972,15 @@ async function closeSession(): Promise<void> {
   stopDriveTimer();
   if (session !== null) {
     if (session.drivenTabId !== null) {
-      sendToFrame(session.drivenTabId, drivenFrameId(session.drivenTabId), { kind: 'driveOff' });
+      const frameId = drivenFrameId(session.drivenTabId);
+      if (frameId !== null) sendToFrame(session.drivenTabId, frameId, { kind: 'driveOff' });
+      // The room is over; the panel that says otherwise goes with it.
+      sendToFrame(session.drivenTabId, TOP_FRAME_ID, { kind: 'overlayOff' });
     }
     session.socket.close();
     session = null;
   }
+  lastOverlayPush = null;
   lastTelemetry = null;
   await stopKeepalive();
   await persistSession();
@@ -611,8 +997,8 @@ async function disconnect(): Promise<void> {
 
 /* ── chrome.storage.session mirror (survives service-worker death) ── */
 
-const SESSION_KEY = 'playin.session.v1';
-const SHARING_ROOM_KEY = 'playin.sharing-room.v1';
+const SESSION_KEY = 'gather.session.v1';
+const SHARING_ROOM_KEY = 'gather.sharing-room.v1';
 
 async function persistSharingRoom(): Promise<void> {
   try {
@@ -645,6 +1031,8 @@ interface PersistedSession {
   drivenTabId: number | null;
   source: 'popup' | 'web';
   target: 'auto' | 'sender';
+  /** Kept so a revived worker still knows which person in the room is you. */
+  userId: string | null;
 }
 
 async function persistSession(): Promise<void> {
@@ -660,6 +1048,7 @@ async function persistSession(): Promise<void> {
       drivenTabId: session.drivenTabId,
       source: session.source,
       target: session.target,
+      userId: session.userId,
     };
     await chrome.storage.session.set({ [SESSION_KEY]: value });
   } catch {
@@ -685,6 +1074,7 @@ async function restoreSession(): Promise<void> {
     tabId: stored.drivenTabId,
     source: stored.source === 'web' ? 'web' : 'popup',
     target: stored.target === 'sender' ? 'sender' : 'auto',
+    userId: typeof stored.userId === 'string' ? stored.userId : null,
   }).catch(() => undefined);
 }
 
@@ -852,7 +1242,7 @@ export async function planShare(
   if (surface === 'tab') {
     if (room.tabId === null) throw new Error('no tab selected');
     // Capturing a protected surface is refused up front: output protection
-    // black-frames it by design, and Playin never re-encodes protected media.
+    // black-frames it by design, and Gather never re-encodes protected media.
     // Mode A (everyone's own player, in sync) is the path that works.
     const summary = deps.providerOf(room.tabId);
     if (summary !== undefined && summary.tier === 'drm') {
@@ -1004,11 +1394,15 @@ async function castActiveTab(): Promise<{ clicked: boolean; reason: string }> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const tabId = tab?.id;
   if (tabId === undefined) throw new Error('no active tab');
+  // Casting is a button press the user asked for, not a claim on the element,
+  // so an unelected tab still gets asked — at its top frame, where a site's
+  // own cast control usually lives.
+  const frameId = drivenFrameId(tabId) ?? TOP_FRAME_ID;
   const res = (await chrome.tabs
-    .sendMessage(tabId, { kind: 'castNative' }, { frameId: drivenFrameId(tabId) })
+    .sendMessage(tabId, { kind: 'castNative' }, { frameId })
     .catch(() => undefined)) as { clicked?: boolean; reason?: string } | undefined;
   if (res === undefined) {
-    return { clicked: false, reason: 'Playin is not running on this page yet — reload it and try again.' };
+    return { clicked: false, reason: 'Gather is not running on this page yet — reload it and try again.' };
   }
   return { clicked: res.clicked === true, reason: res.reason ?? '' };
 }
@@ -1075,6 +1469,9 @@ const host: ExternalHost = {
       tabId,
       source: 'web',
       target: input.target,
+      // The handoff says which room, never who: the page is not allowed to
+      // name a user to this worker. Nobody is marked "you" until it does.
+      userId: null,
     });
     if (input.intent !== null) applyIntentHint(input.intent);
     return statusOf();
@@ -1199,6 +1596,28 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       return respond(stopSharing());
     case 'popup:cast':
       return respond(castActiveTab());
+    /**
+     * The injected overlay's whole channel (see overlay/state.ts). It reaches
+     * the worker through the tab's content script, so `sender.tab` is the
+     * browser's own word for which tab is asking — the page never names one.
+     *
+     * `overlay:state` doubles as the content script's "is this tab in a room?":
+     * the answer is the room, or null, and null is what every tab that is not
+     * the room's tab receives.
+     */
+    case 'overlay:state':
+      return respond(Promise.resolve(overlayStateFor(sender.tab?.id ?? null)));
+    case 'overlay:chat':
+      return respond(sendRoomChat(sender.tab?.id ?? null, String(msg['text'] ?? '')));
+    case 'overlay:leave':
+      return respond(
+        disconnect().then(() => {
+          broadcastStatus();
+          return null;
+        }),
+      );
+    case 'overlay:open-app':
+      return respond(openRoomInWebApp());
     case 'frameClaim': {
       const tabId = sender.tab?.id;
       if (tabId !== undefined && sender.frameId !== undefined) {
@@ -1230,12 +1649,56 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
         rate: typeof msg['rate'] === 'number' ? msg['rate'] : 1,
         at: Date.now(),
       };
-      // Only the driven tab's telemetry is the room's: other tabs may have
-      // media too, and reporting theirs would be both wrong and a leak.
-      if (session !== null && tabId !== undefined && tabId === session.drivenTabId) {
+      // Only the elected frame of the driven tab speaks for the room. Other
+      // tabs — and other frames of this one — may have media of their own, and
+      // reporting theirs would be both wrong and a leak. The election decides
+      // this here too, for the same reason it decides who may be driven.
+      if (
+        session !== null &&
+        tabId !== undefined &&
+        tabId === session.drivenTabId &&
+        sender.frameId === drivenFrameId(tabId)
+      ) {
         lastTelemetry = payload;
         ports.broadcast((v) => eventMessage('telemetry', payload, v));
       }
+      return false;
+    }
+    /**
+     * The user's own hand on the driven site's player (see content.ts). It
+     * becomes room intent on the SAME wire the web app's transport uses —
+     * sync.play / sync.pause / sync.seek with the local position — under the
+     * same policy gate the room applies to everyone else. Only the elected
+     * frame of the driven tab speaks; the election decides here exactly as it
+     * decides for telemetry.
+     */
+    case 'userIntent': {
+      const tabId = sender.tab?.id;
+      if (
+        session === null ||
+        session.playback === null ||
+        tabId === undefined ||
+        tabId !== session.drivenTabId ||
+        sender.frameId !== drivenFrameId(tabId)
+      ) {
+        return false;
+      }
+      const intent = msg['intent'];
+      if (intent !== 'play' && intent !== 'pause' && intent !== 'seek') return false;
+      const raw = msg['positionMs'];
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) return false;
+      const positionMs = Math.max(0, raw);
+      // Buffering looks like a pause and is not one. The driver already judges
+      // stall from this tab's telemetry — reuse that judgement, never a second.
+      if (intent === 'pause' && session.driver.state().stalled) return false;
+      // A member the room does not let drive playback is drift, by design:
+      // nothing is sent, and the driver corrects their player as it always did.
+      if (!canControlPlayback(session.playbackPolicy, session.role)) return false;
+      if (intent === 'play') session.socket.send('sync.play', { positionMs });
+      else if (intent === 'pause') session.socket.send('sync.pause', { positionMs });
+      else session.socket.send('sync.seek', { positionMs });
+      // The just-sent intent must not read as drift while the room echoes it.
+      session.driver.noteLocalIntent(intent, positionMs, Date.now());
       return false;
     }
     case 'provider': {

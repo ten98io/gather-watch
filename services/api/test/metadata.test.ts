@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { ResolveMediaResponse } from '@playin/contracts';
+import { ResolveMediaResponse } from '@gather/contracts';
 import type { Deps } from '../src/modules/types';
 import { registerMetadataResolver } from '../src/modules/metadata/resolver';
 import { makeApp, signupUser } from './helpers';

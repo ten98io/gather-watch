@@ -19,7 +19,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import type { VideoPlayer } from 'expo-video';
 import { WebView } from 'react-native-webview';
 import { useStore } from 'zustand';
-import type { MemberRole, PlaybackState, RoomKind } from '@playin/contracts';
+import type { MemberRole, PlaybackState, RoomKind } from '@gather/contracts';
 import type { RoomConnection } from '../room-connection';
 import { canAct } from '../permissions';
 import { useSyncEngine } from '../sync/useSyncEngine';
@@ -329,7 +329,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
   },
   limitation: {
-    ...typeScale.caption,
+    ...typeScale.label,
     color: palette.textLow,
     textAlign: 'center',
     margin: spacing.md,
@@ -342,8 +342,8 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   playButton: {
-    minWidth: layout.minHit,
-    minHeight: layout.minHit,
+    minWidth: layout.tap,
+    minHeight: layout.tap,
     borderRadius: radii.pill,
     backgroundColor: palette.surfaceRaised,
     alignItems: 'center',
@@ -352,7 +352,7 @@ const styles = StyleSheet.create({
   playGlyph: { color: palette.textHi, fontSize: 18 },
   progressTrack: {
     flex: 1,
-    height: layout.minHit,
+    height: layout.tap,
     justifyContent: 'center',
   },
   progressRail: {
@@ -368,8 +368,8 @@ const styles = StyleSheet.create({
   },
   time: { ...typeScale.mono, color: palette.textMid, fontSize: 12 },
   rateButton: {
-    minWidth: layout.minHit,
-    minHeight: layout.minHit,
+    minWidth: layout.tap,
+    minHeight: layout.tap,
     alignItems: 'center',
     justifyContent: 'center',
   },

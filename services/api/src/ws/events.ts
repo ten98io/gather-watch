@@ -6,7 +6,7 @@
  * order matches seq order on this instance.
  */
 import type { FastifyBaseLogger } from 'fastify';
-import type { RoomId, UserId } from '@playin/contracts';
+import type { RoomId, UserId } from '@gather/contracts';
 import type { BusPort, StorePort } from '../adapters/ports';
 import { eventDocId, roomChannel } from '../adapters/ports';
 import type { RoomBusMessage } from '../adapters/ports';

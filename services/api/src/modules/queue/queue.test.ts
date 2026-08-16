@@ -10,7 +10,7 @@
  *    the resolved metadata is patched in afterwards with a second broadcast.
  */
 import { describe, expect, it } from 'vitest';
-import type { MediaRef, QueueItemId, ResolvedMedia, RoomId, UserId } from '@playin/contracts';
+import type { MediaRef, QueueItemId, ResolvedMedia, RoomId, UserId } from '@gather/contracts';
 import { memberDocId } from '../../adapters/ports';
 import type { Deps } from '../types';
 import { registerMetadataResolver } from '../metadata/resolver';

@@ -8,9 +8,12 @@
  * never as an exception escaping an event path.
  */
 
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
+import { applyMaxBitrate, clearMaxBitrate } from './adaptation';
 import { CHANNEL_IDS, ChannelFabric } from './channels';
 import type { ChannelFabricOptions, ChannelLabel } from './channels';
+import { classifyLinkStats } from './linkstate';
+import type { MeshLinkState } from './linkstate';
 import { PerfectNegotiator } from './negotiation';
 import type {
   ClearTimeoutFn,
@@ -46,6 +49,14 @@ export interface MeshManagerOptions {
   clearTimeoutFn: ClearTimeoutFn;
   /** Per-link stats poll implementation; defaults to pc.getStats?.(). */
   statsPollFn?: (pc: RtcPeerConnectionLike) => Promise<unknown>;
+  /** When set, the 'share' sender on any RELAYED link is bitrate-capped to
+   *  this many kbps (maxBitrate on every encoding), and uncapped again when
+   *  the link becomes 'direct'. Voice ('mic') is never capped. A share to a
+   *  peer whose link has not been classified yet — a brand-new connection —
+   *  runs uncapped for up to one pollStats interval, until the first poll
+   *  classifies the link; a share started on an existing relayed link is
+   *  capped from the first frame. */
+  capRelayedVideoKbps?: number;
   /** Negotiation errors etc. surface here. */
   onError?: (peerId: UserId, context: string, err: unknown) => void;
   fabricOptions?: ChannelFabricOptions;
@@ -58,10 +69,21 @@ interface MeshPeer {
   senders: Map<TrackRole, RtpSenderLike>;
   state: MeshConnectionState;
   connectionId: string;
+  /** Last REPORTED link path (post-debounce), not the raw last classification. */
+  linkState: MeshLinkState;
+  /** Consecutive 'unknown' classifications while linkState is known. */
+  unknownStreak: number;
+  /** Whether the relay cap was pushed onto the current 'share' sender. */
+  capApplied: boolean;
 }
 
 /** The fixed channel labels created pre-negotiated on every connection. */
 const FABRIC_LABELS: readonly ChannelLabel[] = ['sync', 'file', 'emote'];
+
+/** A known link state only demotes to 'unknown' after this many consecutive
+ *  unknown classifications — stats gaps during ICE restarts are transient and
+ *  must not flap the reported state (or the user-facing copy) every poll. */
+const UNKNOWN_POLLS_TO_DEMOTE = 2;
 
 /**
  * Owns the full-mesh lifecycle: reconcile the desired peer set, route
@@ -79,6 +101,7 @@ export class MeshManager {
   private readonly getIceServers: () => IceServerLike[];
   private readonly now: NowFn;
   private readonly statsPollFn: ((pc: RtcPeerConnectionLike) => Promise<unknown>) | undefined;
+  private readonly capRelayedVideoKbps: number | undefined;
   private readonly onError: (peerId: UserId, context: string, err: unknown) => void;
 
   private readonly peerMap = new Map<UserId, MeshPeer>();
@@ -87,6 +110,7 @@ export class MeshManager {
     (peerId: UserId, track: MediaStreamTrackLike, streams: unknown[]) => void
   >();
   private readonly stateSubs = new Set<(peerId: UserId, state: MeshConnectionState) => void>();
+  private readonly linkSubs = new Set<(peerId: UserId, state: MeshLinkState) => void>();
   private closed = false;
 
   constructor(opts: MeshManagerOptions) {
@@ -97,6 +121,7 @@ export class MeshManager {
     this.getIceServers = opts.getIceServers ?? (() => []);
     this.now = opts.now;
     this.statsPollFn = opts.statsPollFn;
+    this.capRelayedVideoKbps = opts.capRelayedVideoKbps;
     this.onError = opts.onError ?? (() => {});
     this.fabric = new ChannelFabric(opts.fabricOptions);
   }
@@ -165,7 +190,9 @@ export class MeshManager {
   }
 
   /** Poll per-link stats via statsPollFn (or pc.getStats). Peers whose poll
-   *  rejects or lacks getStats are omitted. */
+   *  rejects or lacks getStats are omitted. Each successful poll also
+   *  classifies the link path (direct/relayed/unknown) from the selected
+   *  candidate pair and drives the relay share cap. */
   async pollStats(): Promise<Map<UserId, unknown>> {
     const out = new Map<UserId, unknown>();
     await Promise.all(
@@ -179,12 +206,40 @@ export class MeshManager {
             stats = await peer.pc.getStats();
           }
           if (stats !== undefined) out.set(peerId, stats);
+          // The peer may have been removed while the poll was in flight.
+          if (this.peerMap.get(peerId) !== peer) return;
+          this.noteLinkClassification(peerId, peer, classifyLinkStats(stats));
         } catch (err) {
           this.onError(peerId, 'pollStats', err);
         }
       }),
     );
     return out;
+  }
+
+  /** Snapshot of per-peer link path states (post-debounce). */
+  linkStates(): Map<UserId, MeshLinkState> {
+    const out = new Map<UserId, MeshLinkState>();
+    for (const [peerId, peer] of this.peerMap) out.set(peerId, peer.linkState);
+    return out;
+  }
+
+  /** Preflight for Mode B: the link path of a peer ALREADY connected (e.g.
+   *  for voice), answered from the last completed stats poll — so whether a
+   *  share would be relay-capped is known BEFORE the share track is added.
+   *  'unknown' for unknown peers, and for links no poll has classified yet:
+   *  a share to such a peer may run uncapped for up to one poll interval. */
+  linkState(peerId: UserId): MeshLinkState {
+    return this.peerMap.get(peerId)?.linkState ?? 'unknown';
+  }
+
+  /** Subscribe to per-peer link path CHANGES (debounced — one event per
+   *  reported transition, never one per poll). Return unsubscribe. */
+  onLinkState(fn: (peerId: UserId, state: MeshLinkState) => void): () => void {
+    this.linkSubs.add(fn);
+    return () => {
+      this.linkSubs.delete(fn);
+    };
   }
 
   /** Trigger an ICE restart on one peer connection. */
@@ -218,6 +273,7 @@ export class MeshManager {
     this.fabric.close();
     this.trackSubs.clear();
     this.stateSubs.clear();
+    this.linkSubs.clear();
     this.localTracks.clear();
   }
 
@@ -259,7 +315,16 @@ export class MeshManager {
         },
       });
 
-      const peer: MeshPeer = { pc, negotiator, senders: new Map(), state: pc.connectionState, connectionId };
+      const peer: MeshPeer = {
+        pc,
+        negotiator,
+        senders: new Map(),
+        state: pc.connectionState,
+        connectionId,
+        linkState: 'unknown',
+        unknownStreak: 0,
+        capApplied: false,
+      };
       this.peerMap.set(peerId, peer);
 
       pc.ontrack = (ev) => {
@@ -319,14 +384,22 @@ export class MeshManager {
       if (sender !== undefined) {
         peer.pc.removeTrack(sender);
         peer.senders.delete(role);
+        if (role === 'share') peer.capApplied = false;
       }
       return;
     }
     if (sender === undefined) {
       peer.senders.set(role, peer.pc.addTrack(track));
+      // Preflight payoff: on a link already classified relayed, the brand-new
+      // share sender is capped before its first frame, not at the next poll.
+      if (role === 'share') {
+        peer.capApplied = false;
+        this.reconcileShareCap(peerId, peer);
+      }
       return;
     }
     if (sender.replaceTrack !== undefined) {
+      // Same sender, same parameters: an existing cap survives the swap.
       sender.replaceTrack(track).catch((err: unknown) => {
         // A failed swap leaves the old track publishing, which is strictly
         // safer than dropping the role.
@@ -336,5 +409,51 @@ export class MeshManager {
     }
     peer.pc.removeTrack(sender);
     peer.senders.set(role, peer.pc.addTrack(track));
+    if (role === 'share') {
+      peer.capApplied = false;
+      this.reconcileShareCap(peerId, peer);
+    }
+  }
+
+  /** Fold one poll's classification into the reported link state. Same-state
+   *  polls are silent; a KNOWN state demotes to 'unknown' only after
+   *  UNKNOWN_POLLS_TO_DEMOTE consecutive unknown reads (ICE-restart flap
+   *  damping), while direct<->relayed transitions report immediately. */
+  private noteLinkClassification(peerId: UserId, peer: MeshPeer, next: MeshLinkState): void {
+    if (next === peer.linkState) {
+      peer.unknownStreak = 0;
+      return;
+    }
+    if (next === 'unknown') {
+      peer.unknownStreak += 1;
+      if (peer.unknownStreak < UNKNOWN_POLLS_TO_DEMOTE) return;
+    }
+    peer.unknownStreak = 0;
+    peer.linkState = next;
+    for (const fn of [...this.linkSubs]) fn(peerId, next);
+    this.reconcileShareCap(peerId, peer);
+  }
+
+  /** Bring the 'share' sender's relay cap in line with the reported link
+   *  state: cap on 'relayed', uncap on 'direct', leave 'unknown' as-is (an
+   *  uncertain path keeps whatever cap it has — cost-safe). setParameters is
+   *  async and may reject; a rejection surfaces via onError and never
+   *  interrupts the share. */
+  private reconcileShareCap(peerId: UserId, peer: MeshPeer): void {
+    if (this.capRelayedVideoKbps === undefined) return;
+    const capBps = this.capRelayedVideoKbps * 1000;
+    const sender = peer.senders.get('share');
+    if (sender === undefined) return;
+    if (peer.linkState === 'relayed' && !peer.capApplied) {
+      peer.capApplied = true;
+      applyMaxBitrate(sender, capBps).catch((err: unknown) => {
+        this.onError(peerId, 'shareCap', err);
+      });
+    } else if (peer.linkState === 'direct' && peer.capApplied) {
+      peer.capApplied = false;
+      clearMaxBitrate(sender, capBps).catch((err: unknown) => {
+        this.onError(peerId, 'shareCap', err);
+      });
+    }
   }
 }

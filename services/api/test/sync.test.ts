@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { FastifyInstance } from 'fastify';
-import type { QueueItem } from '@playin/contracts';
+import type { QueueItem } from '@gather/contracts';
 import type { StorePort } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 import { addMember, makeApp, seedRoom, signupUser } from './helpers';

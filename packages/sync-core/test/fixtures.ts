@@ -1,4 +1,4 @@
-import type { PlaybackState, QueueItem, QueueItemId, UserId } from '@playin/contracts';
+import type { PlaybackState, QueueItem, QueueItemId, UserId } from '@gather/contracts';
 
 /** Cast a plain string to the branded UserId (tests only — no runtime validation). */
 export const uid = (s: string): UserId => s as UserId;

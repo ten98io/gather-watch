@@ -14,11 +14,11 @@ import {
 describe('wsUrlFor', () => {
   it('maps http to ws and https to wss', () => {
     expect(wsUrlFor('http://localhost:4000')).toBe('ws://localhost:4000/ws');
-    expect(wsUrlFor('https://api.playin.app')).toBe('wss://api.playin.app/ws');
+    expect(wsUrlFor('https://api.gather.watch')).toBe('wss://api.gather.watch/ws');
   });
 
   it('tolerates a trailing slash', () => {
-    expect(wsUrlFor('https://api.playin.app/')).toBe('wss://api.playin.app/ws');
+    expect(wsUrlFor('https://api.gather.watch/')).toBe('wss://api.gather.watch/ws');
   });
 });
 
@@ -35,7 +35,7 @@ describe('endpoint constants', () => {
 
 describe('originOfUrl', () => {
   it('normalises http(s) URLs to a lowercased bare origin', () => {
-    expect(originOfUrl('https://Playin.App/room/1?x=2')).toBe('https://playin.app');
+    expect(originOfUrl('https://Gather.Watch/room/1?x=2')).toBe('https://gather.watch');
     expect(originOfUrl('http://localhost:3000/')).toBe('http://localhost:3000');
   });
 
@@ -48,23 +48,23 @@ describe('originOfUrl', () => {
 
 describe('parseWebOrigins', () => {
   it('parses a comma-separated build define', () => {
-    expect(parseWebOrigins('https://playin.app, https://www.playin.app')).toEqual([
-      'https://playin.app',
-      'https://www.playin.app',
+    expect(parseWebOrigins('https://gather.watch, https://www.gather.watch')).toEqual([
+      'https://gather.watch',
+      'https://www.gather.watch',
     ]);
   });
 
   it('fails closed: a typo is dropped, never widened into a wildcard', () => {
-    expect(parseWebOrigins('https://playin.app,not-a-url,,file:///x')).toEqual([
-      'https://playin.app',
+    expect(parseWebOrigins('https://gather.watch,not-a-url,,file:///x')).toEqual([
+      'https://gather.watch',
     ]);
     expect(parseWebOrigins('')).toEqual([]);
     expect(parseWebOrigins(undefined)).toEqual([]);
   });
 
   it('de-duplicates', () => {
-    expect(parseWebOrigins('https://playin.app,https://playin.app/room')).toEqual([
-      'https://playin.app',
+    expect(parseWebOrigins('https://gather.watch,https://gather.watch/room')).toEqual([
+      'https://gather.watch',
     ]);
   });
 });

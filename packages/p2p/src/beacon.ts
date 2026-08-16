@@ -5,8 +5,8 @@
  * expected playhead without any server round-trip.
  */
 
-import { ClockEstimator, expectedPositionMs } from '@playin/sync-core';
-import type { PlaybackState } from '@playin/contracts';
+import { ClockEstimator, expectedPositionMs } from '@gather/sync-core';
+import type { PlaybackState } from '@gather/contracts';
 import type { SyncBeacon, SyncChannelMessage } from './channels';
 import type { ClearTimeoutFn, NowFn, SetTimeoutFn, TimeoutHandle } from './types';
 

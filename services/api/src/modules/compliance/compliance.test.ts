@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { DeleteMeResponse, MeExportResponse, ReportResponse } from '@playin/contracts';
+import { DeleteMeResponse, MeExportResponse, ReportResponse } from '@gather/contracts';
 import type {
   AssetId,
   Message,
@@ -17,7 +17,7 @@ import type {
   RoomId,
   User,
   UserId,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { newId } from '../../lib/tokens';
 import type { AssetDoc, StorePort } from '../../adapters/ports';
 import type { Deps } from '../types';

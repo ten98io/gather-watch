@@ -5,7 +5,7 @@
  * and mapped field-by-field; malformed entries are skipped, never trusted.
  */
 import type { FastifyBaseLogger } from 'fastify';
-import type { SearchGifsResponse } from '@playin/contracts';
+import type { SearchGifsResponse } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import type { AppConfig } from '../../config';
 

@@ -5,7 +5,7 @@
  * during-processing guard.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AssetId, UserId } from '@playin/contracts';
+import type { AssetId, UserId } from '@gather/contracts';
 import { buildApp } from '../src/app';
 import type { BuiltApp } from '../src/app';
 import { newId } from '../src/lib/tokens';

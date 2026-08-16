@@ -15,7 +15,7 @@
  * NOT_ENABLED until ENABLE_SFU) — nothing here is simulated.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { RestreamState, UserId } from '@playin/contracts';
+import type { RestreamState, UserId } from '@gather/contracts';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -27,7 +27,7 @@ import { toast } from '@/components/ui/toast';
 import { describeError } from '@/lib/describe-error';
 import { UPLINK_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
-import { getCallMesh } from '@/lib/call-mesh';
+import { getCallMesh, primeSharePlan, SHARE_RELAY_NOTE } from '@/lib/call-mesh';
 
 type HostPhase = 'idle' | 'preflight' | 'capturing' | 'live';
 
@@ -161,6 +161,12 @@ export function ModeBStage({ restream }: { restream: RestreamState }) {
   const connection = useRoomConnection();
   const isHost = restream.hostUserId === member.userId;
 
+  // Resolve the plan before a share can start: the mesh reads it when it is
+  // created, and only a plan known to be premium lifts the share quality cap.
+  useEffect(() => {
+    primeSharePlan();
+  }, []);
+
   // Fan the capture out over the mesh while we host.
   useEffect(() => {
     if (localStream === null) return;
@@ -170,7 +176,11 @@ export function ModeBStage({ restream }: { restream: RestreamState }) {
     const audio = localStream.getAudioTracks()[0] ?? null;
     mesh.setLocalTrack('share', video);
     if (audio !== null) mesh.setLocalTrack('mic', audio);
+    // Free shares over a relayed connection are quality-limited; the host is
+    // told once, in one sentence, and the share carries on.
+    const offRelayed = mesh.onShareRelayed(() => toast(SHARE_RELAY_NOTE));
     return () => {
+      offRelayed();
       mesh.setLocalTrack('share', null);
       if (audio !== null) mesh.setLocalTrack('mic', null);
     };

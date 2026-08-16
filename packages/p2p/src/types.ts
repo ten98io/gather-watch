@@ -15,7 +15,7 @@ import type {
   ServerWebrtcAnswer,
   ServerWebrtcIce,
   ServerWebrtcOffer,
-} from '@playin/contracts';
+} from '@gather/contracts';
 
 // ---------- timers / clock / rng ----------
 

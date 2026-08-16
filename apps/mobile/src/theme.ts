@@ -1,140 +1,92 @@
 /**
- * Playin mobile theme — DESIGN.md translated from CSS/OKLCH custom properties
- * to RN style tokens. Hex values are exact OKLCH→sRGB conversions of the
- * DESIGN.md tokens (conversion math recorded in README.md); the oklch source
- * is kept in each comment as the canonical reference.
+ * Gather mobile theme — the React Native adapter over @gather/design.
  *
- * Rules carried over from DESIGN.md:
+ * Owns: the names apps/mobile imports (`palette`, `paletteLight`, `type`,
+ * `radii`, `spacing`, `motion`, `layout`, `auroraGradient`, `glow`, `theme`),
+ * and the two type steps the design package deliberately does not carry
+ * (`type.bodyStrong`, `type.mono`) because they are RN-shaped, not system-level.
+ *
+ * Deliberately NOT: any colour, radius, spacing, duration or type value. Every
+ * number below is imported from @gather/design, which authors them once in
+ * OKLCH and renders them per-platform. A hex literal in this file is the exact
+ * bug that let mobile ship `--text-low` at oklch 0.58 long after web raised it
+ * to 0.65 for contrast — there is no longer anywhere for that bug to live.
+ *
+ * Rules from DESIGN.md that this file cannot enforce, only supply:
  *  - gradients only from the three aurora hues (aurora1 → aurora2 → aurora3,
  *    135°) and only for primary actions / brand moments;
  *  - body text never sits on a gradient;
- *  - elevation is glow, not shadow (RN: shadowColor = aurora1, low opacity);
- *  - hit targets ≥ 44px (see `layout.hitSlop` / min sizes below).
+ *  - elevation is glow, not shadow — use `glow`, never a `shadowOffset`;
+ *  - hit targets ≥ 44px: `layout.tap` (was `layout.minHit`; the design system
+ *    reconciled mobile's name with web's).
  */
 
-export const palette = {
-  /** oklch(0.13 0.02 285) near-black indigo */
-  bgVoid: '#07060f',
-  /** oklch(0.17 0.03 290) */
-  bgDeep: '#0f0d1c',
-  /** color-mix(white 5%, transparent) over the void */
-  surfaceGlass: 'rgba(255,255,255,0.05)',
-  /** color-mix(white 8%, transparent) */
-  surfaceRaised: 'rgba(255,255,255,0.08)',
-  /** color-mix(white 9%, transparent) 1px hairline */
-  borderGlass: 'rgba(255,255,255,0.09)',
-  /** oklch(0.97 0.005 285) */
-  textHi: '#f5f5f8',
-  /** oklch(0.78 0.015 285) */
-  textMid: '#b6b6c1',
-  /** oklch(0.58 0.02 285) */
-  textLow: '#797986',
-  /** oklch(0.62 0.23 295) electric violet */
-  aurora1: '#955bfe',
-  /** oklch(0.66 0.26 340) fuchsia */
-  aurora2: '#f02fc3',
-  /** oklch(0.80 0.16 75) solar amber */
-  aurora3: '#f9ad26',
-  /** oklch(0.98 0.01 295) — ink on aurora gradients */
-  accentInk: '#f9f7ff',
-  /** oklch(0.75 0.17 160) */
-  success: '#00ce88',
-  /** oklch(0.68 0.21 25) */
-  danger: '#ff5251',
-  /** oklch(0.82 0.16 85) */
-  warn: '#f3ba25',
-  /** oklch(0.72 0.20 295) */
-  focusRing: '#b085ff',
-} as const;
+import type { RnTypeStep } from '@gather/design';
+import { fontFamily, layout, motion, radii, rnThemes, spacing } from '@gather/design';
+
+/**
+ * WCAG maths used to live in this file. It now lives in @gather/design, where a
+ * guard test walks the whole surface ladder — mobile had the maths and still
+ * shipped a failing token, because nothing ran it over every pair.
+ */
+export { contrastRatio, relativeLuminance } from '@gather/design';
+
+export { layout, motion, radii, spacing };
+
+/**
+ * The dark palette — primary theme. Now includes the opaque elevation ladder
+ * (`surface0`…`surface3`, `hairline`) that mobile never had: it faked elevation
+ * with the translucent `surfaceGlass`/`surfaceRaised` washes alone, so it could
+ * not express "a solid step up" the way web's `--surface-1..3` does.
+ */
+export const palette = rnThemes.dark.palette;
 
 /** DESIGN.md §2 light ("Daylight") variant — first-class, chroma −15% aurora. */
-export const paletteLight = {
-  bgVoid: '#f5f4f9',
-  bgDeep: '#ebeaf2',
-  surfaceGlass: 'rgba(255,255,255,0.65)',
-  surfaceRaised: 'rgba(255,255,255,0.8)',
-  borderGlass: 'rgba(20,16,40,0.08)',
-  textHi: '#191924',
-  textMid: '#4c4c58',
-  textLow: '#6a6a76',
-  aurora1: '#9266ed',
-  aurora2: '#e44bbc',
-  aurora3: '#f0b04d',
-  accentInk: '#f9f7ff',
-  success: '#00ce88',
-  danger: '#ff5251',
-  warn: '#f3ba25',
-  focusRing: '#b085ff',
-} as const;
+export const paletteLight = rnThemes.light.palette;
 
 export type Palette = typeof palette;
 
-/** Radii — DESIGN.md §4: 12 controls, 16 cards/bubbles, 24 panels/sheets, pill. */
-export const radii = {
-  control: 12,
-  card: 16,
-  panel: 24,
-  pill: 999,
-} as const;
-
-/** 4pt spacing scale. */
-export const spacing = {
-  xs: 4,
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 24,
-  xxl: 32,
-} as const;
+const ramp = rnThemes.dark.type;
 
 /**
- * Type scale — DESIGN.md §3. Display = Space Grotesk, text = Inter, mono =
- * JetBrains Mono. RN falls back to the platform font until the fonts are
- * bundled (TODO: expo-font loading milestone); the scale/weights are binding.
- * Body 15–17 fluid on web → 16 fixed here; display tracking −1%.
+ * An RN type step, plus the family override `type.mono` needs. The design
+ * package models mono as a *family* (`fontFamily.mono`), not a ramp step, so
+ * the merge happens here rather than there.
+ */
+export interface MobileTypeStep extends RnTypeStep {
+  readonly fontFamily?: string;
+}
+
+/**
+ * The type ramp (DESIGN.md §3) as RN style fragments.
+ *
+ * RENAMED, not restyled: mobile's old `displayL`/`displayM`/`caption` were a
+ * pre-redesign ramp. `displayL` → `hero` (the auth/marketing step), `displayM`
+ * → `display` (screen titles), and the old 13px `caption` → `label`. `caption`
+ * still exists but now means what DESIGN.md says it means — 11px/500 uppercase
+ * — so leaving the old call sites spelled `caption` would have been a trap.
+ *
+ * `fontFamily.*[0]` is the bundled face; until expo-font loads it RN falls back
+ * to the platform default (see README's font milestone).
  */
 export const type = {
-  displayL: { fontSize: 34, lineHeight: 40, fontWeight: '700', letterSpacing: -0.34 },
-  displayM: { fontSize: 28, lineHeight: 34, fontWeight: '700', letterSpacing: -0.28 },
-  title: { fontSize: 20, lineHeight: 26, fontWeight: '500', letterSpacing: -0.2 },
-  body: { fontSize: 16, lineHeight: 22, fontWeight: '400', letterSpacing: 0 },
-  bodyStrong: { fontSize: 16, lineHeight: 22, fontWeight: '600', letterSpacing: 0 },
-  caption: { fontSize: 13, lineHeight: 18, fontWeight: '400', letterSpacing: 0 },
-  mono: { fontSize: 14, lineHeight: 20, fontWeight: '400', fontFamily: 'Menlo' },
-} as const;
+  hero: ramp.hero,
+  display: ramp.display,
+  title: ramp.title,
+  body: ramp.body,
+  label: ramp.label,
+  caption: ramp.caption,
+  /** Emphasis body. RN has no weight modifier — an emphasised body is a step. */
+  bodyStrong: { ...ramp.body, fontWeight: '600' },
+  /** Codes, timecodes. Body metrics in the mono face. */
+  mono: { ...ramp.body, fontFamily: fontFamily.mono[0] },
+} as const satisfies Readonly<Record<string, MobileTypeStep>>;
 
-/** Motion — DESIGN.md §6 (Reanimated is the end state; core RN Animated now). */
-export const motion = {
-  microMs: 200,
-  panelMs: 300,
-  maxMs: 400,
-  spring: { stiffness: 260, damping: 30 },
-  typingDotStaggerMs: 120,
-  emoteBurstMs: 2500,
-} as const;
+/** Aurora gradient stops for expo-linear-gradient (135° ≙ {0,0} → {1,1}). */
+export const auroraGradient = rnThemes.dark.auroraGradient;
 
-export const layout = {
-  /** WCAG/§9: minimum hit target. */
-  minHit: 44,
-  /** Mobile: stage on top, bottom sheet tabs (§7). */
-  tabBarHeight: 48,
-} as const;
-
-/** Aurora gradient stops (135° equivalent: start top-left → end bottom-right). */
-export const auroraGradient = {
-  colors: [palette.aurora1, palette.aurora2, palette.aurora3] as const,
-  start: { x: 0, y: 0 },
-  end: { x: 1, y: 1 },
-} as const;
-
-/** Glow, not shadow — §4. Use on raised elements only. */
-export const glow = {
-  shadowColor: palette.aurora1,
-  shadowOpacity: 0.2,
-  shadowRadius: 20,
-  shadowOffset: { width: 0, height: 0 },
-  elevation: 6,
-} as const;
+/** Glow, not shadow — DESIGN.md §4. Use on raised elements only. */
+export const glow = rnThemes.dark.glow;
 
 export const theme = {
   dark: palette,
@@ -149,28 +101,3 @@ export const theme = {
 } as const;
 
 export type Theme = typeof theme;
-
-/** Relative luminance (WCAG) of a #rrggbb hex color. Used by theme tests. */
-export function relativeLuminance(hex: string): number {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (m === null || m[1] === undefined) {
-    throw new Error(`not a #rrggbb color: ${hex}`);
-  }
-  const n = parseInt(m[1], 16);
-  const channel = (v: number): number => {
-    const c = v / 255;
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-  };
-  const r = channel((n >> 16) & 0xff);
-  const g = channel((n >> 8) & 0xff);
-  const b = channel(n & 0xff);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-/** WCAG contrast ratio between two #rrggbb colors (order-independent). */
-export function contrastRatio(a: string, b: string): number {
-  const la = relativeLuminance(a);
-  const lb = relativeLuminance(b);
-  const [hi, lo] = la >= lb ? [la, lb] : [lb, la];
-  return (hi + 0.05) / (lo + 0.05);
-}

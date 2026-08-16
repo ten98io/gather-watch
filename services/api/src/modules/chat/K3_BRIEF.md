@@ -1,6 +1,6 @@
-# K3 BRIEF — Playin API `chat` module (full chat surface)
+# K3 BRIEF — Gather API `chat` module (full chat surface)
 
-You are implementing the **chat feature module** of the Playin Fastify API. The repo is a
+You are implementing the **chat feature module** of the Gather Fastify API. The repo is a
 pnpm/turbo TS-strict ESM monorepo. The service skeleton (app factory, WS hub, adapters,
 auth) is DONE and FROZEN — you only create new files in the two owned directories below
 and must conform to the skeleton exactly.
@@ -17,7 +17,7 @@ This brief has THREE PHASES. Implement ONLY the phase named in the prompt that i
   - NOTHING else. Do not touch `src/modules/index.ts`, contracts, adapters, plugins,
     other packages, package.json, or config files.
 - Do NOT run package installs. Every dependency you need is already installed:
-  `fastify`, `zod`, `@playin/contracts`, `web-push` (+ `@types/web-push`), `ws`, `vitest`.
+  `fastify`, `zod`, `@gather/contracts`, `web-push` (+ `@types/web-push`), `ws`, `vitest`.
 - TypeScript is STRICT with `exactOptionalPropertyTypes: true` and
   `noUncheckedIndexedAccess: true`, `moduleResolution: bundler` (imports WITHOUT `.js`
   extension, e.g. `import { AppError } from '../../lib/errors'`).
@@ -35,7 +35,7 @@ This brief has THREE PHASES. Implement ONLY the phase named in the prompt that i
 
 ## Frozen skeleton — what you build against
 
-### Contracts (package `@playin/contracts`, import everything from it)
+### Contracts (package `@gather/contracts`, import everything from it)
 
 Relevant entity schemas (zod, types inferred with the same names):
 
@@ -268,7 +268,7 @@ Guard, applied to EVERY hop (initial URL and every redirect target):
    the result must be non-empty and EVERY address must pass `isPrivateIp` — any private
    address rejects with `AppError('VALIDATION','url resolves to a private address')`.
    Skip checks 2–3 entirely when `allowPrivateAddresses`.
-4. `fetchImpl(url, { redirect:'manual', signal, headers: { 'user-agent':'playin-unfurl/1.0', accept:'text/html,*/*;q=0.5' } })`.
+4. `fetchImpl(url, { redirect:'manual', signal, headers: { 'user-agent':'gather-unfurl/1.0', accept:'text/html,*/*;q=0.5' } })`.
 5. Status 301/302/303/307/308 with a `location` header → resolve `new URL(location, current)`,
    count hops (over maxRedirects → `AppError('VALIDATION','too many redirects')`), loop back to step 1.
 6. Other non-2xx → `AppError('VALIDATION', 'unfurl target returned ' + status)`.
@@ -645,7 +645,7 @@ Unit tests against `createUnfurler` (import from `../../src/modules/chat/unfurl`
   `{ filename:'clip note.webm', mime:'audio/webm', sizeBytes: 1_000_000 }` → 200;
   `CreateUploadResponse.parse` passes; one part `{ partNumber: 1, startByte: 0, endByte: 1_000_000 }`;
   part.url contains `X-Amz-Signature=`, `X-Amz-Credential=`, `X-Amz-Expires=900`,
-  `/playin-media/chat/`, and the sanitized name `clip_note.webm`; asset doc: status
+  `/gather-media/chat/`, and the sanitized name `clip_note.webm`; asset doc: status
   'uploading', ownerId = user, storageKey starts `chat/${roomId}/`, uploadId echoed.
 - **presign unit**: `presignPutUrl(testConfig().s3, 'chat/r/a/f.png', 900, new Date('2026-08-15T00:00:00Z'))`
   → URL contains `X-Amz-Date=20260815T000000Z`, credential `20260815%2Fus-east-1%2Fs3%2Faw`,

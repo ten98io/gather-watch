@@ -6,8 +6,8 @@
  */
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { AssetId, ListLibraryQuery, RenameAssetBody } from '@playin/contracts';
-import type { MediaAsset } from '@playin/contracts';
+import { AssetId, ListLibraryQuery, RenameAssetBody } from '@gather/contracts';
+import type { MediaAsset } from '@gather/contracts';
 import { AppError } from '../lib/errors';
 import { artifactKeyPrefix, assetKeyPrefix, serializeAsset } from '../lib/serialize';
 import type { AssetDoc } from '../store/ports';

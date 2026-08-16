@@ -2,7 +2,7 @@
  * Room policy gating (contracts RoomPolicyLevel → MemberRole). Pure helper so
  * screens and tests share one definition of "who may touch what".
  */
-import type { MemberRole, RoomPolicyLevel } from '@playin/contracts';
+import type { MemberRole, RoomPolicyLevel } from '@gather/contracts';
 
 const ROLE_RANK: Record<MemberRole, number> = {
   guest: 0,

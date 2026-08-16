@@ -10,8 +10,8 @@ import {
   CompleteUploadBody,
   CreateUploadResponse,
   MediaAsset,
-} from '@playin/contracts';
-import type { MessageAttachment, RoomId } from '@playin/contracts';
+} from '@gather/contracts';
+import type { MessageAttachment, RoomId } from '@gather/contracts';
 import { z } from 'zod';
 import { apiFetch } from './api';
 

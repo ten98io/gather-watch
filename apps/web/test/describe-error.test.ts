@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError } from '@playin/api-client';
+import { ApiError } from '@gather/api-client';
 import { describeError } from '@/lib/describe-error';
 import { RELAY_LABEL, RELAY_SHORT_LABEL, ROLE_LABEL, UPLINK_LABEL } from '@/lib/labels';
 

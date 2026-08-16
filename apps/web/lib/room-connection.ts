@@ -1,9 +1,9 @@
-import { ApiError, RoomSocket } from '@playin/api-client';
+import { ApiError, RoomSocket } from '@gather/api-client';
 import type {
   ClockEstimator,
   RoomSocketOptions,
   SocketStatus,
-} from '@playin/api-client';
+} from '@gather/api-client';
 import type {
   ClientEvent,
   Message,
@@ -17,10 +17,10 @@ import type {
   RoomId,
   ServerEvent,
   UserId,
-} from '@playin/contracts';
-import type { RestClient } from '@playin/api-client';
-import { applyServerState, initialQueueState } from '@playin/sync-core';
-import type { QueueState } from '@playin/sync-core';
+} from '@gather/contracts';
+import type { RestClient } from '@gather/api-client';
+import { applyServerState, initialQueueState } from '@gather/sync-core';
+import type { QueueState } from '@gather/sync-core';
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import { WS_URL, ensureAccessToken } from './api';
@@ -197,7 +197,7 @@ export function applyReaction(
  * the room shell's RoomProvider and shared by every pane through
  * `@/lib/room-context`.
  *
- * It wraps `@playin/api-client`'s RoomSocket (heartbeat clock sync, seq
+ * It wraps `@gather/api-client`'s RoomSocket (heartbeat clock sync, seq
  * tracking, gap replay, send queueing, backoff reconnect) rather than
  * rebuilding that machinery, and adds:
  *  - cookie/JWT auth: token acquisition + rotation on reconnect,

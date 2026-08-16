@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PresenceEntry, UserId } from '@playin/contracts';
+import type { PresenceEntry, UserId } from '@gather/contracts';
 import { MeshManager } from '../src/mesh';
 import type { SyncBeacon } from '../src/channels';
 import type { MediaStreamTrackLike } from '../src/types';

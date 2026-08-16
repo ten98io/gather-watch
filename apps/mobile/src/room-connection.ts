@@ -7,7 +7,7 @@
  * This module is deliberately RN-free (no react / react-native imports) so
  * vitest can exercise it in a node environment with a fake WebSocket.
  */
-import { RoomSocket } from '@playin/api-client';
+import { RoomSocket } from '@gather/api-client';
 import type {
   ClearTimeoutFn,
   ConnectOptions,
@@ -15,9 +15,9 @@ import type {
   SetTimeoutFn,
   SocketStatus,
   WebSocketCtor,
-} from '@playin/api-client';
-import { applyServerState, initialQueueState } from '@playin/sync-core';
-import type { QueueState } from '@playin/sync-core';
+} from '@gather/api-client';
+import { applyServerState, initialQueueState } from '@gather/sync-core';
+import type { QueueState } from '@gather/sync-core';
 import type {
   Message,
   MessageId,
@@ -29,7 +29,7 @@ import type {
   Room,
   RoomId,
   UserId,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { createStore } from 'zustand/vanilla';
 import type { StoreApi } from 'zustand/vanilla';
 

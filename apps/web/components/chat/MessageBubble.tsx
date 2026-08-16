@@ -8,7 +8,7 @@
  */
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import type { Message, MessageId, UserId } from '@playin/contracts';
+import type { Message, MessageId, UserId } from '@gather/contracts';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/cn';

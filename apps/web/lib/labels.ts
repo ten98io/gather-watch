@@ -7,7 +7,7 @@
  * The relay label is load-bearing copy: the privacy policy promises the room
  * badge always says which mode you are in, and app/billing/success quotes it.
  */
-import type { MediaRef, MemberRole, RelayMode, UplinkQuality } from '@playin/contracts';
+import type { MediaRef, MemberRole, RelayMode, UplinkQuality } from '@gather/contracts';
 import { providerById } from '@/lib/providers';
 
 export const ROLE_LABEL: Record<MemberRole, string> = {

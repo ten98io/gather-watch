@@ -1,6 +1,6 @@
 import { cn } from '@/lib/cn';
 
-/** Playin wordmark orb — the aurora play triangle from app/icon.svg. */
+/** Gather wordmark orb — the aurora play triangle from app/icon.svg. */
 export function Logo({ size = 32, className }: { size?: number; className?: string }) {
   return (
     <svg
@@ -8,7 +8,7 @@ export function Logo({ size = 32, className }: { size?: number; className?: stri
       height={size}
       viewBox="0 0 512 512"
       role="img"
-      aria-label="Playin"
+      aria-label="Gather"
       className={cn('shrink-0', className)}
     >
       <defs>

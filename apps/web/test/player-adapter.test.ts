@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 import { adapterKindFor, isHlsRef, mediaKey, stageGate } from '@/lib/player/adapter';
 
 describe('adapterKindFor', () => {

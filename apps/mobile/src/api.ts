@@ -4,7 +4,7 @@
  * AUTH TRANSPORT FINDING (services/api/src/plugins/auth.ts + modules/auth/routes.ts):
  *  - The api authenticates REST + WS exclusively via `Authorization: Bearer
  *    <accessToken>`. Cookies are NOT read for authentication.
- *  - The ONLY cookie is `playin_rt` (httpOnly, path=/auth) carrying the
+ *  - The ONLY cookie is `gather_rt` (httpOnly, path=/auth) carrying the
  *    refresh token; `/auth/refresh` reads it from the Cookie header.
  *  - `/auth/verify`, `/auth/guest`, `/auth/refresh` return
  *    `{ accessToken, accessTokenExpiresAt }` in the body, but the contracts
@@ -17,22 +17,22 @@
  *     works for every endpoint including the WS handshake token.
  *  2. `captureFetch` (below) intercepts the raw JSON of the three
  *     token-issuing endpoints BEFORE zod strips it and persists the access
- *     token + expiry; it also scrapes the `playin_rt` Set-Cookie (readable in
+ *     token + expiry; it also scrapes the `gather_rt` Set-Cookie (readable in
  *     RN, unlike browsers) into secure store.
- *  3. On `/auth/refresh` requests it re-attaches `Cookie: playin_rt=…`
+ *  3. On `/auth/refresh` requests it re-attaches `Cookie: gather_rt=…`
  *     manually. This is the documented "tiny fetch wrapper" — the api DOES
  *     support Bearer, only the refresh *transport* is cookie-bound.
  */
 import * as SecureStore from 'expo-secure-store';
-import { RestClient } from '@playin/api-client';
-import type { FetchInitLike, FetchLike, FetchResponseLike } from '@playin/api-client';
+import { RestClient } from '@gather/api-client';
+import type { FetchInitLike, FetchLike, FetchResponseLike } from '@gather/api-client';
 import { API_URL } from './config';
 
-const KEY_ACCESS = 'playin.accessToken';
-const KEY_ACCESS_EXP = 'playin.accessTokenExpiresAt';
-const KEY_REFRESH = 'playin.refreshToken';
+const KEY_ACCESS = 'gather.accessToken';
+const KEY_ACCESS_EXP = 'gather.accessTokenExpiresAt';
+const KEY_REFRESH = 'gather.refreshToken';
 
-const RT_COOKIE = 'playin_rt';
+const RT_COOKIE = 'gather_rt';
 
 /** In-memory mirror of the secure store so `getAccessToken` stays cheap. */
 let memoryAccessToken: string | null = null;

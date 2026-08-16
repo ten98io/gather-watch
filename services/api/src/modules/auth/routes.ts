@@ -1,7 +1,7 @@
 /**
  * Auth REST endpoints. Registered WITHOUT a prefix — the paths below are full
- * and must match @playin/api-client exactly. Refresh tokens travel in the
- * httpOnly `playin_rt` cookie scoped to /auth; access tokens are returned in
+ * and must match @gather/api-client exactly. Refresh tokens travel in the
+ * httpOnly `gather_rt` cookie scoped to /auth; access tokens are returned in
  * the body alongside their absolute expiry (typed optional accessToken /
  * accessTokenExpiresAt fields on the contracts verify/refresh/guest-join
  * responses).
@@ -14,8 +14,8 @@ import {
   UpdateProfileBody,
   UpgradeGuestBody,
   VerifyTokenBody,
-} from '@playin/contracts';
-import type { Member, Room } from '@playin/contracts';
+} from '@gather/contracts';
+import type { Member, Room } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { signAccessToken } from '../../lib/tokens';
 import { requireAuth } from '../../plugins/auth';
@@ -25,7 +25,7 @@ import type { MemberDoc, RoomDoc, UserDoc } from '../../adapters/ports';
 import { AuthService } from './service';
 import { createMailer } from './email';
 
-const RT_COOKIE = 'playin_rt';
+const RT_COOKIE = 'gather_rt';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only
  *  realtime snapshots (playback/queue/restream/master). */

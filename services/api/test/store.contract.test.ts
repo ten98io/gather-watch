@@ -4,7 +4,7 @@
  * semantics — see src/adapters/ports.ts.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { MessageId, RoomId, UserId } from '@playin/contracts';
+import type { MessageId, RoomId, UserId } from '@gather/contracts';
 import { MemoryBus } from '../src/adapters/memory-bus';
 import { MemoryCollection, MemoryStore } from '../src/adapters/memory-store';
 import type { MessageDoc, UserDoc } from '../src/adapters/ports';

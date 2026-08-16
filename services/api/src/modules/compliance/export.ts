@@ -9,7 +9,7 @@
  * samples, push subs) still needs a contracts change first — contracts are
  * orchestrator-owned.
  */
-import { MediaRef } from '@playin/contracts';
+import { MediaRef } from '@gather/contracts';
 import type {
   MediaAsset,
   MeExportResponse,
@@ -18,7 +18,7 @@ import type {
   Room,
   RoomId,
   UserId,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import type { AssetDoc } from '../../adapters/ports';
 import { serializeRoom } from '../rooms/serialize';

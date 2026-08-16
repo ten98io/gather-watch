@@ -3,7 +3,7 @@
  * narrowed to what this service owns.
  */
 import type { FastifyBaseLogger } from 'fastify';
-import type { RoomId, UserId } from '@playin/contracts';
+import type { RoomId, UserId } from '@gather/contracts';
 import type { AppConfig } from './config';
 import type { AssetStore } from './store/ports';
 import type { ObjectStorage } from './storage/ports';

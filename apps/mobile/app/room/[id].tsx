@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useStore } from 'zustand';
-import type { RoomId } from '@playin/contracts';
+import type { RoomId } from '@gather/contracts';
 import { api, tokenStore } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { WS_URL } from '../../src/config';
@@ -197,11 +197,11 @@ const styles = StyleSheet.create({
   backGlyph: { color: palette.textHi, fontSize: 32, marginTop: -4 },
   headerMain: { flex: 1 },
   roomName: { ...typeScale.title, color: palette.textHi },
-  invite: { ...typeScale.caption, color: palette.textLow },
+  invite: { ...typeScale.label, color: palette.textLow },
   inviteCode: { ...typeScale.mono, color: palette.aurora3, fontSize: 12 },
   statusWrap: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusText: { ...typeScale.caption, color: palette.textLow },
+  statusText: { ...typeScale.label, color: palette.textLow },
   emoteRow: {
     flexDirection: 'row',
     gap: spacing.sm,
@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xxl,
   },
   errorNote: {
-    ...typeScale.caption,
+    ...typeScale.label,
     color: palette.danger,
     textAlign: 'center',
     padding: spacing.sm,

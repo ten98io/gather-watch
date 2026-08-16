@@ -114,7 +114,7 @@ describe('cast capability descriptors', () => {
     expect(cast.reveal).toContain('.ytp-overflow-button');
   });
 
-  it('never claims a protected video service can be cast by Playin', () => {
+  it('never claims a protected video service can be cast by Gather', () => {
     for (const id of ['netflix', 'primevideo', 'disneyplus', 'max', 'hulu', 'crunchyroll']) {
       expect(providerById(id)?.cast.native).toBe(false);
     }

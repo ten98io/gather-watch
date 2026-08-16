@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import type { Session, User } from '@playin/contracts';
+import type { Session, User } from '@gather/contracts';
 import { memberDocId } from '../src/adapters/ports';
 import type { StorePort } from '../src/adapters/ports';
 import { makeApp, seedRoom, signupUser, testConfig } from './helpers';
@@ -15,7 +15,7 @@ function bearer(token: string): { authorization: string } {
 }
 
 function rtCookie(value: string): { cookie: string } {
-  return { cookie: `playin_rt=${value}` };
+  return { cookie: `gather_rt=${value}` };
 }
 
 /** POST /auth/magic-link and return the devLink's token (dev mode). */
@@ -62,7 +62,7 @@ describe('auth', () => {
     expect(body.user.email).toBe('alice@example.com');
     expect(typeof body.accessToken).toBe('string');
 
-    const cookie = ok.cookies.find((c) => c.name === 'playin_rt');
+    const cookie = ok.cookies.find((c) => c.name === 'gather_rt');
     expect(cookie).toBeDefined();
     expect(cookie!.httpOnly).toBe(true);
     expect(cookie!.path).toBe('/auth');
@@ -119,7 +119,7 @@ describe('auth', () => {
     const refreshedBody = refreshed.json() as { accessToken: string };
     expect(typeof refreshedBody.accessToken).toBe('string');
     expect(refreshedBody.accessToken).not.toBe(account.accessToken);
-    const newCookie = refreshed.cookies.find((c) => c.name === 'playin_rt');
+    const newCookie = refreshed.cookies.find((c) => c.name === 'gather_rt');
     expect(newCookie).toBeDefined();
     expect(newCookie!.value).not.toBe(account.cookie);
 
@@ -174,7 +174,7 @@ describe('auth', () => {
     expect(body.member.role).toBe('guest');
     expect(body.lastEventSeq).toBe(0);
     expect(typeof body.accessToken).toBe('string');
-    expect(res.cookies.find((c) => c.name === 'playin_rt')).toBeDefined();
+    expect(res.cookies.find((c) => c.name === 'gather_rt')).toBeDefined();
   });
 
   it('rejects an unknown invite code with 404', async () => {
@@ -325,7 +325,7 @@ describe('auth', () => {
       headers: bearer(account.accessToken),
     });
     expect(out.statusCode).toBe(200);
-    const cleared = out.cookies.find((c) => c.name === 'playin_rt');
+    const cleared = out.cookies.find((c) => c.name === 'gather_rt');
     expect(cleared).toBeDefined();
     expect(cleared!.value).toBe('');
 

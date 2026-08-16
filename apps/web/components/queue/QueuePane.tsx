@@ -12,7 +12,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { DragEvent, KeyboardEvent, PointerEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { MediaRef, QueueItem, QueueItemId, RoomId } from '@playin/contracts';
+import type { MediaRef, QueueItem, QueueItemId, RoomId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { canAct, formatMs } from '@/lib/permissions';
 import { parseProviderUrl } from '@/lib/providers';
@@ -409,7 +409,7 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
     if (parsed.ref === null) {
       // Protected tier: recognized, but there is nothing to embed — honest stop.
       setError(
-        `${parsed.provider.name} protects its video, so it can’t play inside Playin. Watch it together with the Playin browser extension — everyone signs in with their own account.`,
+        `${parsed.provider.name} protects its video, so it can’t play inside Gather. Watch it together with the Gather browser extension — everyone signs in with their own account.`,
       );
       return;
     }

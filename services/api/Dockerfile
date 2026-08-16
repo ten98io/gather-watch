@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# ── Playin API (Fastify 5 — REST + room WebSocket) ───────────────────────────
+# ── Gather API (Fastify 5 — REST + room WebSocket) ───────────────────────────
 # Build context MUST be the REPO ROOT (infra/docker-compose.yml sets
 # `context: ..`), because this is a full-workspace pnpm build:
 #

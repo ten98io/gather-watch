@@ -9,7 +9,7 @@
  * this package).
  */
 
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import { base64ToBytes, bytesToBase64 } from './b64';
 import type { FileChannelMessage } from './channels';
 import type { ClearTimeoutFn, SetTimeoutFn, TimeoutHandle } from './types';

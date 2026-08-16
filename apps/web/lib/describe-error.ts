@@ -8,7 +8,7 @@
  * codes map to a shared sentence, a blocked browser permission gets its own,
  * and anything unrecognised falls back to the caller's wording.
  */
-import { ApiError } from '@playin/api-client';
+import { ApiError } from '@gather/api-client';
 
 export function describeError(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {

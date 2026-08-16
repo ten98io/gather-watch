@@ -1,9 +1,9 @@
-# ── Playin — Caddy reverse proxy ──────────────────────────────────────────────
-# Replace playin.example.com with your real domain (DNS A/AAAA → this host).
+# ── Gather — Caddy reverse proxy ──────────────────────────────────────────────
+# Replace gather.example.com with your real domain (DNS A/AAAA → this host).
 # Caddy auto-provisions and renews Let's Encrypt certificates — no manual cert
 # work needed as long as ports 80 and 443 are reachable from the internet.
 
-playin.example.com {
+gather.example.com {
 	encode zstd gzip
 
 	# ── API: REST + the multiplexed room WebSocket ─────────────────────────
@@ -19,8 +19,8 @@ playin.example.com {
 	}
 
 	# ── Public media (MinIO S3) ────────────────────────────────────────────
-	# https://playin.example.com/media/<bucket>/<key>  →  minio:9000/<bucket>/<key>
-	# e.g. S3_PUBLIC_BASE_URL=https://playin.example.com/media/playin-media
+	# https://gather.example.com/media/<bucket>/<key>  →  minio:9000/<bucket>/<key>
+	# e.g. S3_PUBLIC_BASE_URL=https://gather.example.com/media/gather-media
 	handle /media/* {
 		uri strip_prefix /media
 		reverse_proxy minio:9000
@@ -33,9 +33,9 @@ playin.example.com {
 }
 
 # ── Optional: LiveKit signalling behind TLS on a subdomain ───────────────────
-# Uncomment (and add DNS) to serve wss://livekit.playin.example.com instead of
+# Uncomment (and add DNS) to serve wss://livekit.gather.example.com instead of
 # exposing ws://host:7880 directly; then set LIVEKIT_URL accordingly in .env.
-# livekit.playin.example.com {
+# livekit.gather.example.com {
 # 	reverse_proxy livekit:7880
 # }
 

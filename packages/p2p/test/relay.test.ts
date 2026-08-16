@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import type { MeshManager } from '../src/mesh';
 import { CfSfuProvider, LivekitProvider, MeshProvider, RelayError } from '../src/relay';
 import type { RelayProvider } from '../src/relay';

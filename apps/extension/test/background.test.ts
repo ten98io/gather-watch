@@ -24,17 +24,52 @@ import type { ProviderSummary } from '../src/protocol';
 
 /**
  * The room socket is the one dependency this file cannot stand up: it opens a
- * real WebSocket. Everything the worker asks of it is a no-op here, which is
- * enough to own a room — and owning a room is what the share path requires.
+ * real WebSocket. This stand-in owns a room the same way the real one does —
+ * it remembers the handlers the worker subscribed with, so a test can deliver
+ * a room event, and it records what the worker sent back to the room.
+ *
+ * Only the newest socket's handlers stay live: a real one is closed and
+ * replaced when the room changes, and a closed socket delivers nothing.
  */
-vi.mock('@playin/api-client', () => ({
+const room = vi.hoisted(() => ({
+  handlers: new Map<string, Array<(ev: { type: string; payload: unknown }) => void>>(),
+  sent: [] as Array<{ type: string; payload: unknown }>,
+  status: 'open' as string,
+  emit(type: string, payload: unknown): void {
+    for (const handler of [...(room.handlers.get(type) ?? [])]) handler({ type, payload });
+  },
+  reset(): void {
+    room.handlers.clear();
+    room.sent.length = 0;
+    room.status = 'open';
+  },
+}));
+
+vi.mock('@gather/api-client', () => ({
   RoomSocket: class {
     readonly clock = { serverNow: (now: number) => now };
+
+    constructor() {
+      room.handlers.clear();
+    }
+
+    get status(): string {
+      return room.status;
+    }
+
     connect(): void {}
-    send(): void {}
-    on(): () => void {
+
+    send(type: string, payload: unknown): void {
+      room.sent.push({ type, payload });
+    }
+
+    on(type: string, handler: (ev: { type: string; payload: unknown }) => void): () => void {
+      const list = room.handlers.get(type) ?? [];
+      list.push(handler);
+      room.handlers.set(type, list);
       return () => undefined;
     }
+
     close(): void {}
   },
 }));
@@ -61,10 +96,21 @@ interface FakeEvent<F> {
   listeners: F[];
 }
 
+/** One message the worker addressed to a tab — and to which frame of it. */
+interface TabMessage {
+  tabId: number;
+  frameId: number | undefined;
+  msg: Record<string, unknown>;
+}
+
 interface ChromeFake {
   desktopCalls: DesktopCall[];
   tabCaptureCalls: number[];
   sent: Array<Record<string, unknown>>;
+  /** Everything sent into a page: drive, frameRole, driveOff, overlay. */
+  tabMessages: TabMessage[];
+  /** URLs the worker opened a tab for. */
+  createdTabs: string[];
   /** What the next picker call answers with. */
   nextPick: { streamId: string; canRequestAudioTrack: boolean };
   nextTabStreamId: string;
@@ -104,6 +150,8 @@ function installChromeFake(): ChromeFake {
     desktopCalls: [],
     tabCaptureCalls: [],
     sent: [],
+    tabMessages: [],
+    createdTabs: [],
     nextPick: { streamId: 'desktop-stream-1', canRequestAudioTrack: false },
     nextTabStreamId: 'tab-stream-1',
     nextShareReply: { ok: true, audio: true, note: '' },
@@ -138,7 +186,18 @@ function installChromeFake(): ChromeFake {
       onRemoved,
       get: async () => ({}),
       query: async () => (state.activeTab === null ? [] : [state.activeTab]),
-      sendMessage: async () => undefined,
+      sendMessage: async (
+        tabId: number,
+        msg: Record<string, unknown>,
+        opts?: { frameId?: number },
+      ) => {
+        state.tabMessages.push({ tabId, frameId: opts?.frameId, msg });
+        return undefined;
+      },
+      create: async (opts: { url: string }) => {
+        state.createdTabs.push(opts.url);
+        return { id: 99 };
+      },
     },
     alarms: { onAlarm: evt(), create: async () => undefined, clear: async () => true },
     storage: {
@@ -208,17 +267,36 @@ const GUEST_WIRE = (): Record<string, unknown> => ({
   accessToken: 'tok_abc',
 });
 
+/** What the room's member list answers with. Empty = the API said nothing
+ *  useful, which is the case every other test runs under. */
+let membersWire: Record<string, unknown> = {};
+/** What GET /rooms/:id answers: the room's policies and OUR member record.
+ *  Empty = the API said nothing useful — and unknown DENIES playback control,
+ *  which is what every other test runs under. */
+let roomWire: Record<string, unknown> = {};
+/** Every URL the worker fetched, so a test can say what it did NOT fetch. */
+let fetched: string[] = [];
+
 let fake: ChromeFake;
 let bg: typeof import('../src/background');
 
 beforeAll(async () => {
   fake = installChromeFake();
-  globalThis.fetch = (async () => ({
-    ok: true,
-    status: 200,
-    json: async () => GUEST_WIRE(),
-    text: async () => '',
-  })) as unknown as typeof fetch;
+  globalThis.fetch = (async (url: string) => {
+    const u = String(url);
+    fetched.push(u);
+    const body = u.includes('/members')
+      ? membersWire
+      : /\/rooms\/[^/]+$/.test(u)
+        ? roomWire
+        : GUEST_WIRE();
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => '',
+    };
+  }) as unknown as typeof fetch;
   bg = await import('../src/background');
 });
 
@@ -226,6 +304,12 @@ beforeEach(() => {
   fake.desktopCalls.length = 0;
   fake.tabCaptureCalls.length = 0;
   fake.sent.length = 0;
+  fake.tabMessages.length = 0;
+  fake.createdTabs.length = 0;
+  room.reset();
+  membersWire = {};
+  roomWire = {};
+  fetched = [];
   fake.nextPick = { streamId: 'desktop-stream-1', canRequestAudioTrack: false };
   fake.nextTabStreamId = 'tab-stream-1';
   fake.nextShareReply = { ok: true, audio: true, note: '' };
@@ -245,20 +329,36 @@ interface PopupStatus {
   connected: boolean;
   roomName: string | null;
   sharing: boolean;
+  telemetry: { positionMs: number } | null;
 }
 
-/** One popup → worker request, answered exactly as chrome.runtime would. */
-async function ask<T>(msg: Record<string, unknown>): Promise<T> {
+/**
+ * One request to the worker, answered exactly as chrome.runtime would.
+ *
+ * `sender` is the browser's word for who is asking — a tab id and a frame id,
+ * which the worker trusts precisely because the page cannot forge them.
+ */
+async function ask<T>(
+  msg: Record<string, unknown>,
+  sender: Record<string, unknown> = {},
+): Promise<T> {
   const [listener] = fake.onMessage.listeners;
   if (listener === undefined) throw new Error('the worker registered no message listener');
   return new Promise<T>((resolve, reject) => {
-    const willAnswer = listener(msg, {}, (raw) => {
+    const willAnswer = listener(msg, sender, (raw) => {
       const res = raw as { ok: true; value: T } | { ok: false; error: string };
       if (res.ok) resolve(res.value);
       else reject(new Error(res.error));
     });
     if (willAnswer !== true) reject(new Error(`nothing answered ${String(msg['kind'])}`));
   });
+}
+
+/** A message the worker does not answer: a claim, telemetry, a provider. */
+function notify(msg: Record<string, unknown>, sender: Record<string, unknown>): void {
+  const [listener] = fake.onMessage.listeners;
+  if (listener === undefined) throw new Error('the worker registered no message listener');
+  listener(msg, sender, () => undefined);
 }
 
 const status = (): Promise<PopupStatus> => ask<PopupStatus>({ kind: 'popup:status' });
@@ -669,6 +769,493 @@ describe('stopping a share that is not there', () => {
     // started; the document still being open is the browser's own proof.
     fake.offscreenOpen = true;
     expect((await status()).sharing).toBe(true);
+  });
+});
+
+/* ── who gets driven: the election, and nothing else ── */
+
+/** A frame reporting a full-screen feature player — comfortably plausible. */
+const PLAYER_CLAIM = {
+  tag: 'video',
+  area: 1280 * 720,
+  durationSec: 5400,
+  readyState: 4,
+  paused: false,
+  muted: false,
+  hasSource: true,
+};
+
+/** What a frame sends: its best element's metrics, or null for "I have none". */
+function claimFrom(tabId: number, frameId: number, metrics: unknown = PLAYER_CLAIM): void {
+  notify(
+    { kind: 'frameClaim', metrics, url: 'https://example.com/watch' },
+    { tab: { id: tabId }, frameId },
+  );
+}
+
+/** The room's playback, as sync.state delivers it. */
+function playbackAt(positionMs: number): Record<string, unknown> {
+  return {
+    mediaRef: { kind: 'url', url: 'https://cdn.example.com/feature.m3u8', mime: 'video/mp4' },
+    positionMs,
+    rate: 1,
+    playing: true,
+    serverTs: Date.now(),
+    seq: 1,
+    queueIndex: null,
+  };
+}
+
+const messagesOfKind = (kind: string): TabMessage[] =>
+  fake.tabMessages.filter((m) => m.msg['kind'] === kind);
+
+/** Which frames were actually driven, in order. */
+const drivenFrames = (): Array<number | undefined> =>
+  messagesOfKind('drive').map((m) => m.frameId);
+
+const rolesSent = (): Array<{ frameId: number | undefined; role: unknown }> =>
+  messagesOfKind('frameRole').map((m) => ({ frameId: m.frameId, role: m.msg['role'] }));
+
+describe('driving a tab', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  /**
+   * The tab was chosen by its URL alone — that is all `resolveAutoTab` and the
+   * popup's active tab ever prove. A URL is not a player: a page whose only
+   * media is a muted hero loop or an ad slot never claims at all. Driving its
+   * top frame regardless seeks whatever element happens to be there.
+   */
+  it('drives nothing while no frame has claimed a player', async () => {
+    await connectRoom();
+
+    room.emit('sync.state', playbackAt(0));
+
+    expect(drivenFrames()).toEqual([]);
+    expect(rolesSent()).toEqual([]);
+  });
+
+  it('drives nothing when every frame reports it has no player', async () => {
+    await connectRoom();
+    claimFrom(7, 0, null);
+
+    room.emit('sync.state', playbackAt(0));
+
+    expect(drivenFrames()).toEqual([]);
+  });
+
+  it('drives the elected frame, and tells it that it is the driver first', async () => {
+    await connectRoom();
+    room.emit('sync.state', playbackAt(0));
+    claimFrom(7, 3);
+
+    expect(rolesSent()).toContainEqual({ frameId: 3, role: 'driver' });
+    expect(drivenFrames()).toEqual([3]);
+    expect(messagesOfKind('drive')[0]?.tabId).toBe(7);
+  });
+
+  it('stops, and stays stopped, when the elected frame loses its player', async () => {
+    await connectRoom();
+    room.emit('sync.state', playbackAt(0));
+    claimFrom(7, 3);
+    expect(drivenFrames()).toEqual([3]);
+    fake.tabMessages.length = 0;
+
+    // The element was swapped out from under it — an ad roll, a source swap.
+    claimFrom(7, 3, null);
+    room.emit('sync.state', playbackAt(5000));
+
+    expect(rolesSent()).toContainEqual({ frameId: 3, role: 'idle' });
+    expect(messagesOfKind('driveOff').map((m) => m.frameId)).toEqual([3]);
+    expect(drivenFrames()).toEqual([]);
+  });
+
+  /**
+   * A player iframe that re-navigates comes back as a fresh content script,
+   * idle, while the election still points at that same frame id. With the role
+   * as the only licence to drive, silence here would leave the room's real
+   * player unable to follow for as long as the tab stayed open.
+   */
+  it('re-states the grant to a frame that reloaded under an unchanged election', async () => {
+    await connectRoom();
+    claimFrom(7, 3);
+    fake.tabMessages.length = 0;
+
+    claimFrom(7, 3);
+
+    expect(rolesSent()).toEqual([{ frameId: 3, role: 'driver' }]);
+  });
+
+  it('takes telemetry from the elected frame only', async () => {
+    await connectRoom();
+    claimFrom(7, 3);
+
+    notify(
+      { kind: 'telemetry', positionMs: 111, durationMs: 5000, playing: true, rate: 1 },
+      { tab: { id: 7 }, frameId: 9 },
+    );
+    expect((await status()).telemetry).toBeNull();
+
+    notify(
+      { kind: 'telemetry', positionMs: 222, durationMs: 5000, playing: true, rate: 1 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+    expect((await status()).telemetry?.positionMs).toBe(222);
+  });
+});
+
+/* ── the user's own hand on the driven site's player ── */
+
+/** GET /rooms/:id wire naming the room's playback policy and OUR role. */
+function accessWire(playbackControl: string, role: string): Record<string, unknown> {
+  return { room: { policies: { playbackControl } }, member: { role } };
+}
+
+describe("a user's gesture on the driven player becomes room intent", () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  /** A driven room: connected, access loaded, frame 3 elected, room playing. */
+  async function openDrivenRoom(access: Record<string, unknown> | null): Promise<void> {
+    if (access !== null) roomWire = access;
+    await connectRoom();
+    // loadRoomAccess is fire-and-forget; let it land before anything speaks.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    claimFrom(7, 3);
+    room.emit('sync.state', playbackAt(600_000));
+  }
+
+  function telemetryFrom(
+    frameId: number,
+    over: { positionMs: number; playing: boolean },
+  ): void {
+    notify(
+      {
+        kind: 'telemetry',
+        positionMs: over.positionMs,
+        durationMs: 5_400_000,
+        playing: over.playing,
+        rate: 1,
+      },
+      { tab: { id: 7 }, frameId },
+    );
+  }
+
+  function intentFrom(frameId: number, intent: unknown, positionMs: unknown): void {
+    notify({ kind: 'userIntent', intent, positionMs }, { tab: { id: 7 }, frameId });
+  }
+
+  const syncSent = (type: string): Array<{ type: string; payload: unknown }> =>
+    room.sent.filter((m) => m.type === type);
+
+  it('one user pause: one room intent, no correction fired against it', async () => {
+    await openDrivenRoom(accessWire('everyone', 'guest'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    // The user pauses the site's own player.
+    telemetryFrom(3, { positionMs: 600_400, playing: false });
+    intentFrom(3, 'pause', 600_400);
+
+    // Exactly the web transport's wire shape, exactly once.
+    expect(syncSent('sync.pause')).toEqual([
+      { type: 'sync.pause', payload: { positionMs: 600_400 } },
+    ]);
+
+    // The room still says "playing" — the echo is in flight. No un-pause.
+    fake.tabMessages.length = 0;
+    room.emit('sync.state', playbackAt(600_000));
+    expect(messagesOfKind('drive')).toEqual([]);
+
+    // The echo lands. Still nothing to correct — the user stays paused.
+    room.emit('sync.state', { ...playbackAt(600_400), playing: false });
+    expect(messagesOfKind('drive')).toEqual([]);
+    expect(syncSent('sync.pause')).toHaveLength(1);
+  });
+
+  it('forwards play and seek with the same wire shapes the web app uses', async () => {
+    await openDrivenRoom(accessWire('everyone', 'member'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    intentFrom(3, 'play', 600_000);
+    intentFrom(3, 'seek', 630_500);
+
+    expect(syncSent('sync.play')).toEqual([
+      { type: 'sync.play', payload: { positionMs: 600_000 } },
+    ]);
+    expect(syncSent('sync.seek')).toEqual([
+      { type: 'sync.seek', payload: { positionMs: 630_500 } },
+    ]);
+  });
+
+  it('sends nothing without permission, and the driver corrects as ever', async () => {
+    await openDrivenRoom(accessWire('host', 'member'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+    room.emit('sync.state', playbackAt(600_000));
+    fake.tabMessages.length = 0;
+
+    // The user pauses — but this room lets only the host drive playback.
+    telemetryFrom(3, { positionMs: 600_200, playing: false });
+    intentFrom(3, 'pause', 600_200);
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+
+    // Their local pause IS drift, by design: the next pass un-pauses them.
+    room.emit('sync.state', playbackAt(600_000));
+    const drives = messagesOfKind('drive');
+    expect(drives.length).toBeGreaterThan(0);
+    expect((drives.at(-1)?.msg['elastic'] as { transport?: string }).transport).toBe('play');
+  });
+
+  it('denies while the room record could not be read — unknown is not a licence', async () => {
+    await openDrivenRoom(null); // roomWire stays empty: no policy, no role
+    telemetryFrom(3, { positionMs: 600_000, playing: false });
+    intentFrom(3, 'pause', 600_000);
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+  });
+
+  it('takes intent only from the elected frame of the driven tab', async () => {
+    await openDrivenRoom(accessWire('everyone', 'guest'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    intentFrom(9, 'pause', 600_000); // an unelected frame of the driven tab
+    notify({ kind: 'userIntent', intent: 'pause', positionMs: 600_000 }, { tab: { id: 8 }, frameId: 3 });
+    notify({ kind: 'userIntent', intent: 'pause', positionMs: 600_000 }, {});
+
+    expect(syncSent('sync.pause')).toEqual([]);
+  });
+
+  it('drops malformed intent without throwing', async () => {
+    await openDrivenRoom(accessWire('everyone', 'guest'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    expect(() => {
+      intentFrom(3, 'stop', 600_000);
+      intentFrom(3, 'pause', Number.NaN);
+      intentFrom(3, 'pause', '600000');
+      intentFrom(3, undefined, undefined);
+    }).not.toThrow();
+
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+  });
+
+  it('does not read a buffering pause as intent — the stall judgement decides', async () => {
+    const T = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T);
+    try {
+      await openDrivenRoom(accessWire('everyone', 'guest'));
+      telemetryFrom(3, { positionMs: 600_000, playing: true });
+      room.emit('sync.state', { ...playbackAt(600_000), serverTs: T });
+
+      // 600ms later the player has not advanced at all: it is buffering.
+      nowSpy.mockReturnValue(T + 600);
+      telemetryFrom(3, { positionMs: 600_000, playing: true });
+      room.emit('sync.state', { ...playbackAt(600_000), serverTs: T });
+
+      // Whatever pause-shaped state the site produces now is NOT the user.
+      intentFrom(3, 'pause', 600_000);
+      expect(syncSent('sync.pause')).toEqual([]);
+
+      // The same pause once the player advances again IS the user: the stall
+      // judgement, not the pause, is what gated it.
+      nowSpy.mockReturnValue(T + 1600);
+      telemetryFrom(3, { positionMs: 601_000, playing: true });
+      room.emit('sync.state', { ...playbackAt(600_000), serverTs: T });
+      telemetryFrom(3, { positionMs: 601_100, playing: false });
+      intentFrom(3, 'pause', 601_100);
+      expect(syncSent('sync.pause')).toEqual([
+        { type: 'sync.pause', payload: { positionMs: 601_100 } },
+      ]);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
+/* ── the injected room overlay ── */
+
+interface OverlayState {
+  connection: string;
+  roomName: string | null;
+  people: Array<{ id: string; name: string; you: boolean; micOn: boolean; away: boolean }>;
+  messages: Array<{ id: string; author: string; text: string; mine: boolean }>;
+  sync: { stalled: boolean } | null;
+}
+
+function presence(userId: string, over: { state?: string; micOn?: boolean } = {}): unknown {
+  return {
+    userId,
+    state: over.state ?? 'watching',
+    micOn: over.micOn ?? false,
+    camOn: false,
+    sharing: false,
+    lastSeenTs: Date.now(),
+  };
+}
+
+function chatWire(over: { id: string; authorId: string; body: string; deletedAt?: number }): unknown {
+  return {
+    id: over.id,
+    roomId: 'room_1',
+    authorId: over.authorId,
+    kind: 'text',
+    body: over.body,
+    gifUrl: null,
+    attachment: null,
+    replyTo: null,
+    mentions: [],
+    reactions: {},
+    pinned: false,
+    editedAt: null,
+    deletedAt: over.deletedAt ?? null,
+    seq: 1,
+    createdAt: Date.now(),
+  };
+}
+
+/** The last room state pushed at a page, and the frame it was pushed to. */
+function lastOverlayPush(): TabMessage | undefined {
+  return messagesOfKind('overlay').pop();
+}
+
+describe('the injected room overlay', () => {
+  beforeEach(async () => {
+    await connectRoom();
+  });
+
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('answers the tab that is in the room, and only that tab', async () => {
+    const inRoom = await ask<OverlayState | null>({ kind: 'overlay:state' }, { tab: { id: 7 } });
+    expect(inRoom?.roomName).toBe('Movie night');
+
+    const elsewhere = await ask<OverlayState | null>(
+      { kind: 'overlay:state' },
+      { tab: { id: 8 } },
+    );
+    expect(elsewhere).toBeNull();
+
+    // A message with no tab behind it is not a tab in a room either.
+    expect(await ask<OverlayState | null>({ kind: 'overlay:state' })).toBeNull();
+  });
+
+  it('pushes the room to the top frame of the driven tab when it changes', () => {
+    fake.tabMessages.length = 0;
+
+    room.emit('presence.state', { entries: [presence('user_1'), presence('user_2', { micOn: true })] });
+
+    const push = lastOverlayPush();
+    expect(push?.tabId).toBe(7);
+    expect(push?.frameId).toBe(0);
+    const state = push?.msg['state'] as OverlayState;
+    expect(state.people).toEqual([
+      { id: 'user_1', name: '', you: true, micOn: false, away: false },
+      { id: 'user_2', name: '', you: false, micOn: true, away: false },
+    ]);
+  });
+
+  it('says nothing when nothing a person would see has changed', () => {
+    room.emit('presence.state', { entries: [presence('user_1')] });
+    fake.tabMessages.length = 0;
+
+    room.emit('presence.state', { entries: [presence('user_1')] });
+
+    expect(messagesOfKind('overlay')).toEqual([]);
+  });
+
+  it('carries the room chat, and drops what was deleted', () => {
+    room.emit('chat.message', chatWire({ id: 'm1', authorId: 'user_2', body: 'starting now' }));
+    room.emit('chat.message', chatWire({ id: 'm2', authorId: 'user_1', body: 'ok!' }));
+    room.emit('chat.message', chatWire({ id: 'm3', authorId: 'user_2', body: 'oops', deletedAt: 5 }));
+
+    const state = lastOverlayPush()?.msg['state'] as OverlayState;
+    expect(state.messages).toEqual([
+      { id: 'm1', author: '', text: 'starting now', mine: false },
+      { id: 'm2', author: '', text: 'ok!', mine: true },
+    ]);
+  });
+
+  it('sends what was typed to the room', async () => {
+    await ask({ kind: 'overlay:chat', text: '  hello everyone  ' }, { tab: { id: 7 } });
+
+    expect(room.sent).toEqual([
+      {
+        type: 'chat.send',
+        payload: {
+          kind: 'text',
+          body: 'hello everyone',
+          gifUrl: null,
+          attachment: null,
+          replyTo: null,
+          mentions: [],
+        },
+      },
+    ]);
+  });
+
+  it('refuses to send from a tab that is not in the room', async () => {
+    await expect(ask({ kind: 'overlay:chat', text: 'hi' }, { tab: { id: 8 } })).rejects.toThrow(
+      'This tab is not in the room.',
+    );
+    expect(room.sent).toEqual([]);
+  });
+
+  it('leaves the room, and takes the panel away with it', async () => {
+    fake.tabMessages.length = 0;
+
+    await ask({ kind: 'overlay:leave' }, { tab: { id: 7 } });
+
+    expect(fake.tabMessages).toContainEqual({
+      tabId: 7,
+      frameId: 0,
+      msg: { kind: 'overlayOff' },
+    });
+    expect((await status()).connected).toBe(false);
+  });
+
+  it('opens this room in the web app, and no other page', async () => {
+    await ask({ kind: 'overlay:open-app' }, { tab: { id: 7 } });
+
+    expect(fake.createdTabs).toEqual(['http://localhost:3000/room/room_1']);
+  });
+});
+
+describe('the overlay names the people in the room', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  /** Presence and chat carry ids only. "Someone, Someone and Someone are
+   *  here" is not a room, so the member list is read once when it opens. */
+  it('reads the member list once and shows people by name', async () => {
+    membersWire = {
+      members: [
+        { member: {}, user: { id: 'user_1', displayName: 'Ana' } },
+        { member: {}, user: { id: 'user_2', displayName: 'Ben' } },
+      ],
+    };
+
+    await connectRoom();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    room.emit('presence.state', { entries: [presence('user_1'), presence('user_2')] });
+
+    const state = lastOverlayPush()?.msg['state'] as OverlayState;
+    expect(state.people.map((p) => p.name)).toEqual(['Ana', 'Ben']);
+    expect(fetched.filter((url) => url.includes('/members'))).toHaveLength(1);
+  });
+
+  it('carries on with "Someone" when the member list cannot be read', async () => {
+    await connectRoom();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    room.emit('presence.state', { entries: [presence('user_9')] });
+
+    const state = lastOverlayPush()?.msg['state'] as OverlayState;
+    // The overlay itself renders an empty name as "Someone" — see overlay/state.
+    expect(state.people).toEqual([
+      { id: 'user_9', name: '', you: false, micOn: false, away: false },
+    ]);
   });
 });
 

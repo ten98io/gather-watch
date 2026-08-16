@@ -1,6 +1,6 @@
 /**
  * Playlists REST endpoints. Registered WITHOUT a prefix — the paths below are
- * full and must match @playin/api-client exactly. Playlists are owner-only:
+ * full and must match @gather/api-client exactly. Playlists are owner-only:
  * every read/mutation of an existing playlist is rejected for non-owners.
  * add-to-queue appends COPIES of the playlist's items (fresh ids) to a room's
  * shared queue, gated on that room's queueControl policy.
@@ -10,8 +10,8 @@ import {
   AddToRoomQueueBody,
   CreatePlaylistBody,
   UpdatePlaylistBody,
-} from '@playin/contracts';
-import type { PlaylistId, QueueItem, QueueItemId, UserId } from '@playin/contracts';
+} from '@gather/contracts';
+import type { PlaylistId, QueueItem, QueueItemId, UserId } from '@gather/contracts';
 import { memberDocId } from '../../adapters/ports';
 import type { PlaylistDoc, StorePort } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';

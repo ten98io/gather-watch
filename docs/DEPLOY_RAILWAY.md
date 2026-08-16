@@ -1,6 +1,6 @@
-# Deploying Playin on Railway — step-by-step runbook
+# Deploying Gather on Railway — step-by-step runbook
 
-Project: **Playin-App** (already created and linked via `railway link`).
+Project: **Gather-App** (already created and linked via `railway link`).
 Data plane: **MongoDB Atlas** (external, existing) + **Railway Redis** (already
 provisioned). **Do not add Railway's Mongo template** — Mongo lives in Atlas.
 
@@ -56,7 +56,7 @@ tokens the api mints).
    Atlas + PaaS; rotate the password if you choose this).
 3. Copy the **connection string** (Drivers → Node.js), and put the database
    name in the path. It should look like:
-   `mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/playin?retryWrites=true&w=majority`
+   `mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/gather?retryWrites=true&w=majority`
 
 > ⚠️ Naming mismatch to watch: your local file uses `MONGODB_URI`, but the app
 > reads **`MONGO_URL`**. On Railway the variable must be named `MONGO_URL`.
@@ -121,12 +121,21 @@ Leave `APP_URL` for step 1.4 (needs the web domain). Do **not** set
 Optional but recommended now:
 
 ```env
-# transactional email for magic-link sign-in (any SMTP provider)
-SMTP_HOST=<e.g. smtp.resend.com>
-SMTP_PORT=587
-SMTP_USER=<provider user>
-SMTP_PASS=<provider key>
-SMTP_FROM=Playin <login@yourdomain>
+# Transactional email — Cloudflare Email Service, over its REST API.
+# Both of these are required together; either one alone is ignored and the
+# api falls back to SMTP, then to logging the link.
+CF_EMAIL_ACCOUNT_ID=<cloudflare account id>
+CF_EMAIL_API_TOKEN=<token with email-sending permission — SECRET>
+#
+# THE FROM ADDRESS MUST BE ON THE VERIFIED SENDING DOMAIN.
+# The sender is `email.gather.watch`, which is deliberately NOT the app domain
+# (`gather.watch`) — a subdomain keeps sending reputation off the domain the
+# product lives on. A from address on the bare app domain is accepted by this
+# config, passes every test, and is then REJECTED by Cloudflare at send time,
+# so it fails in production only.
+CF_EMAIL_FROM=Gather <no-reply@email.gather.watch>
+#
+# SMTP is the fallback, not the path. Keep it only if you want a second route.
 # GIF picker (free key from Google/Tenor) — omit and GIFs just say "not configured"
 TENOR_API_KEY=<key>
 ```
@@ -283,17 +292,17 @@ The extension talks to the API directly, and MV3 bundles can't read env at
 runtime — the origin is inlined at build time:
 
 ```bash
-PLAYIN_API_URL=https://<api-domain> pnpm --filter ./apps/extension build
+GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build
 ```
 
 Load `apps/extension/dist` via chrome://extensions → Load unpacked (or zip it
-for the Web Store). Omitting `PLAYIN_API_URL` keeps the localhost dev default.
+for the Web Store). Omitting `GATHER_API_URL` keeps the localhost dev default.
 
 ## Custom domains (when ready)
 
-1. `web` → Settings → Networking → Custom Domain (e.g. `playin.app`), add the
+1. `web` → Settings → Networking → Custom Domain (e.g. `gather.watch`), add the
    CNAME Railway shows at your DNS.
-2. Same for `api` (e.g. `api.playin.app`).
+2. Same for `api` (e.g. `api.gather.watch`).
 3. Update `NEXT_PUBLIC_API_URL` (web, triggers rebuild), `APP_URL` + `API_URL`
    (api), and redeploy both.
 4. Optional edge caching: proxy the domains through Cloudflare and cache
@@ -313,7 +322,7 @@ for the Web Store). Omitting `PLAYIN_API_URL` keeps the localhost dev default.
 | Sign-in email never arrives | SMTP vars unset/wrong → magic link is in `railway logs --service api`. |
 | Data vanished after a redeploy | `MONGO_URL`/`REDIS_URL` empty at boot → api ran on in-memory adapters. Set them; check `/readyz`. |
 | Uploads say unavailable | `ENABLE_MEDIA_PIPELINE` must be `true` on **both** api and media, S3 vars on both. |
-| Browser extension can't connect | It was built without `PLAYIN_API_URL` and is pointing at localhost — rebuild it (see below). |
+| Browser extension can't connect | It was built without `GATHER_API_URL` and is pointing at localhost — rebuild it (see below). |
 
 ## Architecture notes (unchanged decisions)
 

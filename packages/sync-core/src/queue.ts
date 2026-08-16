@@ -1,4 +1,4 @@
-import type { QueueItem, QueueItemId, UserId } from '@playin/contracts';
+import type { QueueItem, QueueItemId, UserId } from '@gather/contracts';
 
 /** Immutable snapshot of the shared queue. `version` bumps by exactly 1 per
  *  effective change. */

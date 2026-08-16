@@ -1,5 +1,5 @@
 {
-  "name": "@playin/p2p",
+  "name": "@gather/p2p",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -23,8 +23,8 @@
     "lint": "eslint src test"
   },
   "dependencies": {
-    "@playin/contracts": "workspace:*",
-    "@playin/sync-core": "workspace:*"
+    "@gather/contracts": "workspace:*",
+    "@gather/sync-core": "workspace:*"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

@@ -3,7 +3,7 @@
  * RTCPeerConnection. Receives a capture stream id from the background —
  * either a tabCapture id or a desktopCapture id for a screen/window — grabs
  * the stream and fans it out to the room as the mesh 'share' track via
- * @playin/p2p's MeshManager. That is the exact Mode B path the web app uses,
+ * @gather/p2p's MeshManager. That is the exact Mode B path the web app uses,
  * so extension and web viewers interoperate.
  *
  * It owns: the capture constraints, the audio degradation policy, and the
@@ -26,16 +26,17 @@
  * audio was legitimately requested and failed anyway. A share that has picture
  * but no sound is a working share.
  */
-import { MeshManager } from '@playin/p2p';
+import { MeshManager } from '@gather/p2p';
 import type {
   InboundSignal,
   MediaStreamTrackLike,
+  MeshLinkState,
   RtcPeerConnectionLike,
   SignalSend,
   TrackRole,
-} from '@playin/p2p';
-import { RoomSocket } from '@playin/api-client';
-import type { RoomId, UserId } from '@playin/contracts';
+} from '@gather/p2p';
+import { RoomSocket } from '@gather/api-client';
+import type { Plan, RoomId, UserId } from '@gather/contracts';
 
 import { WS_URL } from './config';
 
@@ -46,6 +47,18 @@ export type CaptureSource = 'tab' | 'desktop';
 export const MAX_WIDTH = 1920;
 export const MAX_HEIGHT = 1080;
 export const MAX_FRAME_RATE = 30;
+
+/** Free-tier ceiling for the share encode over a relayed link — the same
+ *  number the web app passes (docs/COST_MODEL.md: cap, do not refuse). */
+export const FREE_SHARE_RELAY_KBPS = 400;
+
+/** Link classification only advances inside the mesh's pollStats(), and this
+ *  document owns the interval — without the cadence the cap never applies. */
+const LINK_POLL_MS = 5_000;
+
+/** The exact sentence the web app shows its sharing host — keep them in step. */
+export const SHARE_RELAY_NOTE =
+  'Sharing at reduced quality on this connection — Premium removes the limit.';
 
 /**
  * Chrome's legacy `mandatory` constraint bag. It is not part of the standard
@@ -98,6 +111,9 @@ export interface ShareMesh {
   syncPeers(userIds: UserId[]): void;
   handleSignal(ev: InboundSignal): void;
   setLocalTrack(role: TrackRole, track: MediaStreamTrackLike | null): void;
+  /** Classifies link paths and applies/lifts the relay cap as a side effect. */
+  pollStats(): Promise<Map<UserId, unknown>>;
+  linkStates(): Map<UserId, MeshLinkState>;
   close(): void;
 }
 
@@ -105,7 +121,11 @@ export interface ShareMesh {
 export interface ShareRuntime {
   getUserMedia(request: CaptureRequest): Promise<ShareStream>;
   createSocket(): ShareSocket;
-  createMesh(opts: { roomId: RoomId; send: SignalSend }): ShareMesh;
+  createMesh(opts: {
+    roomId: RoomId;
+    send: SignalSend;
+    capRelayedVideoKbps?: number;
+  }): ShareMesh;
   /**
    * The capture ended without us. Nothing outside this document can observe
    * that, so the worker's idea of "sharing" only clears because of this call.
@@ -121,6 +141,9 @@ export interface StartShareRequest {
   source: CaptureSource;
   /** False = this surface has no sound to give; asking would cost the video. */
   canRequestAudioTrack: boolean;
+  /** Only 'premium' lifts the relayed-share quality cap; a sender that does
+   *  not say (today's background) shares capped — the cost risk is ours. */
+  plan: Plan;
 }
 
 export interface ShareStarted {
@@ -208,6 +231,11 @@ export async function captureShare(
  * `canRequestAudioTrack` is read the same way round: only an explicit false
  * suppresses audio, because a sender that predates the field asked for it
  * unconditionally and a tab share always has it.
+ *
+ * `plan` is the opposite polarity, deliberately: only the exact string
+ * 'premium' lifts the relayed-share cap. Absent (a background that predates
+ * the field), junk, or anything else shares capped — degraded is defensible,
+ * an operator paying relay for a free room is not.
  */
 export function parseStartShare(msg: Record<string, unknown>): StartShareRequest | null {
   if (msg['kind'] !== 'startShare') return null;
@@ -217,6 +245,7 @@ export function parseStartShare(msg: Record<string, unknown>): StartShareRequest
     accessToken: String(msg['accessToken']),
     source: msg['source'] === 'desktop' ? 'desktop' : 'tab',
     canRequestAudioTrack: msg['canRequestAudioTrack'] !== false,
+    plan: msg['plan'] === 'premium' ? 'premium' : 'free',
   };
 }
 
@@ -224,7 +253,7 @@ const browserRuntime: ShareRuntime = {
   getUserMedia: (request) =>
     navigator.mediaDevices.getUserMedia(request as unknown as MediaStreamConstraints),
   createSocket: () => new RoomSocket(WS_URL, { replayFetch: async () => [] }),
-  createMesh: ({ roomId, send }) =>
+  createMesh: ({ roomId, send, capRelayedVideoKbps }) =>
     new MeshManager({
       roomId,
       localUserId: 'extension-host' as UserId,
@@ -236,6 +265,7 @@ const browserRuntime: ShareRuntime = {
       now: () => Date.now(),
       setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
       clearTimeoutFn: (h) => clearTimeout(h as never),
+      ...(capRelayedVideoKbps === undefined ? {} : { capRelayedVideoKbps }),
     }),
   notifyEnded: () => {
     if (typeof chrome === 'undefined') return;
@@ -248,6 +278,25 @@ const browserRuntime: ShareRuntime = {
 let mesh: ShareMesh | null = null;
 let socket: ShareSocket | null = null;
 let stream: ShareStream | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Periodic link poll while a capped share is live: classification (and with
+ *  it the relay cap) only advances inside pollStats(), and this document is
+ *  the only thing that can tick. Stops itself once the share it belongs to is
+ *  gone. */
+function schedulePoll(forMesh: ShareMesh): void {
+  pollTimer = setTimeout(() => {
+    if (mesh !== forMesh) return;
+    forMesh.pollStats().then(
+      () => {
+        if (mesh === forMesh) schedulePoll(forMesh);
+      },
+      () => {
+        if (mesh === forMesh) schedulePoll(forMesh);
+      },
+    );
+  }, LINK_POLL_MS);
+}
 
 export async function startShare(
   opts: StartShareRequest,
@@ -263,7 +312,13 @@ export async function startShare(
   socket = runtime.createSocket();
   socket.connect(roomId, opts.accessToken);
 
-  mesh = runtime.createMesh({ roomId, send: (event) => socket?.send(event.type, event.payload) });
+  const capped = opts.plan !== 'premium';
+  const sharedMesh = runtime.createMesh({
+    roomId,
+    send: (event) => socket?.send(event.type, event.payload),
+    ...(capped ? { capRelayedVideoKbps: FREE_SHARE_RELAY_KBPS } : {}),
+  });
+  mesh = sharedMesh;
 
   // Follow presence so late joiners get links.
   socket.on('presence.state', (ev) => {
@@ -292,14 +347,26 @@ export async function startShare(
     runtime.notifyEnded();
   });
 
-  mesh.setLocalTrack('share', video as unknown as MediaStreamTrackLike);
-  if (audio !== null) mesh.setLocalTrack('mic', audio as unknown as MediaStreamTrackLike);
+  sharedMesh.setLocalTrack('share', video as unknown as MediaStreamTrackLike);
+  if (audio !== null) sharedMesh.setLocalTrack('mic', audio as unknown as MediaStreamTrackLike);
 
   // A silent share is still a share: the room is told it started either way.
   socket.send('restream.start', {});
   socket.send('presence.update', { sharing: true, state: 'watching' });
 
-  return { audio: captured.audio, note: captured.note };
+  if (capped) schedulePoll(sharedMesh);
+
+  // The reply note is this document's only voice: when a link is already
+  // known to run relayed on a capped plan, the quality sentence rides along
+  // with whatever the capture had to say. A fresh mesh usually has no
+  // classified links yet — the cap still applies on its own once a poll
+  // classifies one; only the sentence is best-effort.
+  const relayed = capped && [...sharedMesh.linkStates().values()].includes('relayed');
+  const note = [captured.note, relayed ? SHARE_RELAY_NOTE : '']
+    .filter((s) => s !== '')
+    .join(' ');
+
+  return { audio: captured.audio, note };
 }
 
 // Track presence locally so diffs translate to a full desired-peer set.
@@ -326,6 +393,10 @@ function teardown(): void {
   socket = null;
   mesh = null;
   stream = null;
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
   // Peers belong to the room that just ended; carrying them into the next
   // share would link it to strangers.
   presenceMap.clear();

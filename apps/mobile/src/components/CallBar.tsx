@@ -2,7 +2,7 @@
  * CallBar — in-room call strip. HONEST BOUNDARY: this build does not bundle
  * @livekit/react-native + react-native-webrtc (native config-plugin weight,
  * no toolchains in CI). What is REAL here:
- *  - the LiveKit token round-trip (POST /livekit/token via RestClient);
+ *  - the LiveKit token round-trip (POST /rtc/livekit-token via RestClient);
  *  - presence of call participants (from the room stream) rendered as orbs.
  * What is a documented stub: actually joining the SFU session. Pressing Join
  * mints a token, then shows the boundary panel instead of pretending to be
@@ -18,7 +18,7 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useStore } from 'zustand';
-import type { RoomId } from '@playin/contracts';
+import type { RoomId } from '@gather/contracts';
 import { api } from '../api';
 import type { RoomConnection } from '../room-connection';
 import { palette, radii, spacing, type as typeScale } from '../theme';
@@ -111,7 +111,7 @@ const styles = StyleSheet.create({
   },
   left: { flex: 1 },
   title: { ...typeScale.bodyStrong, color: palette.textHi },
-  sub: { ...typeScale.caption, color: palette.textMid },
+  sub: { ...typeScale.label, color: palette.textMid },
   joinButton: {
     minHeight: 36,
     justifyContent: 'center',
@@ -124,5 +124,5 @@ const styles = StyleSheet.create({
   errorButton: { borderColor: palette.danger, backgroundColor: 'rgba(255,82,81,0.12)' },
   joinText: { ...typeScale.bodyStrong, color: palette.textHi },
   detailBox: { flexBasis: '100%', paddingTop: spacing.xs },
-  detailText: { ...typeScale.caption, color: palette.textMid },
+  detailText: { ...typeScale.label, color: palette.textMid },
 });

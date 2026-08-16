@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RoomId, WsEnvelope } from '@playin/contracts';
+import type { RoomId, WsEnvelope } from '@gather/contracts';
 import { ApiError, RoomSocket } from '../src';
 import type { RoomSocketOptions, WebSocketCtor } from '../src';
 import { ManualTimers, MockWebSocket, pongEvt, rid, tick, typingEvt } from './helpers';

@@ -7,7 +7,7 @@ import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-na
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import type { InviteCode, RoomKind } from '@playin/contracts';
+import type { InviteCode, RoomKind } from '@gather/contracts';
 import { api } from '../src/api';
 import { useAuth } from '../src/auth';
 import { palette, radii, spacing, type as typeScale } from '../src/theme';
@@ -163,10 +163,10 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   headerText: { flex: 1 },
-  title: { ...typeScale.displayM, color: palette.textHi },
-  sub: { ...typeScale.caption, color: palette.textLow, marginTop: 2 },
+  title: { ...typeScale.display, color: palette.textHi },
+  sub: { ...typeScale.label, color: palette.textLow, marginTop: 2 },
   signOut: { padding: spacing.sm, minHeight: 44, justifyContent: 'center' },
-  signOutText: { ...typeScale.caption, color: palette.textLow },
+  signOutText: { ...typeScale.label, color: palette.textLow },
   list: { paddingHorizontal: spacing.lg },
   empty: {
     ...typeScale.body,
@@ -187,7 +187,7 @@ const styles = StyleSheet.create({
   },
   roomCardMain: { flex: 1 },
   roomName: { ...typeScale.title, color: palette.textHi },
-  roomMeta: { ...typeScale.caption, color: palette.textLow, marginTop: 2 },
+  roomMeta: { ...typeScale.label, color: palette.textLow, marginTop: 2 },
   badge: {
     minWidth: 24,
     height: 24,
@@ -197,7 +197,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 6,
   },
-  badgeText: { ...typeScale.caption, color: palette.accentInk, fontWeight: '700' },
+  badgeText: { ...typeScale.label, color: palette.accentInk, fontWeight: '700' },
   forms: {
     padding: spacing.lg,
     gap: spacing.sm,
@@ -235,5 +235,5 @@ const styles = StyleSheet.create({
   },
   actionText: { ...typeScale.bodyStrong, color: palette.accentInk },
   dimmed: { opacity: 0.45 },
-  error: { ...typeScale.caption, color: palette.danger },
+  error: { ...typeScale.label, color: palette.danger },
 });

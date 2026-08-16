@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Member, Room, RoomId } from '@playin/contracts';
+import type { Member, Room, RoomId } from '@gather/contracts';
 import { api } from './api';
 import { RoomConnection } from './room-connection';
 import { toast } from '@/components/ui/toast';

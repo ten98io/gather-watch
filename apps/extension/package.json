@@ -1,5 +1,5 @@
 {
-  "name": "@playin/extension",
+  "name": "@gather/extension",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,15 +7,17 @@
     "build": "tsup && node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('dist',{recursive:true});for(const f of fs.readdirSync('public'))if(!f.startsWith('.'))fs.copyFileSync(p.join('public',f),p.join('dist',f));\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint src test"
+    "lint": "eslint src test",
+    "tokens:generate": "UPDATE_TOKENS=1 vitest run test/design-tokens.test.ts"
   },
   "dependencies": {
-    "@playin/api-client": "workspace:*",
-    "@playin/contracts": "workspace:*",
-    "@playin/p2p": "workspace:*",
-    "@playin/sync-core": "workspace:*"
+    "@gather/api-client": "workspace:*",
+    "@gather/contracts": "workspace:*",
+    "@gather/p2p": "workspace:*",
+    "@gather/sync-core": "workspace:*"
   },
   "devDependencies": {
+    "@gather/design": "workspace:*",
     "@types/chrome": "^0.2.6",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",

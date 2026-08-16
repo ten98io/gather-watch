@@ -3,7 +3,7 @@
  * parsing. Pure helpers so panes and tests share one definition of "who may
  * touch what". Mirrors apps/mobile/src/permissions.ts — keep them in sync.
  */
-import type { MemberRole, RoomPolicyLevel } from '@playin/contracts';
+import type { MemberRole, RoomPolicyLevel } from '@gather/contracts';
 
 const ROLE_RANK: Record<MemberRole, number> = {
   guest: 0,

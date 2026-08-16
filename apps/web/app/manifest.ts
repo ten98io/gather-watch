@@ -2,8 +2,8 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Playin',
-    short_name: 'Playin',
+    name: 'Gather',
+    short_name: 'Gather',
     description:
       'Self-hosted watch parties — synced playback, calls and chat in a private cinema drifting through space.',
     start_url: '/home',

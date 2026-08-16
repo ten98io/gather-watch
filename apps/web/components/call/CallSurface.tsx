@@ -48,7 +48,7 @@ import {
 } from 'react';
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { getCallMesh, closeCallMesh } from '@/lib/call-mesh';
 import type { RemoteTrackEntry } from '@/lib/call-mesh';
@@ -819,7 +819,7 @@ export function CallDock({ roomId, className }: { roomId: RoomId; className?: st
    Floating surface (theater mode, and mobile with the sheet closed)
    ──────────────────────────────────────────────────────────────────────────── */
 
-const HIDDEN_KEY_PREFIX = 'playin.call.tiles-hidden.';
+const HIDDEN_KEY_PREFIX = 'gather.call.tiles-hidden.';
 
 /** Remembers the hide/show choice for this browser session, per room. */
 function useHiddenForSession(roomId: RoomId): [boolean, (next: boolean) => void] {

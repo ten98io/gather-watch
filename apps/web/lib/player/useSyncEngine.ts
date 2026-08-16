@@ -1,14 +1,14 @@
 /**
- * useSyncEngine — wires @playin/sync-core's drift-corrected playback to a
+ * useSyncEngine — wires @gather/sync-core's drift-corrected playback to a
  * Mode A PlayerAdapter. The math (ClockEstimator offset, expectedPositionMs,
  * DriftController nudge/seek hysteresis) is NOT reimplemented here; this hook
  * only bridges it to the adapter's imperative API. Web port of
  * apps/mobile/src/sync/useSyncEngine.ts.
  */
 import { useEffect, useRef } from 'react';
-import { DriftController, expectedPositionMs } from '@playin/sync-core';
-import type { PlaybackState } from '@playin/contracts';
-import type { ClockEstimator } from '@playin/api-client';
+import { DriftController, expectedPositionMs } from '@gather/sync-core';
+import type { PlaybackState } from '@gather/contracts';
+import type { ClockEstimator } from '@gather/api-client';
 import type { PlayerAdapter } from './adapter';
 import { mediaKey } from './adapter';
 

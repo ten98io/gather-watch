@@ -1,5 +1,5 @@
 /**
- * useSyncEngine — wires @playin/sync-core's drift-corrected playback to an
+ * useSyncEngine — wires @gather/sync-core's drift-corrected playback to an
  * expo-video player. The math (ClockEstimator offset, expectedPositionMs,
  * DriftController nudge/seek hysteresis) is NOT reimplemented here; this hook
  * only bridges it to the player's imperative API.
@@ -7,21 +7,21 @@
  * Transport: sync beacons/state ride the room WS today (server-authoritative
  * sync.state + clock.ping/pong). The v3.1 P2P path (master broadcasts beacons
  * over DataChannels; followers run the same estimator against beacon
- * timestamps) is a DOCUMENTED SEAM, not wired: @playin/p2p's
+ * timestamps) is a DOCUMENTED SEAM, not wired: @gather/p2p's
  * BeaconFollower/MasterElection require an injected RTCPeerConnection
  * (react-native-webrtc), which is a native-milestone install. Only p2p TYPES
  * are referenced below so the seam stays type-checked; no p2p runtime code
  * is loaded by the app.
  */
 import { useEffect, useRef } from 'react';
-import { DriftController, expectedPositionMs } from '@playin/sync-core';
-import type { PlaybackState } from '@playin/contracts';
-import type { ClockEstimator } from '@playin/api-client';
-import type { BeaconState } from '@playin/p2p';
+import { DriftController, expectedPositionMs } from '@gather/sync-core';
+import type { PlaybackState } from '@gather/contracts';
+import type { ClockEstimator } from '@gather/api-client';
+import type { BeaconState } from '@gather/p2p';
 import type { VideoPlayer } from 'expo-video';
 
 /** Seam for the future beacon transport (see header). `ws` is the only
- *  implemented arm; `p2p` pins the @playin/p2p BeaconState shape the mobile
+ *  implemented arm; `p2p` pins the @gather/p2p BeaconState shape the mobile
  *  follower will consume once react-native-webrtc lands. */
 export type SyncTransport =
   | { kind: 'ws' }

@@ -93,7 +93,7 @@ export class SerialMediaPipeline implements MediaPipeline {
       return;
     }
 
-    const workDir = await mkdtemp(join(tmpdir(), 'playin-media-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'gather-media-'));
     try {
       const inputPath = join(workDir, 'source');
       // Stream, never buffer: sources run to 4 GB (config.maxFileSizeGb).

@@ -21,7 +21,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import type { QueueItem } from '@playin/contracts';
+import type { QueueItem } from '@gather/contracts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import type { PlayerAdapter } from '@/lib/player/adapter';
 import type { NativeAdapter } from '@/lib/player/native';

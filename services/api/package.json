@@ -1,5 +1,5 @@
 {
-  "name": "playin-api",
+  "name": "gather-api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,8 +16,8 @@
     "@fastify/cors": "^10.0.0",
     "@fastify/rate-limit": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
-    "@playin/contracts": "workspace:*",
-    "@playin/sync-core": "workspace:*",
+    "@gather/contracts": "workspace:*",
+    "@gather/sync-core": "workspace:*",
     "fastify": "^5.2.0",
     "ioredis": "^5.4.0",
     "jose": "^5.9.0",

@@ -1,9 +1,9 @@
 # K3 Brief — apps/mobile: Expo participant app (iOS + Android, one codebase)
 
-Playin is a self-hosted watch-party platform (watch/listen rooms, synced playback,
+Gather is a self-hosted watch-party platform (watch/listen rooms, synced playback,
 calls, full chat). Monorepo at `/Users/mg/Desktop/playin` — pnpm + turbo, strict
-TS. The api (`services/api`) and shared packages (`@playin/contracts`,
-`@playin/sync-core`, `@playin/api-client`, `@playin/p2p`) are DONE and tested.
+TS. The api (`services/api`) and shared packages (`@gather/contracts`,
+`@gather/sync-core`, `@gather/api-client`, `@gather/p2p`) are DONE and tested.
 You are creating the Expo app from scratch — `apps/mobile/` does not exist.
 
 Spec: `/Users/mg/Desktop/playin/BUILD_PROMPT.md` — "Mobile app (Expo, full
@@ -36,9 +36,9 @@ not Tailwind.
 ## OWN (create) — apps/mobile/
 
 ```
-package.json (@playin/mobile; scripts: start=expo start, android, ios,
+package.json (@gather/mobile; scripts: start=expo start, android, ios,
   typecheck=tsc --noEmit, lint=eslint . , test=vitest run)
-tsconfig.json  app.json (Expo config: name Playin, scheme playin, plugins,
+tsconfig.json  app.json (Expo config: name Gather, scheme gather, plugins,
   background audio UIBackgroundModes for iOS, Android permissions+foreground
   service declaration for calls)  babel.config.js  metro.config.js (workspace
   monorepo config: watchFolders = repo root, nodeModulesPaths)  index entry
@@ -74,7 +74,7 @@ src/
   sync/ useSyncEngine.ts — wire sync-core's ClockEstimator + drift correction
                      to the player (beacons over WS initially; the p2p
                      DataChannel path is a documented TODO seam via
-                     @playin/p2p types only — do not half-wire it)
+                     @gather/p2p types only — do not half-wire it)
   theme.ts           tokens from DESIGN.md translated (colors, radii, spacing,
                      type scale)
 tests/               vitest node-env logic tests only (room-connection gap
@@ -101,9 +101,9 @@ module is install weight; justify any addition.
 
 ## ACCEPTANCE (mirror /tmp/gates-mobile)
 
-- `CI=1 pnpm --filter @playin/mobile typecheck` clean
-- `CI=1 pnpm --filter @playin/mobile lint` clean
-- `CI=1 pnpm --filter @playin/mobile test` green
+- `CI=1 pnpm --filter @gather/mobile typecheck` clean
+- `CI=1 pnpm --filter @gather/mobile lint` clean
+- `CI=1 pnpm --filter @gather/mobile test` green
 - Full-repo `pnpm test` + `pnpm typecheck` still green
 
 ## REPORT BACK

@@ -4,7 +4,7 @@
  * position events, so sync-core drift correction applies exactly as it does
  * for native media.
  */
-import type { MediaRef } from '@playin/contracts';
+import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
 
 interface SCWidget {

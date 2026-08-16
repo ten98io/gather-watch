@@ -1,6 +1,6 @@
 # K3 Brief — compliance module: report + GDPR export/delete
 
-Playin is a self-hosted watch-party platform (pnpm + turbo monorepo, TS strict).
+Gather is a self-hosted watch-party platform (pnpm + turbo monorepo, TS strict).
 Read the "Safeguards & compliance" section of
 `/Users/mg/Desktop/playin/BUILD_PROMPT.md` — BINDING. The API skeleton (Fastify 5,
 module-plugin seam) is complete and tested; you fill in ONE stub module.
@@ -88,9 +88,9 @@ Files: `routes.ts`, `service.ts`, `export.ts`, `erasure.ts`, colocated tests.
 
 ## ACCEPTANCE (mirror)
 
-- `CI=1 pnpm --filter playin-api typecheck` clean
+- `CI=1 pnpm --filter gather-api typecheck` clean
 - `CI=1 npx eslint services/api/src/modules/compliance` clean
-- `CI=1 pnpm --filter playin-api test` green (existing suites must not break)
+- `CI=1 pnpm --filter gather-api test` green (existing suites must not break)
 
 ## REPORT BACK
 

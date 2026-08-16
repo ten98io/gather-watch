@@ -1,6 +1,6 @@
 # K3 Brief — rtc module: LiveKit tokens + TURN credentials
 
-Playin is a self-hosted watch-party platform (pnpm + turbo monorepo, TS strict).
+Gather is a self-hosted watch-party platform (pnpm + turbo monorepo, TS strict).
 The full build spec is `/Users/mg/Desktop/playin/BUILD_PROMPT.md` — read the
 "Topology pivot" and "Architecture rules" sections. The API skeleton (Fastify 5,
 module-plugin seam) is complete and tested; you are filling in ONE stub module.
@@ -95,9 +95,9 @@ Routes (auth required; guests included when they belong to the room):
 ## ACCEPTANCE (run in /tmp/gates-rtc mirror)
 
 - `CI=1 pnpm install --store-dir /tmp/pnpm-store` (after dep add)
-- `CI=1 pnpm --filter playin-api typecheck` clean
+- `CI=1 pnpm --filter gather-api typecheck` clean
 - `CI=1 npx eslint services/api/src/modules/rtc` clean
-- `CI=1 pnpm --filter playin-api test` green (your tests + all existing suites)
+- `CI=1 pnpm --filter gather-api test` green (your tests + all existing suites)
 
 ## REPORT BACK
 

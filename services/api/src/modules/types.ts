@@ -4,7 +4,7 @@
  * single additive line; nothing else in the skeleton may be touched.
  */
 import type { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
-import type { ClientEvent, Member, RoomId, ServerEvent, UserId } from '@playin/contracts';
+import type { ClientEvent, Member, RoomId, ServerEvent, UserId } from '@gather/contracts';
 import type { AppConfig } from '../config';
 import type { BusPort, StorePort } from '../adapters/ports';
 

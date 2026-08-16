@@ -15,8 +15,8 @@ export {
   defaultWebSocketCtor,
 } from './types';
 export { ApiError, apiErrorFromStatus } from './errors';
-export { ClockEstimator } from '@playin/sync-core';
-export type { ClockEstimatorOptions, ClockSample } from '@playin/sync-core';
+export { ClockEstimator } from '@gather/sync-core';
+export type { ClockEstimatorOptions, ClockSample } from '@gather/sync-core';
 export { SeqTracker } from './seq';
 export type { SeqClass } from './seq';
 export { RestClient } from './rest';

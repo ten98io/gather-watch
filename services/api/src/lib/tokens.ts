@@ -17,8 +17,8 @@ export interface AccessClaims {
   guestRoomId: string | null;
 }
 
-const ISSUER = 'playin';
-const AUDIENCE = 'playin-api';
+const ISSUER = 'gather';
+const AUDIENCE = 'gather-api';
 
 function secretKey(secret: string): Uint8Array {
   return new TextEncoder().encode(secret);

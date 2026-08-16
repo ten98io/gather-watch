@@ -4,7 +4,7 @@
  * and the rooms control-plane bus channel used for presence-heartbeat mirrors
  * and forced disconnects.
  */
-import type { Entitlements, PresenceEntry } from '@playin/contracts';
+import type { Entitlements, PresenceEntry } from '@gather/contracts';
 import type { AppConfig } from '../../config';
 import type { Deps } from '../types';
 

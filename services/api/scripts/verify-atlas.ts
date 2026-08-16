@@ -10,7 +10,7 @@
 import { MongoClient } from 'mongodb';
 
 const API = 'http://localhost:4000';
-const EMAIL = 'owner@playin.local';
+const EMAIL = 'owner@gather.local';
 
 const j = (r: Response) => r.json() as Promise<any>;
 
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   // ── 1. indexes on Atlas (after writes have materialized collections) ──
   const client = new MongoClient(process.env.MONGO_URL!);
   await client.connect();
-  const db = client.db('playin');
+  const db = client.db('gather');
   const collections = (await db.listCollections().toArray()).map((c) => c.name);
   console.log('✓ collections:', collections.sort().join(', '));
   if (collections.includes('messages')) {

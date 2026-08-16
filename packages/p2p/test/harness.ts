@@ -1,5 +1,5 @@
 /**
- * Mock RTC world for @playin/p2p tests: a virtual clock, a seedable PRNG, a
+ * Mock RTC world for @gather/p2p tests: a virtual clock, a seedable PRNG, a
  * scripted-SDP mock RTCPeerConnection with the exact signaling-state semantics
  * the production code relies on (implicit rollback, addIceCandidate guards),
  * virtual DataChannels with fault injection, and an in-memory signaling hub
@@ -7,7 +7,7 @@
  * Date.now, no Math.random.
  */
 
-import type { IceCandidateInit, RoomId, UserId } from '@playin/contracts';
+import type { IceCandidateInit, RoomId, UserId } from '@gather/contracts';
 import type {
   ClearTimeoutFn,
   ConnectionStateLike,

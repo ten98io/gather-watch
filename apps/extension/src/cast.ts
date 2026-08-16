@@ -1,7 +1,7 @@
 /**
  * Native cast driving (docs/EXTENSION_FIRST.md, Part 3).
  *
- * Playin never captures, mirrors or re-encodes a protected surface — output
+ * Gather never captures, mirrors or re-encodes a protected surface — output
  * protection blacks it out by design, and doing it would be a licence
  * violation regardless. The one honest route to a TV is to press the site's
  * OWN cast control, so casting happens inside the site's DRM-legal session.

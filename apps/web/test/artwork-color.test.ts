@@ -30,7 +30,7 @@ describe('seedHash', () => {
   it('is deterministic and unsigned', () => {
     expect(seedHash('Never Gonna Give You Up')).toBe(seedHash('Never Gonna Give You Up'));
     expect(seedHash('')).toBeGreaterThanOrEqual(0);
-    for (const seed of ['a', 'b', 'Playin', '🎧 track', 'x'.repeat(300)]) {
+    for (const seed of ['a', 'b', 'Gather', '🎧 track', 'x'.repeat(300)]) {
       const hash = seedHash(seed);
       expect(Number.isInteger(hash)).toBe(true);
       expect(hash).toBeGreaterThanOrEqual(0);
@@ -87,7 +87,7 @@ describe('artworkGradient', () => {
 
   it('never renders an empty gradient for an empty seed', () => {
     const { css } = artworkGradient('');
-    expect(css).toBe(artworkGradient('playin').css);
+    expect(css).toBe(artworkGradient('gather').css);
     expect(css).toContain('oklch(');
   });
 });

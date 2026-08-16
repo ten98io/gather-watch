@@ -18,7 +18,7 @@ export default function RootPage() {
   return (
     <main className="flex min-h-dvh items-center justify-center">
       <Logo size={56} className="animate-pulse" />
-      <span className="sr-only">Loading Playin…</span>
+      <span className="sr-only">Loading Gather…</span>
     </main>
   );
 }

@@ -1,6 +1,6 @@
 # K3 Brief — billing module: Stripe + entitlements + usage metering
 
-Playin is a self-hosted watch-party platform (pnpm + turbo monorepo, TS strict).
+Gather is a self-hosted watch-party platform (pnpm + turbo monorepo, TS strict).
 Read `/Users/mg/Desktop/playin/BUILD_PROMPT.md` — "Plans & monetization" and the
 billing paragraph under the topology pivot are BINDING. The API skeleton
 (Fastify 5, module-plugin seam) is complete and tested; you fill in ONE stub
@@ -92,9 +92,9 @@ breaks boot without keys — construct the client lazily.
 
 ## ACCEPTANCE (mirror)
 
-- `CI=1 pnpm --filter playin-api typecheck` clean
+- `CI=1 pnpm --filter gather-api typecheck` clean
 - `CI=1 npx eslint services/api/src/modules/billing` clean
-- `CI=1 pnpm --filter playin-api test` green
+- `CI=1 pnpm --filter gather-api test` green
 
 ## REPORT BACK
 

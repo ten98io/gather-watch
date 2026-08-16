@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const { app } = await buildApp({ config });
   const address = await app.listen({ port: config.port, host: '0.0.0.0' });
-  app.log.info({ address }, 'playin-media listening');
+  app.log.info({ address }, 'gather-media listening');
 
   let shuttingDown = false;
   const onSignal = (): void => {
@@ -28,6 +28,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error('failed to boot playin-media', err);
+  console.error('failed to boot gather-media', err);
   process.exit(1);
 });

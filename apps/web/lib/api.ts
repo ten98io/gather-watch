@@ -1,13 +1,13 @@
-import { ApiError, RestClient } from '@playin/api-client';
-import type { FetchInitLike, FetchLike } from '@playin/api-client';
+import { ApiError, RestClient } from '@gather/api-client';
+import type { FetchInitLike, FetchLike } from '@gather/api-client';
 import {
   ApiError as ApiErrorPayload,
   GuestJoinResponse,
   RefreshResponse,
   RequestMagicLinkResponse,
   VerifyTokenResponse,
-} from '@playin/contracts';
-import type { GuestJoinBody, User } from '@playin/contracts';
+} from '@gather/contracts';
+import type { GuestJoinBody, User } from '@gather/contracts';
 import { z } from 'zod';
 
 /** Parse an error body with the contracts schema, else fall back to status. */
@@ -42,7 +42,7 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000
 export const WS_URL = `${API_URL.replace(/^http/i, (m) => (m === 'https' ? 'wss' : 'ws'))}/ws`;
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Access-token store. The durable credential is the httpOnly `playin_rt`
+   Access-token store. The durable credential is the httpOnly `gather_rt`
    refresh cookie (scoped to /auth); the short-lived access JWT is returned in
    response BODIES — which the contracts zod schemas strip on parse — so the
    token is captured here via raw fetch, kept in memory only (never

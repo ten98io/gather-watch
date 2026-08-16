@@ -30,7 +30,7 @@ function LoadingGate(props: { children: React.ReactNode }) {
   if (status === 'loading') {
     return (
       <View style={styles.gate}>
-        <Text style={styles.gateTitle}>Playin</Text>
+        <Text style={styles.gateTitle}>Gather</Text>
         <Text style={styles.gateSub}>Warming up the projector…</Text>
       </View>
     );
@@ -68,6 +68,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  gateTitle: { ...typeScale.displayM, color: palette.textHi },
-  gateSub: { ...typeScale.caption, color: palette.textLow, marginTop: 8 },
+  gateTitle: { ...typeScale.display, color: palette.textHi },
+  gateSub: { ...typeScale.label, color: palette.textLow, marginTop: 8 },
 });

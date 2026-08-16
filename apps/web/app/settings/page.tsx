@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, ChunkedUploader } from '@playin/api-client';
+import { ApiError, ChunkedUploader } from '@gather/api-client';
 import {
   CreateCheckoutSessionResponse,
   CreatePortalSessionResponse,
@@ -14,8 +14,8 @@ import {
   ListSessionsResponse,
   MeExportResponse,
   RevokeAllSessionsResponse,
-} from '@playin/contracts';
-import type { AccentColor } from '@playin/contracts';
+} from '@gather/contracts';
+import type { AccentColor } from '@gather/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { formatBytes, formatTimestamp } from '@/lib/format';
@@ -320,7 +320,7 @@ function DataSection() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `playin-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `gather-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Export downloaded');

@@ -19,13 +19,13 @@
  *
  * T1. A malicious site messages the extension to drive the user's tabs.
  *     → Two independent gates. The manifest's `externally_connectable.matches`
- *       is the browser-level gate (explicit hosts, no `*.playin.app` wildcard,
+ *       is the browser-level gate (explicit hosts, no `*.gather.watch` wildcard,
  *       dev localhost pinned to :3000). `screenExternal` re-checks
  *       `sender.origin` against `WEB_ORIGINS` on EVERY message and EVERY port
  *       connect — not once at connect time, not cached per port. A manifest
  *       edit alone can never widen the real allowlist.
  *
- * T2. The page lies about its origin (`{origin:'https://playin.app'}` in the
+ * T2. The page lies about its origin (`{origin:'https://gather.watch'}` in the
  *     payload) to pass the check.
  *     → Payload origins are never read. Only `sender.origin` is, and Chrome
  *       sets it. When absent (pre-Chrome-80) we derive it from `sender.url`,
@@ -82,7 +82,7 @@
  *       length-capped at decode; the event-port registry is capped at
  *       MAX_EVENT_PORTS and drops the oldest port rather than growing.
  *
- * T11. Fingerprinting by a non-allowlisted origin ("is Playin installed?").
+ * T11. Fingerprinting by a non-allowlisted origin ("is Gather installed?").
  *     → Refused origins get *silence*, not an error reply. Only allowlisted
  *       origins learn that the extension exists.
  *
@@ -188,7 +188,7 @@ export interface ExternalHost {
 /* ─────────────────────────────── screening ───────────────────────────── */
 
 export type ScreenResult =
-  /** Not a Playin message — stay silent, leave the channel to its owner. */
+  /** Not a Gather message — stay silent, leave the channel to its owner. */
   | { action: 'ignore'; reason: string }
   /** Refused. `response` null means refuse silently (see T11). */
   | { action: 'reject'; reason: string; response: ProtocolErrorResponse | null }
@@ -211,7 +211,7 @@ export type ScreenResult =
  */
 export function screenExternal(raw: unknown, sender: TrustedSender): ScreenResult {
   const envelope = readEnvelope(raw);
-  if (envelope === null) return { action: 'ignore', reason: 'not-a-playin-envelope' };
+  if (envelope === null) return { action: 'ignore', reason: 'not-a-gather-envelope' };
 
   const origin = senderOrigin(sender);
   if (origin === null || !isAllowedOrigin(origin)) {

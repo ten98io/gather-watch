@@ -8,9 +8,9 @@
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { UpdateRoomResponse } from '@playin/contracts';
-import { Ok } from '@playin/contracts';
-import type { Room, RoomId } from '@playin/contracts';
+import { UpdateRoomResponse } from '@gather/contracts';
+import { Ok } from '@gather/contracts';
+import type { Room, RoomId } from '@gather/contracts';
 import { apiFetch } from '@/lib/api';
 import { describeError } from '@/lib/describe-error';
 import { Button } from '@/components/ui/button';

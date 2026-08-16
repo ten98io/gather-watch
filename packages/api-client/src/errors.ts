@@ -1,4 +1,4 @@
-import type { ErrorCode } from '@playin/contracts';
+import type { ErrorCode } from '@gather/contracts';
 
 /**
  * Error thrown by this package for both HTTP-derived failures and local

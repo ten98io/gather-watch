@@ -120,19 +120,19 @@ The web app is the interface: content view, chat, call, queue.
 ### THE CORRECTION: where does the content actually render?
 
 An extension can drive a player on *any* site, but it cannot move that video
-into the Playin tab. Netflix, Disney+ and most large sites refuse to be
+into the Gather tab. Netflix, Disney+ and most large sites refuse to be
 iframed (`X-Frame-Options`/CSP), and DRM playback is bound to its own origin.
 So "the web is where they see the content" and "the extension drives any
 site" cannot both be true in one tab. Three viable models:
 
 | Model | How it looks | Works for DRM? |
 |---|---|---|
-| **A. Playin tab embeds the content** | today's web app | No — only embeddable sources |
-| **B. Companion tab** | content in its own tab, Playin in another | Yes, but split attention |
-| **C. Overlay (Teleparty model)** | extension injects Playin's chat/call/queue UI **into the content site's page** | **Yes** |
+| **A. Gather tab embeds the content** | today's web app | No — only embeddable sources |
+| **B. Companion tab** | content in its own tab, Gather in another | Yes, but split attention |
+| **C. Overlay (Teleparty model)** | extension injects Gather's chat/call/queue UI **into the content site's page** | **Yes** |
 
 **Recommendation: C, with A retained.** The extension injects the room UI as
-an overlay on whatever site the user is watching; the Playin web app remains
+an overlay on whatever site the user is watching; the Gather web app remains
 the room's home for browsing, queueing, and content it can play natively.
 This is the only model where "watch Netflix together with chat and voice"
 is a single-window experience, and it is what "browse-here-like" implies.
@@ -203,7 +203,7 @@ The first point runs into a hard limit that no amount of engineering removes:
   That is the realistic route to "cast anything", and it is per-site work.
 
 So the honest philosophy is: **any input, any output — through the platform's
-own sanctioned path.** Playin orchestrates; it never re-encodes or proxies
+own sanctioned path.** Gather orchestrates; it never re-encodes or proxies
 protected media.
 
 Interim UI fix (independent of the pivot): show the cast control always, with

@@ -20,12 +20,12 @@ import {
   CompleteUploadBody,
   CreateUploadBody,
   RefreshUploadPartsBody,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import type {
   CreateUploadResponse,
   MediaAsset,
   RefreshUploadPartsResponse,
-} from '@playin/contracts';
+} from '@gather/contracts';
 import type { AppConfig } from '../config';
 import { AppError } from '../lib/errors';
 import { newId } from '../lib/tokens';

@@ -6,11 +6,11 @@ export default function TermsPage() {
   return (
     <>
       <h1>Terms of Service</h1>
-      <p><em>Last updated: 2026. Playin is self-hosted software; these terms govern use of this instance.</em></p>
+      <p><em>Last updated: 2026. Gather is self-hosted software; these terms govern use of this instance.</em></p>
 
       <h2>1. The service</h2>
       <p>
-        Playin provides private, invite-only watch-party rooms: synchronized media playback,
+        Gather provides private, invite-only watch-party rooms: synchronized media playback,
         voice/video calls, and chat. There is no public directory — rooms are reachable only
         through invite links created by their members.
       </p>
@@ -19,7 +19,7 @@ export default function TermsPage() {
       <p>
         You are responsible for the content you stream, upload, and share, and for having the
         rights to share it. Screen re-streaming is for unprotected and user-made content only.
-        Do not use Playin to infringe copyright, harass others, or distribute illegal material.
+        Do not use Gather to infringe copyright, harass others, or distribute illegal material.
       </p>
 
       <h2>3. Plans</h2>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { UserId } from '@playin/contracts';
+import type { UserId } from '@gather/contracts';
 import { ChannelFabric } from '../src/channels';
 import type { EmoteChannelMessage, FileChannelMessage, SyncBeacon } from '../src/channels';
 import { MockNetwork, VirtualClock, uid } from './harness';

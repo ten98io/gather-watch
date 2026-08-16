@@ -1,5 +1,5 @@
 /**
- * Playin web ↔ extension message protocol — versioned, typed and PURE.
+ * Gather web ↔ extension message protocol — versioned, typed and PURE.
  *
  * This module is the single definition of what may cross the external
  * boundary. It contains no chrome API access and no I/O, so every rule in it
@@ -9,10 +9,10 @@
  *
  * Shape of every message on the wire (structured-cloned, never JSON.parse'd):
  *
- *   request   { channel:'playin.ext', v:1, id:'r7', type:'handoff', payload:{…} }
- *   response  { channel:'playin.ext', v:1, id:'r7', ok:true,  type:'handoff', payload:{…} }
- *             { channel:'playin.ext', v:1, id:'r7', ok:false, type:'error',   error:{…} }
- *   event     { channel:'playin.ext', v:1, event:'telemetry', payload:{…} }   (port only)
+ *   request   { channel:'gather.ext', v:1, id:'r7', type:'handoff', payload:{…} }
+ *   response  { channel:'gather.ext', v:1, id:'r7', ok:true,  type:'handoff', payload:{…} }
+ *             { channel:'gather.ext', v:1, id:'r7', ok:false, type:'error',   error:{…} }
+ *   event     { channel:'gather.ext', v:1, event:'telemetry', payload:{…} }   (port only)
  *
  * Rules that must not be relaxed:
  *  - `channel` is checked first; anything else is IGNORED, never answered.
@@ -29,13 +29,13 @@
 
 /* ────────────────────────────── constants ────────────────────────────── */
 
-export const PROTOCOL_CHANNEL = 'playin.ext';
+export const PROTOCOL_CHANNEL = 'gather.ext';
 /** Bumped when the message set changes incompatibly. */
 export const PROTOCOL_VERSION = 1;
 /** Oldest version this build still answers. */
 export const PROTOCOL_MIN_VERSION = 1;
-/** Long-lived event port name: `playin.ext.events.v1`. */
-export const EVENT_PORT_PREFIX = 'playin.ext.events.v';
+/** Long-lived event port name: `gather.ext.events.v1`. */
+export const EVENT_PORT_PREFIX = 'gather.ext.events.v';
 
 export const MAX_ID_LENGTH = 64;
 export const MAX_ROOM_ID_LENGTH = 128;
@@ -319,7 +319,7 @@ export interface EnvelopeHead {
 }
 
 /**
- * Recognise a Playin envelope. Returns null for anything that is not one —
+ * Recognise a Gather envelope. Returns null for anything that is not one —
  * including well-formed messages from other libraries sharing this channel —
  * so the caller can stay silent instead of answering strangers.
  */
@@ -563,7 +563,7 @@ export function redactProvider(provider: {
 /**
  * `chrome.runtime.sendMessage(extensionId, …)` needs the extension's id, and
  * an unpacked dev build's id is machine-specific. So the content script — and
- * ONLY when it is running on an allowlisted Playin origin — announces the id
+ * ONLY when it is running on an allowlisted Gather origin — announces the id
  * to the page over `window.postMessage`. That is a same-origin, same-tab
  * announcement of a value that is public anyway (it is in the store URL); no
  * token, session or tab data rides on it, and the page cannot ask for
@@ -623,7 +623,7 @@ export function readAnnounce(raw: unknown): AnnouncePayload | null {
 
 /* ──────────────────────────── port helpers ───────────────────────────── */
 
-/** `playin.ext.events.v1` → 1. Returns null for foreign port names. */
+/** `gather.ext.events.v1` → 1. Returns null for foreign port names. */
 export function parseEventPortName(name: string): number | null {
   if (!name.startsWith(EVENT_PORT_PREFIX)) return null;
   const raw = name.slice(EVENT_PORT_PREFIX.length);

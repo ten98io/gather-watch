@@ -290,7 +290,7 @@ describe('url helpers', () => {
   });
 
   it('originOf normalises to a bare origin', () => {
-    expect(originOf('https://playin.app/room/123?x=1')).toBe('https://playin.app');
+    expect(originOf('https://gather.watch/room/123?x=1')).toBe('https://gather.watch');
     expect(originOf('http://localhost:3000/')).toBe('http://localhost:3000');
     expect(originOf('file:///tmp/x')).toBeNull();
     expect(originOf(undefined)).toBeNull();
@@ -302,12 +302,12 @@ describe('url helpers', () => {
 describe('event port naming', () => {
   it('round-trips the versioned port name', () => {
     expect(parseEventPortName(eventPortName())).toBe(PROTOCOL_VERSION);
-    expect(parseEventPortName('playin.ext.events.v2')).toBe(2);
+    expect(parseEventPortName('gather.ext.events.v2')).toBe(2);
   });
 
   it('rejects foreign port names', () => {
-    expect(parseEventPortName('playin.ext.events')).toBeNull();
+    expect(parseEventPortName('gather.ext.events')).toBeNull();
     expect(parseEventPortName('some-other-port')).toBeNull();
-    expect(parseEventPortName('playin.ext.events.vX')).toBeNull();
+    expect(parseEventPortName('gather.ext.events.vX')).toBeNull();
   });
 });

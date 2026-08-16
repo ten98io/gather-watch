@@ -8,7 +8,7 @@ import { useEffect, useRef } from 'react';
 import { Animated, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useStore } from 'zustand';
-import type { PresenceEntry, RoomId, UserId } from '@playin/contracts';
+import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
 import { api } from '../api';
 import type { RoomConnection } from '../room-connection';
 import { layout, palette, spacing, type as typeScale } from '../theme';
@@ -141,7 +141,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.md,
     paddingVertical: spacing.sm,
-    minHeight: layout.minHit,
+    minHeight: layout.tap,
   },
   orb: {
     width: 44,
@@ -165,5 +165,5 @@ const styles = StyleSheet.create({
     borderColor: palette.aurora2,
   },
   name: { ...typeScale.bodyStrong, color: palette.textHi, flexShrink: 1 },
-  role: { ...typeScale.caption, color: palette.textLow },
+  role: { ...typeScale.label, color: palette.textLow },
 });

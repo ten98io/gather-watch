@@ -1,7 +1,7 @@
 /**
  * SyncService: server-side playback authority. Every playback mutation is
  * gated on room policy OR current-master status, computed from the persisted
- * PlaybackState snapshot (positions projected with @playin/sync-core), stamped
+ * PlaybackState snapshot (positions projected with @gather/sync-core), stamped
  * with a dedicated per-room playback seq, persisted on the room doc, and
  * emitted as `sync.state` so late joiners and WS-fallback clients converge via
  * event replay. Also arbitrates master epochs, the waitForAll policy toggle,
@@ -9,8 +9,8 @@
  *
  * Pure logic over Deps — the module's wsHandlers are a thin dispatch layer.
  */
-import type { ClientSyncSetTrack, PlaybackState, RoomId, UserId } from '@playin/contracts';
-import { expectedPositionMs } from '@playin/sync-core';
+import type { ClientSyncSetTrack, PlaybackState, RoomId, UserId } from '@gather/contracts';
+import { expectedPositionMs } from '@gather/sync-core';
 import { memberDocId } from '../../adapters/ports';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';

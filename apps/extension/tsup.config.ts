@@ -5,8 +5,8 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   // Inlined into every bundle; see src/config.ts. Unset = localhost dev.
   define: {
-    __PLAYIN_API_URL__: JSON.stringify(
-      process.env['PLAYIN_API_URL'] ?? 'http://localhost:4000',
+    __GATHER_API_URL__: JSON.stringify(
+      process.env['GATHER_API_URL'] ?? 'http://localhost:4000',
     ),
   },
   entry: {
@@ -19,7 +19,7 @@ export default defineConfig({
    * The workspace packages MUST be bundled in.
    *
    * tsup externalises everything listed in `dependencies` by default, which
-   * left bare specifiers — `from "@playin/api-client"` — in background.js and
+   * left bare specifiers — `from "@gather/api-client"` — in background.js and
    * offscreen.js. A browser cannot resolve a bare specifier in a service
    * worker or an extension page, so the worker threw
    * `Failed to resolve module specifier` on import and the extension never ran
@@ -27,7 +27,7 @@ export default defineConfig({
    * and the whole test suite still passed, because nothing but a real browser
    * executes these bundles.
    */
-  noExternal: [/^@playin\//],
+  noExternal: [/^@gather\//],
   format: ['esm'],
   dts: false,
   sourcemap: true,

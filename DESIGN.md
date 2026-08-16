@@ -1,4 +1,4 @@
-# Playin Design System — "The room floats in space"
+# Gather Design System — "The room floats in space"
 
 Binding for `apps/web` and `apps/mobile`. The feeling: you and your people in a
 private cinema drifting through a nebula. Cinematic, weightless, alive — never busy.

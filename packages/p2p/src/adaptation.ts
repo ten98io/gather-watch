@@ -139,6 +139,21 @@ export async function applyMaxBitrate(sender: RtpSenderLike, bps: number): Promi
   await sender.setParameters(parameters);
 }
 
+/** Undo helper: removes maxBitrate from encodings that still carry EXACTLY
+ *  `bps` — a different value belongs to another writer (e.g. the adaptation
+ *  governor) and must survive. No-op when nothing matches. */
+export async function clearMaxBitrate(sender: RtpSenderLike, bps: number): Promise<void> {
+  const parameters = sender.getParameters();
+  let changed = false;
+  for (const encoding of parameters.encodings) {
+    if (encoding.maxBitrate === bps) {
+      delete encoding.maxBitrate;
+      changed = true;
+    }
+  }
+  if (changed) await sender.setParameters(parameters);
+}
+
 /** Options for {@link LinkAdaptor}. */
 export interface LinkAdaptorOptions {
   /** Produces a normalized sample per poll (wraps getStats extraction upstream). */

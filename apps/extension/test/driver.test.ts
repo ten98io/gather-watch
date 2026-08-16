@@ -2,17 +2,27 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ElasticDriver,
+  INTENT_ECHO_WINDOW_MS,
   MIN_SEEK_INTERVAL_MS,
   OBSERVER_CAPABILITIES,
   SYNC_PRESETS,
   TELEMETRY_STALE_MS,
+  appliesVerbatim,
+  elasticDecision,
   mediaKeyOf,
+  parseElasticDirective,
   profileForContent,
   projectedPositionMs,
   syncStatusLabel,
   voiceActiveFrom,
 } from '../src/driver';
-import type { DriveCommand, DriverTelemetry, RoomFrame } from '../src/driver';
+import type {
+  DriveCommand,
+  DriveReason,
+  DriverTelemetry,
+  ElasticDirective,
+  RoomFrame,
+} from '../src/driver';
 import { LEGACY_BANDS, decideDrive } from '../src/mediaDriver';
 
 /* ── a player that can be told to misbehave in the ways real ones do ── */
@@ -349,6 +359,102 @@ describe('ElasticDriver — host intent', () => {
   });
 });
 
+describe("ElasticDriver — the user's own intent", () => {
+  const playingRoom = (expectedMs: number): RoomFrame => ({
+    expectedMs,
+    playing: true,
+    rate: 1,
+    mediaKey: 'yt:abc',
+  });
+  const sample = (positionMs: number, playing: boolean, atMs: number): DriverTelemetry => ({
+    positionMs,
+    durationMs: 5_400_000,
+    playing,
+    rate: 1,
+    atMs,
+  });
+
+  /** A driver one aligned, playing tick into a room. */
+  function settled(now: number): ElasticDriver {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    driver.tick(playingRoom(600_000), sample(600_000, true, now), now);
+    return driver;
+  }
+
+  it('does not fight a forwarded pause while the room echoes it back', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+
+    // The user paused the site's player at 600_400; the intent went to the
+    // room. The next tick still sees the ROOM playing — the echo is in flight.
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+    const cmd = driver.tick(playingRoom(601_000), sample(600_400, false, now + 1000), now + 1000);
+
+    expect(cmd.transport).toBe('none');
+    expect(cmd.idle).toBe(true);
+    expect(cmd.reason).toBe('user-intent');
+  });
+
+  it('resumes correcting when the room never echoed — the room said no', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+
+    const at = now + 400 + INTENT_ECHO_WINDOW_MS + 100;
+    const cmd = driver.tick(playingRoom(601_000), sample(600_400, false, at), at);
+
+    expect(cmd.transport).toBe('play');
+    expect(cmd.reason).toBe('transport');
+  });
+
+  it('stands down once the echo arrives, and the shield does not linger', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+
+    // The echo: the room is paused where the user paused. Nothing to fight.
+    const echoed = driver.tick(
+      { expectedMs: 600_400, playing: false, rate: 1, mediaKey: 'yt:abc' },
+      sample(600_400, false, now + 1000),
+      now + 1000,
+    );
+    expect(echoed.reason).not.toBe('user-intent');
+    expect(echoed.transport).toBe('none');
+
+    // The shield is spent: a later mismatch is ordinary drift again.
+    const later = driver.tick(playingRoom(602_000), sample(600_400, false, now + 2000), now + 2000);
+    expect(later.transport).toBe('play');
+  });
+
+  it('shields a forwarded seek from being yanked back, then adopts the echo', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+
+    // The user scrubbed five minutes ahead; a seek back would be the yank.
+    driver.noteLocalIntent('seek', 900_000, now + 500);
+    const shielded = driver.tick(playingRoom(601_000), sample(900_500, true, now + 1000), now + 1000);
+    expect(shielded.seekToMs).toBeNull();
+    expect(shielded.reason).toBe('user-intent');
+
+    // The echo lands: the room's timeline is now the user's. No correction.
+    const echoed = driver.tick(playingRoom(901_500), sample(901_500, true, now + 2000), now + 2000);
+    expect(echoed.reason).not.toBe('user-intent');
+    expect(echoed.seekToMs).toBeNull();
+    expect(echoed.transport).toBe('none');
+  });
+
+  it('a newer gesture supersedes the pending one', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+    // The user changed their mind and pressed play again; the room echoes a
+    // playing state — which must satisfy the CURRENT intent, not the old one.
+    driver.noteLocalIntent('play', 600_400, now + 800);
+    const cmd = driver.tick(playingRoom(601_000), sample(600_500, true, now + 1000), now + 1000);
+    expect(cmd.reason).not.toBe('user-intent');
+  });
+});
+
 describe('ElasticDriver — honest stops', () => {
   it('never corrects into a stall', () => {
     const driver = new ElasticDriver({ profile: 'watch' });
@@ -468,6 +574,123 @@ describe('ElasticDriver — the wire contract with the content script', () => {
     expect(projectedPositionMs({ ...sample, playing: false }, 1500)).toBe(10_000);
     // Clock going backwards must never rewind the projection.
     expect(projectedPositionMs(sample, 0)).toBe(10_000);
+  });
+});
+
+describe('the elastic block, as it crosses to the content script', () => {
+  /** The block exactly as background.ts's drive loop puts it on the wire. */
+  const wireBlock = (cmd: DriveCommand): Record<string, unknown> => ({
+    transport: cmd.transport,
+    seekToMs: cmd.seekToMs,
+    setRate: cmd.setRate,
+    driftMs: Math.round(cmd.driftMs),
+    anchorOffsetMs: Math.round(cmd.anchorOffsetMs),
+    reason: cmd.reason,
+  });
+
+  const directive = (reason: string): ElasticDirective => ({
+    transport: 'none',
+    seekToMs: null,
+    setRate: null,
+    reason,
+  });
+
+  it('carries every decision a real run produces, unchanged', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const { commands } = simulate(driver, { ticks: 40, lagMs: 9000, stallTicks: [5, 6] });
+    // A run that produced only one kind of decision would prove nothing.
+    expect(new Set(commands.map((c) => c.reason)).size).toBeGreaterThan(2);
+
+    for (const cmd of commands) {
+      const parsed = parseElasticDirective(wireBlock(cmd));
+      expect(parsed).not.toBeNull();
+      if (parsed === null) continue;
+      expect(elasticDecision(parsed)).toEqual({
+        seekToMs: cmd.seekToMs,
+        setRate: cmd.setRate,
+        action: cmd.transport,
+      });
+    }
+  });
+
+  it('turns a decision to do nothing into nothing at all for the player', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const { commands } = simulate(driver, { ticks: 30, lagMs: 8000 });
+    const doNothing = commands.filter((c) => c.idle);
+    expect(doNothing.length).toBeGreaterThan(0);
+
+    for (const cmd of doNothing) {
+      const parsed = parseElasticDirective(wireBlock(cmd));
+      expect(parsed === null ? null : elasticDecision(parsed)).toEqual({
+        seekToMs: null,
+        setRate: null,
+        action: 'none',
+      });
+    }
+  });
+
+  it('refuses a block it cannot trust, so the caller falls back instead of guessing', () => {
+    const good = { transport: 'none', seekToMs: null, setRate: null, reason: 'idle' };
+    expect(parseElasticDirective(good)).not.toBeNull();
+
+    const untrustworthy: unknown[] = [
+      null,
+      undefined,
+      'none',
+      42,
+      [],
+      { ...good, transport: 'stop' },
+      { seekToMs: null, setRate: null, reason: 'idle' }, // no transport at all
+      { transport: 'none', setRate: null, reason: 'idle' }, // no seek field
+      { transport: 'none', seekToMs: null, reason: 'idle' }, // no rate field
+      { ...good, seekToMs: '600000' },
+      { ...good, seekToMs: Number.NaN },
+      { ...good, seekToMs: Number.POSITIVE_INFINITY },
+      { ...good, setRate: 0 },
+      { ...good, setRate: -1 },
+      { ...good, setRate: 17 },
+      { ...good, setRate: Number.NaN },
+    ];
+    for (const raw of untrustworthy) expect(parseElasticDirective(raw)).toBeNull();
+  });
+
+  it('lets a HUD number be wrong without costing a perfectly good command', () => {
+    // driftMs and anchorOffsetMs are report-only; a content frame shows nothing.
+    expect(
+      parseElasticDirective({
+        transport: 'none',
+        seekToMs: null,
+        setRate: 1.03,
+        driftMs: Number.NaN,
+        anchorOffsetMs: 'lots',
+        reason: 'nudge',
+      }),
+    ).toEqual({ transport: 'none', seekToMs: null, setRate: 1.03, reason: 'nudge' });
+  });
+
+  it('keeps a reason it has never heard of, and says so when none was sent', () => {
+    // A newer worker's vocabulary must not cost us its command.
+    expect(parseElasticDirective({ ...directive('ad-break') })?.reason).toBe('ad-break');
+    expect(
+      parseElasticDirective({ transport: 'none', seekToMs: null, setRate: null })?.reason,
+    ).toBe('');
+  });
+
+  it('hands the decision back only when the worker had no telemetry', () => {
+    expect(appliesVerbatim(directive('no-telemetry'))).toBe(false);
+    const owned: DriveReason[] = [
+      'idle',
+      'transport',
+      'nudge',
+      'seek',
+      'seek-suppressed',
+      'stalled',
+      'rate-locked',
+      'restore-rate',
+      'user-intent',
+    ];
+    for (const reason of owned) expect(appliesVerbatim(directive(reason))).toBe(true);
+    expect(appliesVerbatim(directive(''))).toBe(true);
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * The web half of the Playin web ↔ extension handoff channel.
+ * The web half of the Gather web ↔ extension handoff channel.
  *
  * The web app is the interface; the extension is the driver (docs/
  * EXTENSION_FIRST.md, Part 2). This module is the only place the web app
@@ -37,7 +37,7 @@
  * The extension id is discovered from the extension's own content script
  * (a same-origin `window.postMessage` announcement) when no build-time id is
  * configured, because an unpacked dev build's id is machine-specific. A
- * build-time id (`NEXT_PUBLIC_PLAYIN_EXTENSION_ID`) always wins over an
+ * build-time id (`NEXT_PUBLIC_GATHER_EXTENSION_ID`) always wins over an
  * announcement: in production, configure it. An announcement can only be
  * spoofed by script already running on this origin, which is a strictly
  * worse-off position than this channel.
@@ -53,10 +53,10 @@
 
 /* ══════════════════════════ protocol (duplicated) ═════════════════════════ */
 
-export const PROTOCOL_CHANNEL = 'playin.ext';
+export const PROTOCOL_CHANNEL = 'gather.ext';
 export const PROTOCOL_VERSION = 1;
 export const PROTOCOL_MIN_VERSION = 1;
-export const EVENT_PORT_PREFIX = 'playin.ext.events.v';
+export const EVENT_PORT_PREFIX = 'gather.ext.events.v';
 export const ANNOUNCE_EVENT = 'announce';
 export const ANNOUNCE_REQUEST_EVENT = 'announce.request';
 
@@ -347,7 +347,7 @@ export function parseExtensionIds(raw: string | undefined): string[] {
   return out;
 }
 
-let configuredIds: string[] = parseExtensionIds(process.env.NEXT_PUBLIC_PLAYIN_EXTENSION_ID);
+let configuredIds: string[] = parseExtensionIds(process.env.NEXT_PUBLIC_GATHER_EXTENSION_ID);
 
 export interface BridgeConfig {
   /** Overrides the build-time id list (tests, or a runtime-configured build). */
@@ -519,7 +519,7 @@ function adopt(info: ExtensionInfo): ExtensionInfo {
 }
 
 /**
- * Is the Playin extension installed, and can we talk to it?
+ * Is the Gather extension installed, and can we talk to it?
  *
  * Bounded by `timeoutMs` (default 1.2s) and instant on browsers with no
  * extension channel at all. The answer is memoised; pass `{ force: true }`
@@ -549,10 +549,10 @@ async function request<T>(
 ): Promise<BridgeResult<T>> {
   const info = await detectExtension();
   if (!info.installed || activeId === null) {
-    return fail('NOT_INSTALLED', 'the Playin extension is not installed');
+    return fail('NOT_INSTALLED', 'the Gather extension is not installed');
   }
   if (info.compatible === false) {
-    return fail('UNSUPPORTED_VERSION', 'the installed Playin extension is a different version');
+    return fail('UNSUPPORTED_VERSION', 'the installed Gather extension is a different version');
   }
   const raw = await sendOnce(
     activeId,

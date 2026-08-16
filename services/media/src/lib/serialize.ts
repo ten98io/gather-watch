@@ -1,4 +1,4 @@
-import type { MediaAsset } from '@playin/contracts';
+import type { MediaAsset } from '@gather/contracts';
 import type { AssetDoc } from '../store/ports';
 
 /** Contracts MediaAsset — never leak storageKey/uploadId to clients. */

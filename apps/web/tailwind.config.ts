@@ -1,85 +1,181 @@
 import type { Config } from 'tailwindcss';
+import type { ColorTokenName, TypeStep } from '@gather/design';
+import {
+  COLOR_TOKEN_NAMES,
+  cssVarName,
+  fontFamily,
+  layout,
+  motion,
+  radii,
+  typeRamp,
+} from '@gather/design';
 
 /**
- * Tailwind bindings for the Playin design tokens (DESIGN.md §2).
- * Colors resolve to CSS custom properties defined in app/globals.css so the
- * dark/light themes switch at runtime via `data-theme` on <html>.
+ * Tailwind bindings for the Gather design tokens (DESIGN.md §2).
+ *
+ * Owns: the map from token to utility name — what `bg-surface-1`, `text-hi`
+ * and `rounded-ctl` are called — and the web-only bits the package cannot
+ * know: the `var(--font-*)` handles next/font mints, and the viewport band a
+ * fluid type step interpolates across.
+ *
+ * Deliberately NOT: a value. Every number and colour below is read from
+ * @gather/design. Colours in particular stay `var(--token)` rather than the
+ * resolved colour, because the runtime depends on it twice over: `data-theme`
+ * on <html> swaps the whole palette, and listen rooms rebind `--accent` inline
+ * per track (components/stage/ListenStage.tsx) so the seek bar and the
+ * visualiser retint with the artwork. Inline a colour here and both die
+ * silently.
  */
+
+/** 4 decimals of rem is 0.0016px at a 16px root — below anything observable. */
+const trim = (value: number): string => String(Number(value.toFixed(4)));
+
+const px = (value: number): string => `${value}px`;
+const rem = (value: number): string => `${trim(value / 16)}rem`;
+
+/**
+ * Viewport band a fluid type step interpolates across; outside it the clamp
+ * holds. Web-only — the package has no viewport — and chosen to reproduce the
+ * hand-tuned `clamp(1.75rem, 1rem + 2.5vw, 3.5rem)` the hero shipped with.
+ */
+const FLUID_MIN_VIEWPORT_PX = 480;
+const FLUID_MAX_VIEWPORT_PX = 1600;
+
+function fluidSize(minPx: number, maxPx: number): string {
+  const slope = (maxPx - minPx) / (FLUID_MAX_VIEWPORT_PX - FLUID_MIN_VIEWPORT_PX);
+  const intercept = minPx - slope * FLUID_MIN_VIEWPORT_PX;
+  return `clamp(${rem(minPx)}, ${rem(intercept)} + ${trim(slope * 100)}vw, ${rem(maxPx)})`;
+}
+
+/** Tailwind's `fontSize` tuple: the size, then the properties that ride with it. */
+type FontSizeValue = [string, { lineHeight: string; letterSpacing?: string; fontWeight: string }];
+
+/**
+ * `lineHeightRatio` is the package's marker for a genuinely fluid step — only
+ * the hero carries one. `body` also has a `maxFontSize`, but web spends it on
+ * the <body> element's own clamp in globals.css, not on the `text-body`
+ * utility, which has to stay a fixed size that `sm:` variants can override.
+ */
+function fontSizeValue(step: TypeStep): FontSizeValue {
+  const size =
+    step.lineHeightRatio === undefined || step.maxFontSize === undefined
+      ? rem(step.fontSize)
+      : fluidSize(step.fontSize, step.maxFontSize);
+  return [
+    size,
+    {
+      lineHeight:
+        step.lineHeightRatio === undefined ? rem(step.lineHeight) : trim(step.lineHeightRatio),
+      ...(step.letterSpacing === 0 ? {} : { letterSpacing: `${trim(step.letterSpacing)}em` }),
+      fontWeight: String(step.fontWeight),
+    },
+  ];
+}
+
+/**
+ * Token → utility suffix. Exhaustive by type: add a token to @gather/design
+ * and this file stops compiling until web decides what to call it, which is
+ * the whole point — the old failure mode was a palette growing in one place
+ * and quietly not in another.
+ */
+const colorUtility: Readonly<Record<ColorTokenName, string>> = {
+  bgVoid: 'void',
+  bgDeep: 'deep',
+  surfaceGlass: 'glass',
+  surfaceRaised: 'raised',
+  borderGlass: 'border-glass',
+  // Elevation ladder (DESIGN.md §4): bg-surface-1/2/3 replace glass on
+  // everything that does not float over moving video.
+  surface0: 'surface-0',
+  surface1: 'surface-1',
+  surface2: 'surface-2',
+  surface3: 'surface-3',
+  hairline: 'hairline',
+  textHi: 'hi',
+  textMid: 'mid',
+  textLow: 'low',
+  aurora1: 'aurora-1',
+  aurora2: 'aurora-2',
+  aurora3: 'aurora-3',
+  accent: 'accent',
+  accentInk: 'accent-ink',
+  success: 'success',
+  danger: 'danger',
+  warn: 'warn',
+  focusRing: 'ring',
+};
+
+/**
+ * A translucent wash of a token. Stays a `color-mix` over `var()` rather than
+ * a resolved colour for the same reason the colours do: the theme swaps and
+ * `--accent` is rebound under it at runtime.
+ */
+const wash = (token: ColorTokenName, percent: number): string =>
+  `color-mix(in oklch, var(${cssVarName(token)}) ${percent}%, transparent)`;
+
+const colors: Record<string, string> = Object.fromEntries(
+  COLOR_TOKEN_NAMES.map((token) => [colorUtility[token], `var(${cssVarName(token)})`]),
+);
+
+const fontSize: Record<string, FontSizeValue> = Object.fromEntries(
+  Object.entries(typeRamp).map(([name, step]) => [name, fontSizeValue(step)]),
+);
+
+/**
+ * next/font loads the bundled face in app/layout.tsx and exposes it as
+ * `--font-<family>`; the package's stack supplies the fallbacks behind it.
+ */
+const fontStack = (family: keyof typeof fontFamily): string[] => [
+  `var(--font-${family})`,
+  ...fontFamily[family].slice(1),
+];
+
 const config: Config = {
   content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}', './lib/**/*.{ts,tsx}'],
   darkMode: ['selector', '[data-theme="dark"]'],
   theme: {
     extend: {
-      colors: {
-        void: 'var(--bg-void)',
-        deep: 'var(--bg-deep)',
-        glass: 'var(--surface-glass)',
-        raised: 'var(--surface-raised)',
-        'border-glass': 'var(--border-glass)',
-        // Elevation ladder (DESIGN.md §4): bg-surface-1/2/3 replace glass on
-        // everything that does not float over moving video.
-        'surface-0': 'var(--surface-0)',
-        'surface-1': 'var(--surface-1)',
-        'surface-2': 'var(--surface-2)',
-        'surface-3': 'var(--surface-3)',
-        hairline: 'var(--hairline)',
-        hi: 'var(--text-hi)',
-        mid: 'var(--text-mid)',
-        low: 'var(--text-low)',
-        'aurora-1': 'var(--aurora-1)',
-        'aurora-2': 'var(--aurora-2)',
-        'aurora-3': 'var(--aurora-3)',
-        accent: 'var(--accent)',
-        'accent-ink': 'var(--accent-ink)',
-        success: 'var(--success)',
-        danger: 'var(--danger)',
-        warn: 'var(--warn)',
-        ring: 'var(--focus-ring)',
-      },
+      colors,
       fontFamily: {
-        display: ['var(--font-display)', 'system-ui', 'sans-serif'],
-        sans: ['var(--font-sans)', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
+        display: fontStack('display'),
+        sans: fontStack('sans'),
+        mono: fontStack('mono'),
       },
       // Type ramp (DESIGN.md §3). Size / line-height / tracking / weight in one
       // utility; `font-bold` &co still win because core fontWeight sorts after
       // core fontSize. Use these instead of ad-hoc text-sm/text-xs.
-      fontSize: {
-        display: ['2rem', { lineHeight: '2.25rem', letterSpacing: '-0.02em', fontWeight: '600' }],
-        title: ['1.25rem', { lineHeight: '1.625rem', letterSpacing: '-0.01em', fontWeight: '600' }],
-        body: ['0.9375rem', { lineHeight: '1.375rem', fontWeight: '400' }],
-        label: ['0.8125rem', { lineHeight: '1.125rem', fontWeight: '500' }],
-        caption: ['0.6875rem', { lineHeight: '0.875rem', letterSpacing: '0.04em', fontWeight: '500' }],
-        // Marketing/auth heroes only — the one fluid size left in the system.
-        hero: [
-          'clamp(1.75rem, 1rem + 2.5vw, 3.5rem)',
-          { lineHeight: '1.05', letterSpacing: '-0.02em', fontWeight: '700' },
-        ],
-      },
+      fontSize,
       // Radius ladder (DESIGN.md §4): tighter corners read as more precise.
+      // The keys are class suffixes, which is why `control` is spelled `ctl` —
+      // 38 call sites already say `rounded-ctl` and renaming it is a codemod.
       borderRadius: {
-        sm: '8px',
-        ctl: '12px',
-        card: '12px',
-        panel: '20px',
+        sm: px(radii.sm),
+        ctl: px(radii.control),
+        card: px(radii.card),
+        panel: px(radii.panel),
+        pill: px(radii.pill),
       },
-      // Layout constants that were previously arbitrary values.
+      // Layout constants that were previously arbitrary values. `tabBar` is in
+      // the package too but is mobile's bottom sheet; web has no use for it.
       spacing: {
-        edge: '3px', // active-row accent edge
-        tap: '44px', // minimum touch target
-        row: '56px', // media row height
-        rail: '380px', // right rail width
+        edge: px(layout.edge), // active-row accent edge
+        tap: px(layout.tap), // minimum touch target
+        row: px(layout.row), // media row height
+        rail: px(layout.rail), // right rail width
       },
+      // Elevation is glow, not shadow (DESIGN.md §4).
       boxShadow: {
-        glow: '0 0 40px -12px color-mix(in oklch, var(--aurora-1) 22%, transparent)',
-        'glow-lg': '0 0 80px -20px color-mix(in oklch, var(--aurora-2) 30%, transparent)',
+        glow: `0 0 40px -12px ${wash('aurora1', 22)}`,
+        'glow-lg': `0 0 80px -20px ${wash('aurora2', 30)}`,
       },
       transitionTimingFunction: {
-        spring: 'cubic-bezier(0.34, 1.3, 0.64, 1)',
+        spring: motion.springEasing,
       },
-      // 150ms is the standard; 220ms is reserved for entrances (DESIGN.md §6).
+      // 150ms is the standard; the micro duration is reserved for entrances
+      // (DESIGN.md §6). Keyed by its own value so the class can never name a
+      // duration the token no longer has.
       transitionDuration: {
-        220: '220ms',
+        [motion.microMs]: `${motion.microMs}ms`,
       },
       keyframes: {
         'fade-in': {
@@ -100,10 +196,10 @@ const config: Config = {
         },
       },
       animation: {
-        'fade-in': 'fade-in 220ms ease-out',
-        shimmer: 'shimmer 2.4s linear infinite',
-        'aurora-drift': 'aurora-drift 60s linear infinite',
-        'pulse-ring': 'pulse-ring 1.6s ease-out infinite',
+        'fade-in': `fade-in ${motion.microMs}ms ease-out`,
+        shimmer: `shimmer ${motion.shimmerMs}ms linear infinite`,
+        'aurora-drift': `aurora-drift ${motion.auroraDriftMs}ms linear infinite`,
+        'pulse-ring': `pulse-ring ${motion.pulseRingMs}ms ease-out infinite`,
       },
     },
   },

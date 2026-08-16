@@ -1,4 +1,4 @@
-# ── Playin — self-hosted production stack ────────────────────────────────────
+# ── Gather — self-hosted production stack ────────────────────────────────────
 #
 # Run from the REPO ROOT so compose interpolation (${VAR}) reads the root .env:
 #
@@ -13,7 +13,7 @@
 # deliberately override the empty dev defaults in .env.example (empty MONGO_URL/
 # REDIS_URL means "in-memory adapters", which must never happen in prod).
 
-name: playin
+name: gather
 
 services:
   # ── Edge: TLS termination + reverse proxy ──────────────────────────────────
@@ -71,7 +71,7 @@ services:
       NODE_ENV: production
       API_PORT: "4000"
       # In-network endpoints (override the empty/localhost dev values in .env):
-      MONGO_URL: mongodb://mongo:27017/playin
+      MONGO_URL: mongodb://mongo:27017/gather
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
       # Server-side LiveKit admin/token calls go over the docker network.
@@ -108,7 +108,7 @@ services:
       - ../.env
     environment:
       NODE_ENV: production
-      MONGO_URL: mongodb://mongo:27017/playin
+      MONGO_URL: mongodb://mongo:27017/gather
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
       MEDIA_PORT: "4500" # minimal health endpoint only — not proxied
@@ -235,8 +235,8 @@ services:
       - |
         set -e
         mc alias set local http://minio:9000 "$${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}" "$${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}"
-        mc mb --ignore-existing "local/$${S3_BUCKET:-playin-media}"
-        mc anonymous set download "local/$${S3_BUCKET:-playin-media}/public"
+        mc mb --ignore-existing "local/$${S3_BUCKET:-gather-media}"
+        mc anonymous set download "local/$${S3_BUCKET:-gather-media}/public"
         echo "minio-init: bucket + public prefix policy ready"
 
 volumes:
