@@ -121,12 +121,21 @@ Leave `APP_URL` for step 1.4 (needs the web domain). Do **not** set
 Optional but recommended now:
 
 ```env
-# transactional email for magic-link sign-in (any SMTP provider)
-SMTP_HOST=<e.g. smtp.resend.com>
-SMTP_PORT=587
-SMTP_USER=<provider user>
-SMTP_PASS=<provider key>
-SMTP_FROM=Playin <login@yourdomain>
+# Transactional email — Cloudflare Email Service, over its REST API.
+# Both of these are required together; either one alone is ignored and the
+# api falls back to SMTP, then to logging the link.
+CF_EMAIL_ACCOUNT_ID=<cloudflare account id>
+CF_EMAIL_API_TOKEN=<token with email-sending permission — SECRET>
+#
+# THE FROM ADDRESS MUST BE ON THE VERIFIED SENDING DOMAIN.
+# The sender is `email.gather.watch`, which is deliberately NOT the app domain
+# (`gather.watch`) — a subdomain keeps sending reputation off the domain the
+# product lives on. A from address on the bare app domain is accepted by this
+# config, passes every test, and is then REJECTED by Cloudflare at send time,
+# so it fails in production only.
+CF_EMAIL_FROM=Gather <no-reply@email.gather.watch>
+#
+# SMTP is the fallback, not the path. Keep it only if you want a second route.
 # GIF picker (free key from Google/Tenor) — omit and GIFs just say "not configured"
 TENOR_API_KEY=<key>
 ```

@@ -58,6 +58,12 @@ export const configSchema = z.object({
       turnApiToken: z.string().min(1).nullable().default(null),
       sfuAppId: z.string().min(1).nullable().default(null),
       sfuApiToken: z.string().min(1).nullable().default(null),
+      // Cloudflare Email Service (magic-link delivery). BOTH the account id
+      // and the token must be present before the API transport is used;
+      // emailApiToken is a SECRET and never leaves an Authorization header.
+      emailAccountId: z.string().min(1).nullable().default(null),
+      emailApiToken: z.string().min(1).nullable().default(null),
+      emailFrom: z.string().min(1).default('Playin <no-reply@playin.local>'),
     })
     .default({}),
   freeTurnCapGbPerMonth: z.coerce.number().int().min(0).default(20),
@@ -156,6 +162,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       turnApiToken: envStr(env, 'CF_TURN_API_TOKEN'),
       sfuAppId: envStr(env, 'CF_SFU_APP_ID'),
       sfuApiToken: envStr(env, 'CF_SFU_API_TOKEN'),
+      emailAccountId: envStr(env, 'CF_EMAIL_ACCOUNT_ID'),
+      emailApiToken: envStr(env, 'CF_EMAIL_API_TOKEN'),
+      emailFrom: envStr(env, 'CF_EMAIL_FROM'),
     },
     freeTurnCapGbPerMonth: envStr(env, 'FREE_TURN_CAP_GB_PER_MONTH'),
     stripe: {

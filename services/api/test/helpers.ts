@@ -15,17 +15,27 @@ import { memberDocId } from '../src/adapters/ports';
 import type { MemberDoc, RoomDoc, StorePort, UserDoc } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 
+export interface TestConfigOverrides extends Partial<Omit<AppConfig, 'cloudflare' | 'smtp'>> {
+  /** Merged over the defaults, so a test names only the settings it cares
+   *  about and a new field in the group doesn't break every call site. */
+  cloudflare?: Partial<AppConfig['cloudflare']>;
+  smtp?: Partial<AppConfig['smtp']>;
+}
+
 /**
  * Development config (dev magic links are echoed back as `devLink`) with rate
  * limits effectively disabled so no test flakes on a 429.
  */
-export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+export function testConfig(overrides: TestConfigOverrides = {}): AppConfig {
   const base = loadConfig({});
+  const { cloudflare, smtp, ...rest } = overrides;
   return {
     ...base,
     nodeEnv: 'development',
     rateLimit: { max: 100000, windowMs: 60000, authMax: 100000 },
-    ...overrides,
+    ...rest,
+    ...(cloudflare !== undefined ? { cloudflare: { ...base.cloudflare, ...cloudflare } } : {}),
+    ...(smtp !== undefined ? { smtp: { ...base.smtp, ...smtp } } : {}),
   };
 }
 
