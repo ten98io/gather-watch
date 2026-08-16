@@ -507,6 +507,23 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const glow = useAmbientGlow(adapter, playback?.playing === true, reduced);
   const pulseKey = playback?.seq ?? 0;
 
+  /** One transport, mounted in one of two places: floating over a watch room's
+   *  video, or inline under the listen room's hero (there is no moving picture
+   *  there for it to get out of the way of). */
+  const transportNode =
+    !showModeB && playback !== null && adapterKind !== 'embed' ? (
+      <PlayerControls
+        adapter={adapter}
+        playback={playback}
+        enabled={controlEnabled}
+        captionsOn={captionsOn}
+        onToggleCaptions={() => setCaptionsOn((v) => !v)}
+        captionsAvailable={captionsAvailable && adapter?.kind === 'native'}
+        muted={muted}
+        onMutedChange={setMuted}
+      />
+    ) : null;
+
   return (
     <section
       aria-label="Stage"
@@ -571,11 +588,19 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
               )}
             </div>
             {listen ? (
-              <div className={cn('flex w-full flex-col items-center gap-4 p-6', adapterKind === 'native' || mediaRef === null ? '' : 'hidden')}>
+              <div
+                className={cn(
+                  'relative h-full w-full',
+                  adapterKind === 'native' || mediaRef === null ? '' : 'hidden',
+                )}
+              >
                 <ListenStage
                   adapter={adapter}
                   currentItem={currentItem}
                   playing={playback?.playing === true}
+                  queueItems={queueItems}
+                  currentIndex={playback?.queueIndex ?? null}
+                  {...(transportNode !== null ? { transport: transportNode } : {})}
                 />
                 {/* The audio element is the real player — visualizer taps it. */}
                 <video ref={mediaElRef} className="hidden" playsInline crossOrigin="anonymous" />
@@ -633,24 +658,17 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         )}
       </div>
 
-      {/* transport chrome */}
-      {!showModeB && playback !== null && adapterKind !== 'embed' && (
+      {/* Transport chrome. Watch rooms float it over the video and let it fade
+          with the rest of the chrome; listen rooms mount the same control inline
+          under the hero instead, so it must not also appear here. */}
+      {!listen && transportNode !== null && (
         <div
           className={cn(
             'absolute inset-x-4 bottom-4 z-20 transition-opacity duration-300',
             chromeVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
         >
-          <PlayerControls
-            adapter={adapter}
-            playback={playback}
-            enabled={controlEnabled}
-            captionsOn={captionsOn}
-            onToggleCaptions={() => setCaptionsOn((v) => !v)}
-            captionsAvailable={captionsAvailable && adapter?.kind === 'native'}
-            muted={muted}
-            onMutedChange={setMuted}
-          />
+          {transportNode}
         </div>
       )}
 

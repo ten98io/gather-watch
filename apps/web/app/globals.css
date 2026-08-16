@@ -155,7 +155,9 @@
   /* Range inputs (seek + volume). `appearance: none` makes the browser ignore
      `accent-color`, so the whole widget is drawn here: a 4px rounded track
      filled to `--slider-fill` (set by components/ui/slider.tsx) and a 12px
-     aurora thumb that grows on hover/focus. Both vendor syntaxes are required —
+     accent thumb that grows on hover/focus. The accent is `--accent`, which is
+     `--aurora-1` by default and is rebound per-track in listen rooms, so the
+     seek bar retints with the artwork for free. Both vendor syntaxes are required —
      WebKit/Blink ignore the -moz- rules and vice versa, and a single combined
      selector list is dropped wholesale by both. */
   .slider-aurora {
@@ -168,8 +170,8 @@
     border-radius: 999px;
     background: linear-gradient(
       to right,
-      var(--aurora-1) 0%,
-      var(--aurora-1) var(--slider-fill, 0%),
+      var(--accent) 0%,
+      var(--accent) var(--slider-fill, 0%),
       color-mix(in oklch, var(--text-low) 40%, transparent) var(--slider-fill, 0%)
     );
   }
@@ -181,7 +183,7 @@
     margin-top: -4px; /* centres the thumb on the 4px track */
     border: none;
     border-radius: 999px;
-    background: var(--aurora-1);
+    background: var(--accent);
     transition:
       width 150ms ease,
       height 150ms ease,
@@ -193,7 +195,7 @@
     width: 14px;
     height: 14px;
     margin-top: -5px;
-    box-shadow: 0 0 0 4px color-mix(in oklch, var(--aurora-1) 20%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 20%, transparent);
   }
   .slider-aurora::-moz-range-track {
     height: 4px;
@@ -204,14 +206,14 @@
   .slider-aurora::-moz-range-progress {
     height: 4px;
     border-radius: 999px;
-    background: var(--aurora-1);
+    background: var(--accent);
   }
   .slider-aurora::-moz-range-thumb {
     width: 12px;
     height: 12px;
     border: none;
     border-radius: 999px;
-    background: var(--aurora-1);
+    background: var(--accent);
     transition:
       width 150ms ease,
       height 150ms ease,
@@ -221,7 +223,7 @@
   .slider-aurora:focus-visible::-moz-range-thumb {
     width: 14px;
     height: 14px;
-    box-shadow: 0 0 0 4px color-mix(in oklch, var(--aurora-1) 20%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 20%, transparent);
   }
   /* Disabled: no accent, no grow — it reads as chrome, not as a control. */
   .slider-aurora:disabled::-webkit-slider-runnable-track {

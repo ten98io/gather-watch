@@ -15,7 +15,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { MediaRef, QueueItem, QueueItemId, RoomId } from '@playin/contracts';
 import { api } from '@/lib/api';
 import { canAct, formatMs } from '@/lib/permissions';
-import { parseProviderUrl, providerById } from '@/lib/providers';
+import { parseProviderUrl } from '@/lib/providers';
+import { providerLabel } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { Button } from '@/components/ui/button';
@@ -46,24 +47,6 @@ const HOVER_REVEAL =
   'opacity-100 transition-opacity duration-150 group-focus-within:opacity-100 ' +
   '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 ' +
   '[@media(hover:hover)]:group-focus-within:opacity-100';
-
-/** Human display name for a media source — never render MediaRef.kind raw. */
-function providerLabel(mediaRef: MediaRef): string {
-  switch (mediaRef.kind) {
-    case 'youtube':
-      return 'YouTube';
-    case 'soundcloud':
-      return 'SoundCloud';
-    case 'vimeo':
-      return 'Vimeo';
-    case 'hls':
-      return 'Library';
-    case 'url':
-      return 'Direct link';
-    case 'embed':
-      return providerById(mediaRef.provider)?.name ?? 'Embed';
-  }
-}
 
 /** Placeholder glyph when an item has no artwork: audio sources get a note. */
 function ProviderIcon({ mediaRef, className }: { mediaRef: MediaRef; className: string }) {
