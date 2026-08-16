@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EXTENSION_CAPABILITIES,
   MAX_TOKEN_LENGTH,
   PROTOCOL_CHANNEL,
   PROTOCOL_MIN_VERSION,
@@ -228,6 +229,31 @@ describe('response and event encoding', () => {
     const ev = readEvent(eventMessage('telemetry', { positionMs: 10, durationMs: 20 }));
     expect(ev?.event).toBe('telemetry');
     expect(ev?.payload).toEqual({ positionMs: 10, durationMs: 20 });
+  });
+});
+
+/* ── advertised capabilities ── */
+
+describe('EXTENSION_CAPABILITIES', () => {
+  /** Pages branch on the ABSENCE of a capability, so a name that shipped can
+   *  never be renamed or dropped — only added to. */
+  it('still advertises everything that has ever shipped', () => {
+    for (const capability of ['handoff', 'telemetry', 'capability', 'release', 'modeB']) {
+      expect(EXTENSION_CAPABILITIES, capability).toContain(capability);
+    }
+  });
+
+  it('advertises screen/window sharing separately from tab sharing', () => {
+    expect(EXTENSION_CAPABILITIES).toContain('modeB.desktop');
+    // A page that only sees 'modeB' must keep its own screen-share path: the
+    // two are different capabilities, and one never implies the other.
+    expect(EXTENSION_CAPABILITIES.indexOf('modeB')).toBeLessThan(
+      EXTENSION_CAPABILITIES.indexOf('modeB.desktop'),
+    );
+  });
+
+  it('lists every capability once', () => {
+    expect(new Set(EXTENSION_CAPABILITIES).size).toBe(EXTENSION_CAPABILITIES.length);
   });
 });
 

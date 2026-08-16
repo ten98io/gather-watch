@@ -3,7 +3,15 @@
   "name": "Playin — Watch Together",
   "version": "0.1.0",
   "description": "Mode A sync + Mode B tab capture for Playin rooms, on any site — including DRM services, via everyone's own player and account.",
-  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting", "alarms"],
+  "permissions": [
+    "tabCapture",
+    "desktopCapture",
+    "offscreen",
+    "storage",
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [
