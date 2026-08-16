@@ -26,7 +26,9 @@ export const roomsWsHandlers: HandlerMap = {
       await presence.removeUser(ctx.roomId, ctx.auth.userId);
       return;
     }
-    const defaultState = room.kind === 'watch' ? 'watching' : 'listening';
+    // room.kind is vestigial and no longer drives the default: clients set
+    // watching/listening themselves from what is playing.
+    const defaultState = 'watching';
     const { state, micOn, camOn, sharing } = event.payload;
     // An empty heartbeat doubles as a roster request, so a client whose
     // socket reconnected while its entry was still alive can re-sync.

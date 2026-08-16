@@ -14,6 +14,7 @@ import { ROLE_LABEL } from '@/lib/labels';
 import { toast } from '@/components/ui/toast';
 import { ExpiryChip, RoomMenu } from '@/components/room/RoomMenu';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
+import { mediaKindFor } from '@/lib/media-kind';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { StagePane } from '@/components/stage/StagePane'; // wave 2
@@ -148,8 +149,10 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange(o: 
   );
 }
 
-function RoomLayout({ roomId }: { roomId: RoomId }) {
+/** Exported for the test suite; the page mounts it via <RoomShell> only. */
+export function RoomLayout({ roomId }: { roomId: RoomId }) {
   const { room, member } = useRoom();
+  const connection = useRoomConnection();
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [tab, setTab] = useState<RailTab>('chat');
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -157,14 +160,18 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
   /** Theater layout: rail hidden by default, opens as a glass overlay. */
   const [railOpen, setRailOpen] = useState(false);
   const canManage = member.role === 'host' || member.role === 'moderator';
+  /** What the stage is showing right now — the room has no mode of its own.
+   *  Selecting the classified kind (a primitive) keeps this render quiet
+   *  across the position-only playback updates every sync tick sends. */
+  const stageKind = connection.useRoomState((s) => mediaKindFor(s.playback?.mediaRef ?? null));
   /**
    * Theater is a video-stage concept: it collapses the rail so the picture can
-   * fill the room. A listen room's stage is an artwork hero, so the control is
-   * absent rather than present-and-pointless — and a `theater` flag left over
-   * from a room that changed kind must not collapse the rail either.
+   * fill the room. While music (or nothing) plays the stage is an artwork
+   * hero, so the control is absent rather than present-and-pointless — and a
+   * stored `theater` flag must not collapse the rail either.
    */
-  const theaterActive = room.theater && room.kind === 'watch';
-  const canToggleTheater = canManage && room.kind === 'watch';
+  const theaterActive = room.theater && stageKind === 'video';
+  const canToggleTheater = canManage && stageKind === 'video';
 
   const toggleTheater = (): void => {
     void apiFetch(`/rooms/${roomId}/theater`, {
@@ -212,9 +219,6 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
             <ArrowLeftIcon size={20} aria-hidden />
           </Link>
           <h1 className="min-w-0 flex-1 truncate font-display text-lg font-semibold">{room.name}</h1>
-          <Badge variant={room.kind === 'watch' ? 'aurora' : 'default'}>
-            {room.kind === 'watch' ? 'Watch' : 'Listen'}
-          </Badge>
           <Badge variant="muted" className="hidden font-mono sm:inline-flex">
             {formatInviteCode(room.inviteCode)}
           </Badge>

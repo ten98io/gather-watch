@@ -16,6 +16,7 @@ import { canAct } from '@/lib/permissions';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { adapterKindFor, isFullSyncKind, mediaKey, stageGate } from '@/lib/player/adapter';
+import { mediaKindFor } from '@/lib/media-kind';
 import type { PlayerAdapter, StageGate } from '@/lib/player/adapter';
 import { NativeAdapter } from '@/lib/player/native';
 import { YouTubeAdapter } from '@/lib/player/youtube';
@@ -188,12 +189,11 @@ function StageShield({
   );
 }
 
-function EmptyStage({ listen }: { listen: boolean }) {
+/** An empty room promises neither mode — the stage decides when media plays. */
+function EmptyStage() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-      <p className="font-display text-lg font-semibold text-mid">
-        {listen ? 'Queue something to listen to' : 'Nothing playing yet'}
-      </p>
+      <p className="font-display text-lg font-semibold text-mid">Nothing playing yet</p>
       <p className="max-w-sm text-sm text-low">
         Add to the queue from the Queue tab — everyone’s player follows along.
       </p>
@@ -248,7 +248,10 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const extension = useExtensionDriver();
   const extensionDriving = extension.driving;
   const adapterKind = extensionDriving ? null : adapterKindFor(mediaRef);
-  const listen = room.kind === 'listen';
+  /** The stage adapts to what is PLAYING: a music item gets the listen
+   *  composition, a video item the video stage. The room's stored `kind` is
+   *  deprecated wire ballast and drives nothing. */
+  const listen = mediaKindFor(mediaRef) === 'music';
   const showModeB = restream?.active === true;
   /** Room policy: may this member drive playback? */
   const controlEnabled = canAct(room.policies.playbackControl, member.role);
@@ -303,6 +306,15 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   }, [extensionReady, roomId, room.name, handoff, release]);
 
   // ── adapter lifecycle (created per adapter kind; loaded per media identity)
+  //
+  // `listen` is a dependency ON PURPOSE, though the adapter kind does not
+  // change with it: the music and video compositions mount their <video> in
+  // DIFFERENT containers, so a native→native transition across the flip
+  // (mp3 → mp4) swaps the element behind mediaElRef. An adapter keyed on kind
+  // alone kept driving the detached old element — black stage, audio from a
+  // node no longer in the document, and the sync engine correcting a player
+  // nobody could see. Recreating on the flip binds the adapter to the element
+  // that is actually mounted.
   useEffect(() => {
     if (adapterKind === 'native' && mediaElRef.current !== null) {
       const a = new NativeAdapter(mediaElRef.current);
@@ -330,7 +342,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     }
     setAdapter(null);
     return undefined;
-  }, [adapterKind]);
+  }, [adapterKind, listen]);
 
   const mediaIdentity = useMemo(() => {
     if (mediaRef === null || mediaRef === undefined) return 'none';
@@ -429,19 +441,19 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   }, [fullSync, wantsPlay, localReady, localPlaying, localBuffering, mediaIdentity, startAttempt]);
 
   /** Are we driving a player on this device at all? True for every full-sync
-   *  source in either kind of room — it is what decides whether a refused
-   *  start is worth recovering, independent of who draws the surface. Not for
-   *  Mode B (the share owns the stage) and not for approximate-tier embeds
-   *  (their iframe is the only control they have). */
+   *  source, music or video — it is what decides whether a refused start is
+   *  worth recovering, independent of who draws the surface. Not for Mode B
+   *  (the share owns the stage) and not for approximate-tier embeds (their
+   *  iframe is the only control they have). */
   const drivenSurface = !showModeB && playback !== null && mediaRef !== null && fullSync;
 
-  /** Is there provider chrome on screen for us to shield? Only in a watch
-   *  room: a listen room shows the artwork hero and keeps the provider's
+  /** Is there provider chrome on screen for us to shield? Only while video
+   *  plays: a music item shows the artwork hero and keeps the provider's
    *  iframe mounted but invisible behind it, so there is nothing to cover —
-   *  and a shield there would hide the very identity the room is for. */
+   *  and a shield there would hide the very identity the hero is for. */
   const providerSurface = drivenSurface && !listen;
 
-  /** A listen room's full-sync provider: audible, never visible. Native audio
+  /** A music item's full-sync provider: audible, never visible. Native audio
    *  is excluded because its element is already offscreen, and approximate
    *  embeds because their iframe is the only control surface they have. */
   const providerAudioOnly = listen && fullSync && adapterKind !== 'native';
@@ -575,9 +587,9 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const glow = useAmbientGlow(adapter, playback?.playing === true, reduced);
   const pulseKey = playback?.seq ?? 0;
 
-  /** One transport, mounted in one of two places: floating over a watch room's
-   *  video, or inline under the listen room's hero (there is no moving picture
-   *  there for it to get out of the way of). */
+  /** One transport, mounted in one of two places: floating over a video item,
+   *  or inline under a music item's hero (there is no moving picture there
+   *  for it to get out of the way of). */
   const transportNode =
     !showModeB && playback !== null && adapterKind !== 'embed' ? (
       <PlayerControls
@@ -646,7 +658,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 adapterKind !== null && adapterKind !== 'native'
                   ? 'flex items-center justify-center'
                   : 'hidden',
-                // In a listen room a full-sync provider is an audio source, not
+                // For a music item a full-sync provider is an audio source, not
                 // a picture. Its iframe stays mounted and playing but invisible
                 // behind the hero — opacity rather than `hidden`, because
                 // display:none suspends these players in some browsers.
@@ -676,7 +688,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 className={cn(
                   'relative h-full w-full',
                   // Approximate-tier embeds keep their own visible player; every
-                  // other source in a listen room plays behind the hero.
+                  // other music source plays behind the hero.
                   adapterKind === 'embed' ? 'hidden' : '',
                 )}
               >
@@ -705,7 +717,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 aria-label="Shared video"
               />
             )}
-            {mediaRef === null && !listen && <EmptyStage listen={listen} />}
+            {mediaRef === null && <EmptyStage />}
             {/* One shield over every full-sync provider: the provider's own
                 play overlay is unreachable, and while we are paused or the
                 browser refused to start, invisible too. */}
@@ -746,8 +758,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         )}
       </div>
 
-      {/* Transport chrome. Watch rooms float it over the video and let it fade
-          with the rest of the chrome; listen rooms mount the same control inline
+      {/* Transport chrome. Video floats it over the picture and lets it fade
+          with the rest of the chrome; music mounts the same control inline
           under the hero instead, so it must not also appear here. */}
       {!listen && transportNode !== null && (
         <div

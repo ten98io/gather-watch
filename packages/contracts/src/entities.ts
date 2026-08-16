@@ -71,6 +71,8 @@ export const RoomPolicies = z.object({
 });
 export type RoomPolicies = z.infer<typeof RoomPolicies>;
 
+/** @deprecated kept for stored docs and old clients; drives nothing. The
+ *  stage adapts to what is PLAYING, not to a room-level kind. */
 export const RoomKind = z.enum(['watch', 'listen']);
 export type RoomKind = z.infer<typeof RoomKind>;
 
@@ -80,6 +82,7 @@ export type RelayMode = z.infer<typeof RelayMode>;
 
 export const Room = z.object({
   id: RoomId,
+  /** @deprecated kept for stored docs and old clients; drives nothing. */
   kind: RoomKind,
   name: z.string().min(1).max(120),
   inviteCode: InviteCode,
@@ -109,7 +112,14 @@ export type Member = z.infer<typeof Member>;
 
 export const MediaRef = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('hls'), assetId: AssetId, url: z.string().url() }),
-  z.object({ kind: z.literal('youtube'), videoId: z.string().min(1) }),
+  z.object({
+    kind: z.literal('youtube'),
+    videoId: z.string().min(1),
+    /** The link came from music.youtube.com. The video id space is shared, so
+     *  without this flag the origin is lost and a YT Music track cannot be
+     *  told from a YouTube video downstream. Optional: absent on old items. */
+    music: z.boolean().optional(),
+  }),
   z.object({ kind: z.literal('url'), url: z.string().url(), mime: z.string().min(1) }),
   /** SoundCloud track/playlist URL — full sync via the official Widget API. */
   z.object({ kind: z.literal('soundcloud'), url: z.string().url() }),

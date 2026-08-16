@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AdminOverviewResponse, normalizeInviteCode } from '@gather/contracts';
-import type { RoomKind } from '@gather/contracts';
+import { AdminOverviewResponse, CreateRoomResponse, normalizeInviteCode } from '@gather/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/hooks/useTheme';
@@ -29,7 +28,6 @@ function CreateRoomDialog({ open, onOpenChange }: { open: boolean; onOpenChange(
   const router = useRouter();
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
-  const [kind, setKind] = useState<RoomKind>('watch');
   const [pending, setPending] = useState(false);
 
   const submit = async (e: FormEvent) => {
@@ -37,7 +35,15 @@ function CreateRoomDialog({ open, onOpenChange }: { open: boolean; onOpenChange(
     if (pending) return;
     setPending(true);
     try {
-      const { room } = await api.rooms.createRoom({ kind, name: name.trim() });
+      // No mode choice: every room is just a room — the stage adapts to what
+      // plays. Posted without `kind`; the server defaults the deprecated
+      // stored field. (apiFetch rather than the RestClient: its body type
+      // still requires the parsed `kind`.)
+      const { room } = await apiFetch('/rooms', {
+        method: 'POST',
+        body: { name: name.trim() },
+        schema: CreateRoomResponse,
+      });
       await queryClient.invalidateQueries({ queryKey: ['rooms'] });
       router.push(`/room/${room.id}`);
     } catch {
@@ -50,7 +56,7 @@ function CreateRoomDialog({ open, onOpenChange }: { open: boolean; onOpenChange(
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-label="Create a room">
         <DialogTitle>New room</DialogTitle>
-        <DialogDescription>A private cinema for your people. Invite-only by design.</DialogDescription>
+        <DialogDescription>A private room for your people. Invite-only by design.</DialogDescription>
         <form onSubmit={(e) => void submit(e)} className="mt-5 flex flex-col gap-4">
           <label className="flex flex-col gap-1.5">
             <span className="text-sm font-medium text-mid">Room name</span>
@@ -65,28 +71,6 @@ function CreateRoomDialog({ open, onOpenChange }: { open: boolean; onOpenChange(
               }}
             />
           </label>
-          <fieldset>
-            <legend className="mb-1.5 text-sm font-medium text-mid">Mode</legend>
-            <div className="grid grid-cols-2 gap-2">
-              {(['watch', 'listen'] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  aria-pressed={kind === k}
-                  onClick={() => {
-                    setKind(k);
-                  }}
-                  className={
-                    kind === k
-                      ? 'glass-raised rounded-ctl px-3 py-2.5 text-sm font-semibold text-hi shadow-glow'
-                      : 'rounded-ctl border border-border-glass px-3 py-2.5 text-sm text-low transition-colors hover:text-mid'
-                  }
-                >
-                  {k === 'watch' ? '🎬 Watch' : '🎧 Listen'}
-                </button>
-              ))}
-            </div>
-          </fieldset>
           <Button type="submit" size="lg" disabled={pending || name.trim().length === 0}>
             {pending ? 'Creating…' : 'Create room'}
           </Button>
@@ -243,14 +227,9 @@ export default function HomePage() {
                 href={`/room/${room.id}`}
                 className="glass-panel group block p-5 transition-all duration-200 hover:shadow-glow"
               >
-                <div className="mb-3 flex items-start justify-between gap-2">
-                  <h2 className="font-display text-lg font-semibold leading-tight text-hi">
-                    {room.name}
-                  </h2>
-                  <Badge variant={room.kind === 'watch' ? 'aurora' : 'default'}>
-                    {room.kind === 'watch' ? 'Watch' : 'Listen'}
-                  </Badge>
-                </div>
+                <h2 className="mb-3 font-display text-lg font-semibold leading-tight text-hi">
+                  {room.name}
+                </h2>
                 <div className="flex items-center gap-3 text-xs text-low">
                   <span>{memberCount} {memberCount === 1 ? 'person' : 'people'}</span>
                   {muted && <span aria-label="Notifications muted">🔕</span>}

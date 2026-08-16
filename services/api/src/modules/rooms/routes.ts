@@ -47,7 +47,7 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
   app.post('/rooms', async (request) => {
     const auth = requireAccount(request);
     const body = parseWith(CreateRoomBody, request.body);
-    const { room } = await service.createRoom(auth.userId, body.kind, body.name);
+    const { room } = await service.createRoom(auth.userId, body.name, body.kind);
     return { room: serializeRoom(room) };
   });
 

@@ -369,6 +369,11 @@ describe('entities', () => {
     expect(Room.safeParse({ ...room, kind: 'party' }).success).toBe(false);
   });
 
+  it('Room still requires the deprecated kind (stored docs and old clients read it)', () => {
+    const { kind: _kind, ...withoutKind } = room;
+    expect(Room.safeParse(withoutKind).success).toBe(false);
+  });
+
   it('Member roundtrips', () => {
     expect(Member.parse(member)).toEqual(member);
   });
@@ -1167,9 +1172,16 @@ describe('rest.auth', () => {
 });
 
 describe('rest.rooms', () => {
-  it('CreateRoomBody roundtrips', () => {
+  it("CreateRoomBody still accepts the deprecated kind 'listen' (deployed clients send it)", () => {
     const body = { kind: 'listen', name: 'Chill beats' };
     expect(CreateRoomBody.parse(body)).toEqual(body);
+  });
+
+  it("CreateRoomBody defaults kind to 'watch' when omitted", () => {
+    expect(CreateRoomBody.parse({ name: 'Movie Night' })).toEqual({
+      kind: 'watch',
+      name: 'Movie Night',
+    });
   });
 
   it('CreateRoomBody rejects a bad kind', () => {

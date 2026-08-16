@@ -119,7 +119,12 @@ export type RevokeAllSessionsResponse = z.infer<typeof RevokeAllSessionsResponse
 
 // ---------- rooms ----------
 
-export const CreateRoomBody = z.object({ kind: RoomKind, name: z.string().min(1).max(120) });
+export const CreateRoomBody = z.object({
+  /** @deprecated kept for stored docs and old clients; drives nothing.
+   *  Accepted and defaulted so deployed clients that still send it work. */
+  kind: RoomKind.default('watch'),
+  name: z.string().min(1).max(120),
+});
 export type CreateRoomBody = z.infer<typeof CreateRoomBody>;
 
 export const CreateRoomResponse = z.object({ room: Room });

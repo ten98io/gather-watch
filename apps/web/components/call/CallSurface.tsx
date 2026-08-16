@@ -53,6 +53,7 @@ import { api } from '@/lib/api';
 import { getCallMesh, closeCallMesh } from '@/lib/call-mesh';
 import type { RemoteTrackEntry } from '@/lib/call-mesh';
 import { describeError } from '@/lib/describe-error';
+import { presenceIdleStateFor } from '@/lib/media-kind';
 import { RELAY_SHORT_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { Avatar } from '@/components/ui/avatar';
@@ -303,12 +304,14 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
      outlive the page and keep sending. */
   useEffect(() => () => closeCallMesh(connection), [connection]);
 
-  /** What presence goes back to when the call ends (kept in a ref so the
-   *  unmount cleanup below does not need the room kind in its deps). */
-  const idleStateRef = useRef<PresenceEntry['state']>(
-    room.kind === 'listen' ? 'listening' : 'watching',
+  /** What presence goes back to when the call ends: read off what is playing
+   *  AT THAT MOMENT (music → 'listening'), not off any room-level mode. Read
+   *  from the store directly so leave/unmount need no playback re-renders. */
+  const idleState = useCallback(
+    (): PresenceEntry['state'] =>
+      presenceIdleStateFor(connection.useRoomState.getState().playback?.mediaRef ?? null),
+    [connection],
   );
-  idleStateRef.current = room.kind === 'listen' ? 'listening' : 'watching';
 
   const leave = useCallback((): void => {
     const mesh = getCallMesh(connection, me);
@@ -319,11 +322,11 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     mesh.setLocalTrack('mic', null);
     mesh.setLocalTrack('cam', null);
     setLocalCam(null);
-    connection.presenceUpdate({ state: idleStateRef.current, micOn: false, camOn: false });
+    connection.presenceUpdate({ state: idleState(), micOn: false, camOn: false });
     setPhase('idle');
     setMicOn(true);
     setCamOn(false);
-  }, [connection, me]);
+  }, [connection, me, idleState]);
 
   const joinMesh = useCallback(async (): Promise<void> => {
     setPhase('joining');
@@ -418,18 +421,18 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         micTrackRef.current?.stop();
         camTrackRef.current?.stop();
         connection.presenceUpdate({
-          state: idleStateRef.current,
+          state: idleState(),
           micOn: false,
           camOn: false,
         });
       }
     },
-    [connection],
+    [connection, idleState],
   );
 
-  /* Self-healing presence: a reconnect re-announces the room's default state
-     ('watching'/'listening'), which would silently drop us out of the call as
-     far as everyone else's tiles are concerned. Re-assert while we are in it. */
+  /* Self-healing presence: a reconnect re-announces the idle state for what is
+     playing ('watching'/'listening'), which would silently drop us out of the
+     call as far as everyone else's tiles are concerned. Re-assert while in it. */
   const myPresenceState: PresenceEntry['state'] | undefined = presence[me]?.state;
   useEffect(() => {
     if (phase !== 'in-call' || myPresenceState === 'in-call') return;

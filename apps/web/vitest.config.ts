@@ -9,6 +9,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['test/**/*.test.ts'],
+    // Both extensions, deliberately: a .test.tsx here was silently NOT RUN for
+    // a while — vitest reports the rest of the suite green, which reads as
+    // "my test passed" unless the count is checked.
+    include: ['test/**/*.test.{ts,tsx}'],
   },
 });

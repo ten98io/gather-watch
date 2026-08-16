@@ -116,6 +116,45 @@ describe('room CRUD', () => {
   });
 });
 
+describe('room kind (vestigial)', () => {
+  it("create WITHOUT kind succeeds; the doc and response default to 'watch'", async () => {
+    const app = await newApp();
+    const { accessToken } = await signupUser(app.app, 'nokind@example.com');
+    const res = await app.app.inject({
+      method: 'POST',
+      url: '/rooms',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { name: 'Kindless' },
+    });
+    expect(res.statusCode).toBe(200);
+    const room = (res.json() as { room: Room }).room;
+    expect(room.kind).toBe('watch');
+    expect((await app.store.rooms.findById(room.id))?.kind).toBe('watch');
+  });
+
+  it("create WITH kind 'listen' still succeeds and serializes it back (old clients)", async () => {
+    const app = await newApp();
+    const { accessToken } = await signupUser(app.app, 'oldclient@example.com');
+    const res = await app.app.inject({
+      method: 'POST',
+      url: '/rooms',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { kind: 'listen', name: 'Legacy listen' },
+    });
+    expect(res.statusCode).toBe(200);
+    const room = (res.json() as { room: Room }).room;
+    expect(room.kind).toBe('listen');
+    // Serialized rooms keep carrying kind on every read path.
+    const get = await app.app.inject({
+      method: 'GET',
+      url: `/rooms/${room.id}`,
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(get.statusCode).toBe(200);
+    expect((get.json() as { room: Room }).room.kind).toBe('listen');
+  });
+});
+
 describe('free-plan expiry', () => {
   it('free rooms get expiresAt ≈ now+4h; premium rooms persist', async () => {
     const app = await newApp();

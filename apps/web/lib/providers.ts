@@ -80,7 +80,9 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
     // Title hints are user-visible queue titles: never surface the raw id.
     return found(
       host === 'music.youtube.com' ? 'youtubemusic' : 'youtube',
-      { kind: 'youtube', videoId },
+      host === 'music.youtube.com'
+        ? { kind: 'youtube', videoId, music: true }
+        : { kind: 'youtube', videoId },
       host === 'music.youtube.com' ? 'YouTube Music track' : 'YouTube video',
     );
   }

@@ -124,11 +124,13 @@ export class RoomsService {
     });
   }
 
-  /** Create a room with default policies and the caller as host member. */
+  /** Create a room with default policies and the caller as host member.
+   *  `kind` is deprecated — stored on the doc for old clients; drives
+   *  nothing — so it defaults rather than being required. */
   async createRoom(
     ownerId: string,
-    kind: RoomKind,
     name: string,
+    kind: RoomKind = 'watch',
   ): Promise<{ room: RoomDoc; member: MemberDoc }> {
     const { store } = this.deps;
     const now = this.now();

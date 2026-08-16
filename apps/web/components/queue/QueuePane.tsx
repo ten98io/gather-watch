@@ -15,6 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { MediaRef, QueueItem, QueueItemId, RoomId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { canAct, formatMs } from '@/lib/permissions';
+import { mediaKindFor } from '@/lib/media-kind';
 import { parseProviderUrl } from '@/lib/providers';
 import { providerLabel } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
@@ -48,13 +49,13 @@ const HOVER_REVEAL =
   '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 ' +
   '[@media(hover:hover)]:group-focus-within:opacity-100';
 
-/** Placeholder glyph when an item has no artwork: audio sources get a note. */
+/** Placeholder glyph when an item has no artwork: music sources get a note. */
 function ProviderIcon({ mediaRef, className }: { mediaRef: MediaRef; className: string }) {
-  const isAudio =
-    mediaRef.kind === 'soundcloud' ||
-    mediaRef.kind === 'embed' ||
-    (mediaRef.kind === 'url' && mediaRef.mime.startsWith('audio/'));
-  return isAudio ? <MusicIcon size={20} className={className} /> : <FilmIcon size={20} className={className} />;
+  return mediaKindFor(mediaRef) === 'music' ? (
+    <MusicIcon size={20} className={className} />
+  ) : (
+    <FilmIcon size={20} className={className} />
+  );
 }
 
 /** Which half of a row the cursor sits in — the insertion point. */
@@ -505,7 +506,7 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
       <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
         {items.length === 0 ? (
           <li className="py-10 text-center text-sm text-low">
-            Queue is empty — add something to {room.kind === 'listen' ? 'hear' : 'watch'} together.
+            Queue is empty — add something to play together.
           </li>
         ) : (
           items.map((item, index) => (

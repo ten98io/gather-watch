@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Member, Room, RoomId } from '@gather/contracts';
 import { api } from './api';
+import { presenceIdleStateFor } from './media-kind';
 import { RoomConnection } from './room-connection';
 import { toast } from '@/components/ui/toast';
 
@@ -60,21 +61,38 @@ export function RoomProvider({
     void connection.loadRecentMessages().catch(() => undefined);
     // Live room entity: theater toggle / policy edits arrive as room.updated.
     const off = connection.on('room.updated', (ev) => setRoom(ev.payload));
+    // The idle presence state follows what is PLAYING (music → 'listening'),
+    // 'watching' when nothing does — the server no longer infers it from the
+    // room, so this client must say it accurately.
+    const idleState = (): 'watching' | 'listening' =>
+      presenceIdleStateFor(connection.useRoomState.getState().playback?.mediaRef ?? null);
     // Announce presence whenever the socket (re)connects — the hub's default
     // entry is 'offline' until a client says otherwise, and peers render it.
     const offStatus = connection.useStatus.subscribe((status) => {
       if (status === 'live') {
-        connection.presenceUpdate({
-          state: initialRoom.kind === 'listen' ? 'listening' : 'watching',
-        });
+        connection.presenceUpdate({ state: idleState() });
       }
     });
+    // A mixed queue flows music↔video: re-announce when the playing item's
+    // kind changes — but never overwrite the richer states a member is
+    // actually in ('in-call', 'away'); those surfaces own their own updates.
+    let lastIdle = idleState();
+    const offPlayback = connection.useRoomState.subscribe((s) => {
+      const next = presenceIdleStateFor(s.playback?.mediaRef ?? null);
+      if (next === lastIdle) return;
+      lastIdle = next;
+      const mine = s.presence[member.userId]?.state;
+      if (mine === 'in-call' || mine === 'away') return;
+      if (connection.status !== 'live') return;
+      connection.presenceUpdate({ state: next });
+    });
     return () => {
+      offPlayback();
       offStatus();
       off();
       connection.close();
     };
-  }, [connection, initialRoom.kind]);
+  }, [connection, member.userId]);
 
   return (
     <RoomContext.Provider value={{ room, member, connection }}>{children}</RoomContext.Provider>

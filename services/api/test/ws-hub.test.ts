@@ -343,6 +343,27 @@ describe('ws hub', () => {
     ServerEvent.parse(waiting2);
   });
 
+  // ── presence default ───────────────────────────────────────────────────────
+
+  it("defaults presence to 'watching' even when the stored room kind is 'listen'", async () => {
+    const { roomId } = await seedRoom(store);
+    // kind is vestigial: it must NOT flip the default to 'listening' anymore.
+    await store.rooms.updateOne({ id: roomId }, { kind: 'listen' });
+    const member = await makeMember('presence-default@example.com', roomId);
+    const sock = await connect(wsUrl(roomId, member.accessToken));
+
+    // First empty heartbeat: presence.diff (ephemeral broadcast) plus the
+    // created-entry replies presence.state and queue.state to this socket.
+    const p = collectMessages(sock, 3);
+    sock.send(clientFrame(roomId, 'presence.update', {}));
+    const msgs = await p;
+    const roster = msgs.find((m) => m.type === 'presence.state');
+    expect(roster).toBeDefined();
+    const entries = roster!.payload.entries as Array<{ userId: string; state: string }>;
+    const entry = entries.find((e) => e.userId === member.user.id);
+    expect(entry?.state).toBe('watching');
+  });
+
   // ── clock.ping ─────────────────────────────────────────────────────────────
 
   it('replies clock.pong only to the sender', async () => {

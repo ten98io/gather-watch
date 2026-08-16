@@ -11,7 +11,7 @@ describe('parseProviderUrl', () => {
 
     const music = parseProviderUrl('https://music.youtube.com/watch?v=abc123XYZ');
     expect(music?.provider.id).toBe('youtubemusic');
-    expect(music?.ref).toEqual({ kind: 'youtube', videoId: 'abc123XYZ' });
+    expect(music?.ref).toEqual({ kind: 'youtube', videoId: 'abc123XYZ', music: true });
   });
 
   it('parses SoundCloud and Vimeo as full-sync refs', () => {
