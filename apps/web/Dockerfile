@@ -27,7 +27,7 @@ COPY . .
 # Belt-and-braces: .dockerignore already excludes .env*, but secrets must
 # never survive into a layer even if the ignore file is edited or bypassed.
 RUN rm -f .env .env.*
-RUN --mount=type=cache,target=/pnpm/store \
+RUN --mount=type=cache,id=s/bbe6d6c1-5dcf-4426-bb94-f7d023060230-pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --store-dir /pnpm/store
 # Build the web app plus its workspace dependencies (packages/*), in
 # topological order. Directory filters avoid hardcoding package names.

@@ -21,7 +21,7 @@ COPY . .
 # Belt-and-braces: .dockerignore already excludes .env*, but secrets must
 # never survive into a layer even if the ignore file is edited or bypassed.
 RUN rm -f .env .env.*
-RUN --mount=type=cache,target=/pnpm/store \
+RUN --mount=type=cache,id=s/a802d13d-f16e-448e-8e08-bc974bd376e5-pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --store-dir /pnpm/store
 # Build the API plus its workspace dependencies (contracts, sync-core, …).
 # --fail-if-no-match: fail the image build loudly if the service package does
