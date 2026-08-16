@@ -61,9 +61,11 @@
       .ok { background: oklch(0.75 0.17 160); }
       .off { background: oklch(0.58 0.02 285); }
       #status { font-size: 12px; color: var(--mid); }
-      #error { color: oklch(0.68 0.21 25); font-size: 12px; margin-top: 8px; }
+      #error, #share-error { color: oklch(0.68 0.21 25); font-size: 12px; margin-top: 8px; }
       .mono { font-family: ui-monospace, monospace; letter-spacing: 0.12em; }
-      label { font-size: 12px; color: var(--mid); display: block; margin-bottom: 4px; }
+      label, .lbl { font-size: 12px; color: var(--mid); display: block; margin-bottom: 4px; }
+      /* Separates the share group from Disconnect, which is not part of it. */
+      .split { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
     </style>
   </head>
   <body>
@@ -88,9 +90,19 @@
     </div>
 
     <div class="card" id="live-card" hidden>
-      <p class="sub">Mode A: this tab follows the room. Mode B: share this tab (with audio) to the room.</p>
-      <button id="share">Share this tab to the room</button>
-      <button id="disconnect" class="ghost">Disconnect</button>
+      <p class="sub">This tab already plays in time with the room. You can also send everyone a live picture of what you see.</p>
+
+      <p class="lbl" style="margin-top: 12px">Share to the room</p>
+      <button id="share-tab">This tab</button>
+      <button id="share-window" class="ghost">A window</button>
+      <button id="share-screen" class="ghost">Your whole screen</button>
+      <p id="share-note" class="sub" hidden></p>
+      <p id="share-error" hidden></p>
+      <button id="share-stop" class="ghost" hidden>Stop sharing</button>
+
+      <div class="split">
+        <button id="disconnect" class="ghost" style="margin-top: 0">Disconnect</button>
+      </div>
     </div>
 
     <script type="module" src="popup.js"></script>

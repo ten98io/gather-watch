@@ -187,13 +187,20 @@ export const REQUEST_TYPES: readonly ProtocolRequestType[] = [
 
 export type ProtocolEventType = 'telemetry' | 'status' | 'capability';
 
-/** Advertised in `hello`. Additive only. */
+/**
+ * Advertised in `hello`. Additive only — a capability that ever shipped keeps
+ * its name forever, because pages branch on the absence of one to decide what
+ * to do themselves. `modeB` is tab capture; `modeB.desktop` additionally means
+ * this build can share a whole screen or a single window, which is what lets a
+ * page stop offering its own `getDisplayMedia` path.
+ */
 export const EXTENSION_CAPABILITIES: readonly string[] = [
   'handoff',
   'telemetry',
   'capability',
   'release',
   'modeB',
+  'modeB.desktop',
 ];
 
 /* ─────────────────────────── wire message types ──────────────────────── */
