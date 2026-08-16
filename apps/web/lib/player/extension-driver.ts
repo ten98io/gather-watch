@@ -115,6 +115,71 @@ export function extensionInstallUrl(): string | null {
   return id === undefined ? null : `${CHROME_WEB_STORE_DETAIL}${id}`;
 }
 
+/* ═══════════════════════ can this browser install it? ════════════════════ */
+
+/**
+ * Phones and tablets. Chromium ships there with no extension surface at all,
+ * and `CriOS` (Chrome on iOS) is WebKit underneath — both are caught here
+ * before the Chromium test below can call them installable.
+ */
+const HANDHELD_UA = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i;
+
+/** Every desktop Chromium build names itself in the agent string; Safari and
+ *  Firefox never do. Edge (`Edg/`) and Opera (`OPR/`) also carry `Chrome/`,
+ *  but matching them directly survives a future build that drops it. */
+const CHROMIUM_UA = /(?:Chrome|Chromium|Edg|OPR)\/\d/;
+
+function browserNavigator(): Record<string, unknown> | null {
+  if (typeof window === 'undefined') return null;
+  const nav = (window as unknown as { navigator?: unknown }).navigator;
+  return isRecord(nav) ? nav : null;
+}
+
+/** Client Hints brands are Chromium-only, and always list Chromium itself
+ *  alongside the vendor brand and the deliberately-fake padding brand. */
+function brandsSayChromium(raw: unknown): boolean {
+  if (!Array.isArray(raw)) return false;
+  return raw.some((entry: unknown) => {
+    if (!isRecord(entry)) return false;
+    const brand = entry['brand'];
+    return typeof brand === 'string' && /Chrom/i.test(brand);
+  });
+}
+
+/**
+ * Whether the extension could be added here at all — the difference between
+ * showing the install link and telling the user their browser cannot run it.
+ *
+ * This must NOT be `isExtensionChannelSupported()` (i.e. `chrome.runtime`).
+ * That object is injected into a page only by an already-installed extension
+ * that lists this origin in `externally_connectable`; on ordinary desktop
+ * Chrome with nothing installed it is undefined. Its absence is therefore
+ * evidence about the *extension*, never about the browser — reading it the
+ * other way told every single person the install funnel exists to convert
+ * "this browser can’t run Playin" and hid the link from them.
+ *
+ * Its presence is still evidence, in the one direction it can be: a browser
+ * that injects an extension channel plainly hosts extensions.
+ *
+ * Otherwise the user agent is all a page can know about the browser family
+ * before any extension exists. It can be spoofed, and it cannot see an
+ * enterprise policy that blocks the Web Store, so this answer is approximate
+ * by construction — but it is approximate about the browser, which is the
+ * question, instead of exact about something else.
+ */
+export function canInstallExtension(): boolean {
+  if (isExtensionChannelSupported()) return true;
+  const nav = browserNavigator();
+  if (nav === null) return false; // No window, or no navigator: claim nothing.
+  const rawData = nav['userAgentData'];
+  const data = isRecord(rawData) ? rawData : null;
+  const ua = typeof nav['userAgent'] === 'string' ? nav['userAgent'] : '';
+  if (data?.['mobile'] === true) return false;
+  if (HANDHELD_UA.test(ua)) return false;
+  if (data !== null && brandsSayChromium(data['brands'])) return true;
+  return CHROMIUM_UA.test(ua);
+}
+
 /* ══════════════════════════════════ state ═════════════════════════════════ */
 
 /** Why there is no driver: one of these is installable, the other is not. */
@@ -296,7 +361,7 @@ export function createExtensionDriverStore(
   }
 
   function unavailableState(): ExtensionDriverUnavailable {
-    const canInstall = isExtensionChannelSupported();
+    const canInstall = canInstallExtension();
     return {
       phase: 'unavailable',
       reason: canInstall ? 'not-installed' : 'unsupported-browser',

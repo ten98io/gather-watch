@@ -82,14 +82,30 @@ interface Session {
 let session: Session | null = null;
 let lastTelemetry: TelemetryPayload | null = null;
 /**
- * Which surface family the offscreen document was last told to capture, or
- * null when we have started nothing. It is what the popup asks for, so a popup
- * that was destroyed by the picker taking focus can still tell whether the
- * share it started is live. It is NOT proof the capture survived: the
- * offscreen document has no stop message yet, and nothing here can observe a
- * track the user ended from Chrome's own sharing bar.
+ * Which surface family is being captured, or null when nothing is. It is what
+ * the popup asks for, so a popup that was destroyed by the picker taking focus
+ * can still tell whether the share it started is live. It is cleared by every
+ * way a share can end: the room ending, the user stopping it, the shared tab
+ * closing, and Chrome's own sharing bar (which reaches us as `shareEnded`).
  */
 let sharingSource: ShareSource | null = null;
+/**
+ * The tab whose pixels are going out, when the share is a tab capture. Closing
+ * that tab ends the capture, and the extension must not go on claiming it is
+ * sharing something that no longer exists.
+ */
+let sharingTabId: number | null = null;
+/**
+ * Which room the live share belongs to, mirrored to `chrome.storage.session`.
+ *
+ * It is persisted separately from the session because it has to answer a
+ * question the in-memory session cannot: after MV3 recycles the worker the
+ * session is gone but the offscreen document is still capturing, and
+ * `openSession()` must decide whether the room it is opening is the one being
+ * shared to (keep it running) or a different one (stop, or the old room keeps
+ * receiving pixels while the user is somewhere else).
+ */
+let sharingRoomId: string | null = null;
 let provider: Record<string, unknown> | null = null;
 /** Cleared on disconnect — a stacked interval per reconnect was a real leak. */
 let driveTimer: ReturnType<typeof setInterval> | null = null;
@@ -155,6 +171,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabProviders.delete(tabId);
   tabMediaSeenAt.delete(tabId);
   if (lastContentTabId === tabId) lastContentTabId = null;
+  // Its capture died with it. The offscreen document sees the track end too,
+  // and both paths land on the same idempotent teardown.
+  if (sharingTabId === tabId) void stopSharing();
   if (session !== null && session.drivenTabId === tabId) {
     session.drivenTabId = null;
     void persistSession();
@@ -419,7 +438,14 @@ interface OpenSessionInput {
  * build-time constant — the handed-over token can reach no other host.
  */
 async function openSession(input: OpenSessionInput): Promise<void> {
-  await disconnect();
+  // A share belongs to the room it started in. Re-opening that same room — the
+  // automatic restore after MV3 recycles the worker — must leave it running;
+  // opening a DIFFERENT room must stop it, or the room the user just left goes
+  // on receiving their screen. Anything else here would either kill shares on a
+  // routine worker recycle or leak them across rooms.
+  const shareRoom = await sharingRoom();
+  if (shareRoom !== null && shareRoom !== input.roomId) await stopSharing();
+  await closeSession();
   const socket = new RoomSocket(WS_URL, {
     replayFetch: async (roomId, sinceSeq) => {
       const res = await fetch(`${API_URL}/rooms/${roomId}/events?since=${sinceSeq}`, {
@@ -549,7 +575,18 @@ chrome.runtime.onSuspend.addListener(() => {
   stopDriveTimer();
 });
 
-async function disconnect(): Promise<void> {
+/**
+ * Drop the session's socket, timers and telemetry WITHOUT touching a live
+ * share.
+ *
+ * This is split from `disconnect()` because the two callers mean opposite
+ * things by "end the session". `openSession()` resets state before every
+ * connect — including the automatic `restoreSession()` that runs whenever MV3
+ * recycles the service worker, which is roughly every 30s of quiet. Tearing
+ * the capture down there would kill a live share for no reason the user could
+ * see or act on. The offscreen document deliberately outlives the worker.
+ */
+async function closeSession(): Promise<void> {
   stopDriveTimer();
   if (session !== null) {
     if (session.drivenTabId !== null) {
@@ -559,16 +596,47 @@ async function disconnect(): Promise<void> {
     session = null;
   }
   lastTelemetry = null;
-  // The share belonged to that room. (The offscreen document is not torn down
-  // here — it has no stop message; see OffscreenShareMessage.)
-  sharingSource = null;
   await stopKeepalive();
   await persistSession();
+}
+
+/**
+ * The user is leaving the room. The share belonged to that room, so the pixels
+ * stop leaving this machine — not merely that we stop calling it a share.
+ */
+async function disconnect(): Promise<void> {
+  await stopSharing();
+  await closeSession();
 }
 
 /* ── chrome.storage.session mirror (survives service-worker death) ── */
 
 const SESSION_KEY = 'playin.session.v1';
+const SHARING_ROOM_KEY = 'playin.sharing-room.v1';
+
+async function persistSharingRoom(): Promise<void> {
+  try {
+    if (sharingRoomId === null) await chrome.storage.session.remove(SHARING_ROOM_KEY);
+    else await chrome.storage.session.set({ [SHARING_ROOM_KEY]: sharingRoomId });
+  } catch {
+    // Storage unavailable — the in-memory value still serves this worker.
+  }
+}
+
+/**
+ * The room a live share belongs to, preferring the persisted value because the
+ * worker may have been recycled since the share started.
+ */
+async function sharingRoom(): Promise<string | null> {
+  if (sharingRoomId !== null) return sharingRoomId;
+  try {
+    const bag = await chrome.storage.session.get(SHARING_ROOM_KEY);
+    const value = bag[SHARING_ROOM_KEY];
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 interface PersistedSession {
   roomId: string;
@@ -655,6 +723,15 @@ export interface OffscreenShareMessage {
   canRequestAudioTrack: boolean;
 }
 
+/**
+ * The background → offscreen stop. Idempotent by contract: it is sent whenever
+ * this worker wants to be *sure* nothing is being captured, including when the
+ * document has already stopped on its own, and is answered `ok` either way.
+ */
+export interface OffscreenStopMessage {
+  kind: 'stopShare';
+}
+
 /** What the picker handed back. An empty `streamId` means the user closed it. */
 export interface DesktopPick {
   streamId: string;
@@ -689,14 +766,39 @@ export interface ShareResult {
   note: string;
 }
 
+/** The document exists only to capture, so its existence IS a live share. */
+async function hasOffscreen(): Promise<boolean> {
+  return chrome.offscreen.hasDocument().catch(() => false);
+}
+
 async function ensureOffscreen(): Promise<void> {
-  const existing = await chrome.offscreen.hasDocument().catch(() => false);
-  if (existing) return;
+  if (await hasOffscreen()) return;
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
     reasons: ['USER_MEDIA', 'WEB_RTC' as chrome.offscreen.Reason],
     justification: 'Screen, window or tab capture + WebRTC fan-out for Mode B room share',
   });
+}
+
+/**
+ * End any share, from any of the ways one can end. Every step tolerates
+ * "there is nothing there" — a second disconnect, a capture that never
+ * started, a worker that was terminated and no longer remembers the share it
+ * began — because a screen that goes on streaming after the user left the room
+ * is the one outcome that is never acceptable. Nothing here throws.
+ */
+async function stopSharing(): Promise<void> {
+  sharingSource = null;
+  sharingTabId = null;
+  sharingRoomId = null;
+  await persistSharingRoom();
+  if (!(await hasOffscreen())) return;
+  // The document owns the tracks, the mesh and the share socket. It stops
+  // them and tells the room the share ended; closing it here would otherwise
+  // leave viewers on a frozen last frame.
+  const stop: OffscreenStopMessage = { kind: 'stopShare' };
+  await chrome.runtime.sendMessage(stop).catch(() => undefined);
+  await chrome.offscreen.closeDocument().catch(() => undefined);
 }
 
 /**
@@ -816,6 +918,40 @@ export const browserShareDeps: ShareDeps = {
     }),
 };
 
+/** No sentence below names an API, an error code, or a constraint. */
+const SHARE_FAILED_NOTE = 'That share could not start — nothing is going to the room.';
+const SHARE_REFUSED_NOTE = 'Chrome did not allow that — try again and pick what to share.';
+
+/** Capture failures arrive as browser error text; a person gets a sentence. */
+export function shareFailureNote(error: string): string {
+  return /permission|notallowed|denied/i.test(error) ? SHARE_REFUSED_NOTE : SHARE_FAILED_NOTE;
+}
+
+/**
+ * What the offscreen document actually did, read from its answer.
+ *
+ * `sendMessage` resolving says only that the message was delivered: a capture
+ * the document refused answers `{ ok: false }` through exactly the same happy
+ * path, and reporting that as a share would leave the popup claiming a room is
+ * seeing something nobody is sending. No answer at all is a failure too — we
+ * cannot confirm a capture we never heard back about.
+ */
+export function readShareReply(
+  raw: unknown,
+  plan: { note: string; canRequestAudioTrack: boolean },
+): ShareResult {
+  const bag = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : null;
+  if (bag === null || bag['ok'] !== true) {
+    const error = typeof bag?.['error'] === 'string' ? bag['error'] : '';
+    return { shared: false, cancelled: false, note: shareFailureNote(error) };
+  }
+  // The document is the only witness to whether sound actually came over, so
+  // its sentence wins wherever the plan promised sound and there was none.
+  const note = typeof bag['note'] === 'string' ? bag['note'] : '';
+  const silent = bag['audio'] !== true && plan.canRequestAudioTrack && note.length > 0;
+  return { shared: true, cancelled: false, note: silent ? note : plan.note };
+}
+
 /**
  * The picker can stay open for as long as the user takes to choose, and this
  * worker may be terminated while it is open — in which case the callback never
@@ -838,9 +974,21 @@ async function startShare(surface: ShareSurface = 'tab'): Promise<ShareResult> {
     return { shared: false, cancelled: false, note: 'That room ended before the share started.' };
   }
   await ensureOffscreen();
-  await chrome.runtime.sendMessage(plan.message);
+  const raw: unknown = await chrome.runtime.sendMessage(plan.message).catch(() => undefined);
+  const result = readShareReply(raw, {
+    note: plan.note,
+    canRequestAudioTrack: plan.message.canRequestAudioTrack,
+  });
+  if (!result.shared) {
+    // Nothing is capturing: leave neither a document nor a claim behind.
+    await stopSharing();
+    return result;
+  }
   sharingSource = plan.message.source;
-  return { shared: true, cancelled: false, note: plan.note };
+  sharingTabId = plan.message.source === 'tab' ? room.tabId : null;
+  sharingRoomId = room.roomId;
+  await persistSharingRoom();
+  return result;
 }
 
 /* ── Casting: press the site's OWN control (never capture protected video) ── */
@@ -1039,6 +1187,16 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       return respond(disconnect().then(() => broadcastStatus()));
     case 'popup:share':
       return respond(startShare(parseShareSurface(msg['surface'])));
+    case 'popup:stopShare':
+      return respond(stopSharing());
+    /**
+     * The capture ended without us — Chrome's own "Stop sharing" bar, or the
+     * shared tab closing. The offscreen document has already told the room and
+     * stopped the tracks; this clears the claim and closes the document, so
+     * the next share starts from nothing.
+     */
+    case 'shareEnded':
+      return respond(stopSharing());
     case 'popup:cast':
       return respond(castActiveTab());
     case 'frameClaim': {
@@ -1049,18 +1207,19 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       return false;
     }
     case 'popup:status':
-      sendResponse({
-        ok: true,
-        value: {
+      return respond(
+        (async () => ({
           connected: session !== null,
           roomName: session?.roomName ?? null,
           playing: session?.playback?.playing ?? false,
           telemetry: lastTelemetry,
           provider,
-          sharing: sharingSource !== null,
-        },
-      });
-      return true;
+          // A share this worker no longer remembers — it was terminated and
+          // revived while the capture ran — is still a share, and the document
+          // still being open is the browser's own proof of it.
+          sharing: sharingSource !== null || (await hasOffscreen()),
+        }))(),
+      );
     case 'telemetry': {
       const tabId = sender.tab?.id;
       if (tabId !== undefined) tabMediaSeenAt.set(tabId, Date.now());

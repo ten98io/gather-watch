@@ -39,8 +39,15 @@ import {
 } from '@/components/ui/icons';
 
 /** Why the Stage cannot play yet. The remedy differs for each, so they are
- *  three states and not one "unavailable". */
-export type ExtensionGateStatus = 'detecting' | 'not-installed' | 'incompatible';
+ *  separate states and not one "unavailable". `unsupported-browser` is the one
+ *  with no remedy on this device: a desktop browser outside the Chrome family
+ *  cannot run the extension at all, so offering an install link there would be
+ *  a promise the browser cannot keep. */
+export type ExtensionGateStatus =
+  | 'detecting'
+  | 'not-installed'
+  | 'incompatible'
+  | 'unsupported-browser';
 
 /** 'mobile' means "a browser that cannot run extensions at all", not "a small
  *  window" — a narrow desktop window is still 'desktop'. */
@@ -109,6 +116,22 @@ function copyFor(props: {
       actionHref: props.installUrl,
       recheckLabel: null,
       reassurance: 'Chat, voice and the queue are working already.',
+    };
+  }
+
+  // No install link: there is nothing this browser could install. Naming the
+  // browsers that do work is the only actionable thing left to say, and it is
+  // better than a link that leads to a store page refusing to install.
+  if (props.status === 'unsupported-browser') {
+    return {
+      icon: <VideoIcon size={20} />,
+      title: 'This browser can’t play the video',
+      description:
+        'Playin plays video through a browser extension, and this browser doesn’t support them. Chrome, Edge, Brave and Arc all do.',
+      actionLabel: null,
+      actionHref: props.installUrl,
+      recheckLabel: null,
+      reassurance: ROOM_WORKS,
     };
   }
 
@@ -185,6 +208,18 @@ export function ExtensionGate({
     );
   const showRecheck = copy.recheckLabel !== null && onRecheck !== undefined;
 
+  // "Working on it" is `aria-disabled`, never the native `disabled` attribute:
+  // a browser blurs a focused element the instant it becomes disabled, so the
+  // keyboard user who just pressed this would be dropped back onto <body> and
+  // have to tab the whole room to reach the control again. It therefore stays
+  // enabled and focusable, this guard makes the repeat presses no-ops, and the
+  // label turning into "Checking…" is announced by the polite live region the
+  // control sits inside.
+  const handleRecheck = () => {
+    if (recheckPending) return;
+    onRecheck?.();
+  };
+
   return (
     // Named region, and a polite live region: the state changes on its own
     // (detection finishing, the extension appearing after an install), so the
@@ -205,7 +240,16 @@ export function ExtensionGate({
         {...(action !== null ? { action } : {})}
       />
       {showRecheck && (
-        <Button variant="ghost" size="sm" onClick={onRecheck} disabled={recheckPending}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleRecheck}
+          aria-disabled={recheckPending}
+          // Mirrors what `disabled:` would have done to the look, without the
+          // attribute that takes focus away. Pointer-events only: it removes
+          // the mouse affordance and leaves keyboard focus and Enter intact.
+          className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+        >
           {recheckPending ? 'Checking…' : copy.recheckLabel}
         </Button>
       )}

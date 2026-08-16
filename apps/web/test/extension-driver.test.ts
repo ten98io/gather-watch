@@ -121,6 +121,62 @@ function installBareWindow(): void {
   };
 }
 
+/* ─────────────────── browsers with nothing installed yet ───────────────────
+ * The shape the funnel actually meets: `window.chrome` exists, `chrome.runtime`
+ * does NOT — a page only gets `chrome.runtime` from an installed extension that
+ * lists this origin in `externally_connectable`. Real agent strings, because
+ * the whole question is which browser family this is.
+ * ------------------------------------------------------------------------- */
+
+const CHROME_DESKTOP_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const CHROME_ANDROID_UA =
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+const SAFARI_DESKTOP_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15';
+const FIREFOX_DESKTOP_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0';
+const CHROME_IOS_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/124.0.0.0 Mobile/15E148 Safari/604.1';
+
+const CHROMIUM_BRANDS = [
+  { brand: 'Not/A)Brand', version: '8' },
+  { brand: 'Chromium', version: '124' },
+  { brand: 'Google Chrome', version: '124' },
+];
+
+interface FakeNavigator {
+  userAgent: string;
+  userAgentData?: { brands: { brand: string; version: string }[]; mobile: boolean };
+}
+
+/** A browser with no Playin extension: chrome object, but no runtime channel. */
+function installExtensionlessWindow(navigator: FakeNavigator, hasChromeObject = true): void {
+  (globalThis as unknown as { window?: unknown }).window = {
+    ...(hasChromeObject ? { chrome: {} } : {}),
+    navigator,
+    location: { origin: 'http://localhost:3000' },
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    postMessage: () => undefined,
+  };
+}
+
+/** `extensionInstallUrl()` reads process.env at call time under vitest (Next
+ *  inlines it at build time instead, so the shape is the same either way).
+ *  Must await inside the try, or the id is gone before detection settles. */
+async function withInstallId<T>(run: () => Promise<T>): Promise<T> {
+  const key = 'NEXT_PUBLIC_PLAYIN_EXTENSION_ID';
+  const previous = process.env[key];
+  process.env[key] = EXT_ID;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+}
+
 function removeFakeWindow(): void {
   delete (globalThis as unknown as { window?: unknown }).window;
 }
@@ -356,6 +412,100 @@ describe('detection states (fake chrome)', () => {
     expect(state.hasMedia).toBe(false);
     expect(state.connected).toBe(true);
     off();
+  });
+});
+
+/* ──────────────────── not-installed vs. cannot-install ─────────────────── */
+
+describe('which browser this is (no extension present)', () => {
+  beforeEach(() => {
+    resetExtensionBridge();
+  });
+
+  async function settle(): Promise<ExtensionDriverStore> {
+    const store = newStore();
+    store.subscribe(() => undefined);
+    await waitFor(() => store.getSnapshot().state.phase !== 'detecting');
+    return store;
+  }
+
+  it('offers the install link on desktop Chrome that has no extension yet', async () => {
+    // The funnel's whole job. `chrome.runtime` is absent here — a page is only
+    // given it by an installed extension — so it must not be read as a verdict
+    // on the browser, or the users this funnel exists to convert are told their
+    // browser is unsupported and shown no link.
+    installExtensionlessWindow({
+      userAgent: CHROME_DESKTOP_UA,
+      userAgentData: { brands: CHROMIUM_BRANDS, mobile: false },
+    });
+    const state = await withInstallId(async () => (await settle()).getSnapshot().state);
+
+    if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
+    expect(state.reason).toBe('not-installed');
+    expect(state.canInstall).toBe(true);
+    expect(state.message).toBe(EXTENSION_ERROR_MESSAGE.NOT_INSTALLED);
+    expect(state.installUrl).toBe(`https://chromewebstore.google.com/detail/${EXT_ID}`);
+  });
+
+  it('offers the install link on a Chromium build that sends no client hints', async () => {
+    // Older Chromium, or hints stripped by a privacy setting: the agent string
+    // is the only signal left and it still says Chromium desktop.
+    installExtensionlessWindow({ userAgent: CHROME_DESKTOP_UA });
+    const state = await withInstallId(async () => (await settle()).getSnapshot().state);
+
+    if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
+    expect(state.reason).toBe('not-installed');
+    expect(state.installUrl).not.toBeNull();
+  });
+
+  it('does not send a phone to the Web Store', async () => {
+    installExtensionlessWindow({
+      userAgent: CHROME_ANDROID_UA,
+      userAgentData: { brands: CHROMIUM_BRANDS, mobile: true },
+    });
+    // The id is configured throughout, so a null link here means the phone was
+    // refused a link, not that this build has none to give.
+    const state = await withInstallId(async () => (await settle()).getSnapshot().state);
+
+    if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
+    expect(state.reason).toBe('unsupported-browser');
+    expect(state.canInstall).toBe(false);
+    expect(state.installUrl).toBeNull();
+  });
+
+  it('does not send Chrome-on-iOS to the Web Store — it is WebKit underneath', async () => {
+    installExtensionlessWindow({ userAgent: CHROME_IOS_UA });
+    const state = await withInstallId(async () => (await settle()).getSnapshot().state);
+
+    if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
+    expect(state.reason).toBe('unsupported-browser');
+    expect(state.installUrl).toBeNull();
+  });
+
+  it('tells desktop Safari and Firefox they cannot run it, with no dead link', async () => {
+    for (const userAgent of [SAFARI_DESKTOP_UA, FIREFOX_DESKTOP_UA]) {
+      resetExtensionBridge();
+      installExtensionlessWindow({ userAgent }, false);
+      const state = await withInstallId(async () => (await settle()).getSnapshot().state);
+
+      if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
+      expect(state.reason).toBe('unsupported-browser');
+      expect(state.canInstall).toBe(false);
+      expect(state.installUrl).toBeNull();
+      expect(state.message).toContain('Playin app');
+    }
+  });
+
+  it('trusts a live extension channel over the agent string', async () => {
+    // A browser we would not recognise, but something already injected the
+    // channel: presence proves this browser hosts extensions, so the funnel
+    // must still offer the link rather than deny it.
+    installFakeWindow(() => 'error');
+    const state = await withInstallId(async () => (await settle()).getSnapshot().state);
+
+    if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
+    expect(state.reason).toBe('not-installed');
+    expect(state.installUrl).not.toBeNull();
   });
 });
 

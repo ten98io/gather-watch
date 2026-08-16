@@ -6,9 +6,9 @@
  * DOM: this package's vitest runs in the `node` environment with no jsdom and
  * no testing-library, and the component is deliberately hook-free so a string
  * of HTML is enough to assert every piece of user-visible copy. The one thing
- * markup cannot show — that the "check again" control is wired to
- * `onRecheck` — is covered by calling the component as the plain function it
- * is and walking the element tree it returns.
+ * markup cannot show — which controls carry an event handler — is covered by
+ * calling the components as the plain functions they are and walking the
+ * element trees they return (see `walk`).
  *
  * The copy assertions are the point of the file: this screen is the whole
  * product for anyone opening a room link without the extension, and the two
@@ -58,15 +58,75 @@ function isElement(node: unknown): node is UnknownElement {
   return typeof node === 'object' && node !== null && '$$typeof' in node && 'props' in node;
 }
 
-/** Depth-first over whatever a component returned, without rendering it. */
-function walk(node: unknown, visit: (el: UnknownElement) => void): void {
+interface ForwardRefType {
+  render: (props: Record<string, unknown>, ref: null) => unknown;
+}
+
+function isForwardRef(type: unknown): type is ForwardRefType {
+  return (
+    typeof type === 'object' &&
+    type !== null &&
+    (type as { $$typeof?: unknown }).$$typeof === Symbol.for('react.forward_ref')
+  );
+}
+
+/** One level of rendering, by hand. `undefined` for a host element ('div',
+ *  'button'), which has nothing further to render. Safe with no renderer only
+ *  because every component on this surface is hook-free — the gate says so in
+ *  its header, and the ui primitives it reuses are presentational. */
+function renderOnce(el: UnknownElement): unknown {
+  const type: unknown = el.type;
+  if (typeof type === 'function') {
+    return (type as (props: Record<string, unknown>) => unknown)(el.props);
+  }
+  if (isForwardRef(type)) return type.render(el.props, null);
+  return undefined;
+}
+
+/**
+ * Depth-first over everything the surface actually puts on screen.
+ *
+ * Two things this has to do, because the version that did neither made the
+ * handler invariant below vacuous:
+ *   - descend through EVERY prop, not just `children`. The install CTA reaches
+ *     the screen through <EmptyState>'s `action` prop, so a children-only walk
+ *     never visits the most important control on the screen.
+ *   - call the components it meets. Nothing is rendered here, so <StoreLink> is
+ *     an opaque node until it is invoked, and a handler on the <a> inside it
+ *     would go unseen.
+ *
+ * A node handed through a prop is met a second time in what that component
+ * returned, so `seen` keeps it from being rendered twice — otherwise an inline
+ * handler would be counted once per encounter and the totals below would mean
+ * nothing.
+ */
+function walk(
+  node: unknown,
+  visit: (el: UnknownElement) => void,
+  seen: WeakSet<object> = new WeakSet(),
+): void {
   if (Array.isArray(node)) {
-    for (const child of node) walk(child, visit);
+    for (const child of node) walk(child, visit, seen);
     return;
   }
-  if (!isElement(node)) return;
+  if (!isElement(node) || seen.has(node)) return;
+  seen.add(node);
   visit(node);
-  walk(node.props['children'], visit);
+  for (const value of Object.values(node.props)) walk(value, visit, seen);
+  walk(renderOnce(node), visit, seen);
+}
+
+/** Every `on*` handler on the surface, deduped by identity: one handler passed
+ *  to <Button> and spread onto its <button> is met twice but is one handler,
+ *  whereas two distinct functions are two controls to reason about. */
+function handlersOn(node: unknown): Array<() => void> {
+  const found = new Set<() => void>();
+  walk(node, (el) => {
+    for (const [name, value] of Object.entries(el.props)) {
+      if (name.startsWith('on') && typeof value === 'function') found.add(value as () => void);
+    }
+  });
+  return [...found];
 }
 
 describe('ExtensionGate — the extension is missing', () => {
@@ -192,27 +252,41 @@ describe('ExtensionGate — re-checking after an install', () => {
     );
   });
 
-  it('is a real button and reports that it is working', () => {
+  it('is a real button, and keeps its focus while it works', () => {
     const html = render({
       status: 'not-installed',
       onRecheck: () => undefined,
       recheckPending: true,
     });
     expect(html).toContain('<button');
-    expect(html).toContain('disabled');
     expect(html).toContain('Checking…');
+    // Both assertions read the ATTRIBUTE, never the bare word: Button's base
+    // class list always ships `disabled:pointer-events-none disabled:opacity-50`,
+    // so `toContain('disabled')` stays true with the pending state deleted
+    // entirely and proves nothing. The native attribute is the defect — a
+    // browser blurs a focused element the moment it is set.
+    expect(html).toMatch(/<button[^>]*\saria-disabled="true"/);
+    expect(html).not.toMatch(/<button[^>]*\sdisabled(?=[\s=>])/);
   });
 
   it('calls onRecheck, and is the only handler on the surface', () => {
     const onRecheck = vi.fn();
-    const handlers: Array<() => void> = [];
-    walk(ExtensionGate(props({ status: 'not-installed', onRecheck })), (el) => {
-      const onClick = el.props['onClick'];
-      if (typeof onClick === 'function') handlers.push(onClick as () => void);
-    });
+    const handlers = handlersOn(ExtensionGate(props({ status: 'not-installed', onRecheck })));
     expect(handlers).toHaveLength(1);
     handlers[0]?.();
     expect(onRecheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the presses that land while it is already checking', () => {
+    const onRecheck = vi.fn();
+    // Staying focusable is the whole point, so the control is still live while
+    // pending and has to refuse the activation itself.
+    const handlers = handlersOn(
+      ExtensionGate(props({ status: 'not-installed', onRecheck, recheckPending: true })),
+    );
+    expect(handlers).toHaveLength(1);
+    handlers[0]?.();
+    expect(onRecheck).not.toHaveBeenCalled();
   });
 });
 
