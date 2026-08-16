@@ -11,6 +11,7 @@
  * ephemeral presence.diff is broadcast; clients refetch the member list.
  */
 import { randomInt } from 'node:crypto';
+import { normalizeInviteCode } from '@playin/contracts';
 import type {
   InviteCode,
   MemberRole,
@@ -34,7 +35,11 @@ const CTL_ORIGIN = newId();
 
 /** Invite-code alphabet: no easily-confused characters (l/o/0/1/i). */
 const INVITE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
-const INVITE_CODE_LENGTH = 8;
+/** 12 chars (displayed XXXX-XXXX-XXXX); legacy 8-char codes still join. */
+const INVITE_CODE_LENGTH = 12;
+
+/** Free-plan room lifetime; activity resets it. Premium rooms persist. */
+export const FREE_ROOM_TTL_MS = 4 * 60 * 60 * 1000;
 
 function newInviteCode(): string {
   let code = '';
@@ -127,6 +132,10 @@ export class RoomsService {
   ): Promise<{ room: RoomDoc; member: MemberDoc }> {
     const { store } = this.deps;
     const now = this.now();
+    // Free plan: rooms expire after FREE_ROOM_TTL_MS of inactivity; premium
+    // rooms (and their history) persist.
+    const entitlements = await getEntitlementsPort(this.deps).getFor(ownerId);
+    const expiresAt = entitlements.plan === 'free' ? now + FREE_ROOM_TTL_MS : null;
     const room = await this.insertWithFreshCode((code) =>
       store.rooms.insertOne({
         id: newId() as RoomId,
@@ -148,6 +157,7 @@ export class RoomsService {
         queue: { items: [], version: 0 },
         restream: null,
         master: null,
+        expiresAt,
         createdAt: now,
       }),
     );
@@ -210,10 +220,12 @@ export class RoomsService {
   ): Promise<{ room: RoomDoc; member: MemberDoc; lastEventSeq: number }> {
     const { store } = this.deps;
     const now = this.now();
+    // Join input is user-typed: hyphens/spaces/case are presentation noise.
+    const code = normalizeInviteCode(inviteCode);
 
-    let room = await store.rooms.findOne({ inviteCode: inviteCode as InviteCode });
+    let room = await store.rooms.findOne({ inviteCode: code as InviteCode });
     if (room === null) {
-      const invite = await store.invites.findById(inviteCode);
+      const invite = await store.invites.findById(code);
       if (invite === null || (invite.expiresAt !== null && invite.expiresAt < now)) {
         throw new AppError('NOT_FOUND', 'invite not found');
       }
@@ -481,8 +493,7 @@ export class RoomsService {
     );
   }
 
-  /** Toggle theater layout; enabling requires relay (premium) entitlement. */
-  async setTheater(roomId: string, callerId: string, enabled: boolean): Promise<RoomDoc> {
+  /** Toggle theater layout; enabling requires relay (premium) entitlement. */  async setTheater(roomId: string, callerId: string, enabled: boolean): Promise<RoomDoc> {
     const room = await this.requireRoom(roomId);
     const caller = await this.requireMember(roomId, callerId);
     this.requireRole(caller, 'host', 'moderator');
@@ -513,4 +524,82 @@ export class RoomsService {
       throw new AppError('FORBIDDEN', 'not a member');
     }
   }
+
+  /** Rename a room (host/moderator). Broadcasts room.updated. */
+  async renameRoom(roomId: string, callerId: string, name: string): Promise<RoomDoc> {
+    await this.requireRoom(roomId);
+    const caller = await this.requireMember(roomId, callerId);
+    this.requireRole(caller, 'host', 'moderator');
+    const updated = await this.deps.store.rooms.updateOne({ id: roomId as RoomId }, { name });
+    if (updated === null) {
+      throw new AppError('NOT_FOUND', 'room not found');
+    }
+    await this.deps.events.emit(updated.id, 'room.updated', serializeRoom(updated));
+    return updated;
+  }
+
+  /** Delete a room (host only): members + invites + the room row removed and
+   *  every live socket disconnected. Messages/events are left to the GDPR
+   *  cascade (they are room-scoped and unreadable once the room is gone), but
+   *  we remove them too — a deleted room should not linger as orphan rows. */
+  async deleteRoom(roomId: string, callerId: string): Promise<void> {
+    const room = await this.requireRoom(roomId);
+    const caller = await this.requireMember(roomId, callerId);
+    this.requireRole(caller, 'host');
+    const rid = roomId as RoomId;
+
+    const members = await this.deps.store.members.findMany({ roomId: rid });
+    for (const m of members) {
+      await this.removeFromRoom(roomId, m.userId, 'room deleted');
+      await this.deps.store.members.deleteOne({ id: m.id });
+    }
+    await this.deps.store.invites.deleteMany({ roomId: rid });
+    await this.deps.store.messages.deleteMany({ roomId: rid });
+    await this.deps.store.events.deleteMany({ roomId: rid });
+    await this.deps.store.cursors.deleteMany({ roomId: rid });
+    await this.deps.store.rooms.deleteOne({ id: room.id });
+  }
+}
+
+/** Sweep expired rooms (free-plan TTL). Returns the deleted room ids. */
+export async function sweepExpiredRooms(deps: Deps, now: number): Promise<string[]> {
+  const expired = await deps.store.rooms.findMany({ expiresAt: { $lte: now } });
+  const deleted: string[] = [];
+  for (const room of expired) {
+    try {
+      const members = await deps.store.members.findMany({ roomId: room.id });
+      for (const m of members) {
+        deps.hub.disconnectUser(room.id, m.userId, 4403, 'room expired');
+        await deps.store.members.deleteOne({ id: m.id });
+      }
+      await deps.store.invites.deleteMany({ roomId: room.id });
+      await deps.store.messages.deleteMany({ roomId: room.id });
+      await deps.store.events.deleteMany({ roomId: room.id });
+      await deps.store.cursors.deleteMany({ roomId: room.id });
+      await deps.store.rooms.deleteOne({ id: room.id });
+      deleted.push(room.id);
+    } catch (err) {
+      deps.log.warn({ err, roomId: room.id }, 'room expiry sweep failed for room');
+    }
+  }
+  return deleted;
+}
+
+export const ROOM_EXPIRY_SWEEP_INTERVAL_MS = 60 * 1000;
+
+/** Start the unref'd room-expiry sweeper; the returned stop function is
+ *  idempotent (same lifecycle contract as the compliance purge sweeper). */
+export function startRoomExpirySweeper(deps: Deps): () => void {
+  const timer = setInterval(() => {
+    sweepExpiredRooms(deps, Date.now()).catch((err: unknown) => {
+      deps.log.warn({ err }, 'room expiry sweep failed');
+    });
+  }, ROOM_EXPIRY_SWEEP_INTERVAL_MS);
+  timer.unref();
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
 }

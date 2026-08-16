@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError } from '@playin/api-client';
+import { formatInviteCode } from '@playin/contracts';
 import type { InviteCode } from '@playin/contracts';
 import { api, guestJoin } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -66,7 +67,7 @@ export function JoinClient({ code }: { code: InviteCode }) {
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
           <Logo size={52} />
           <h1 className="font-display text-display font-bold">You’re invited</h1>
-          <p className="font-mono text-sm tracking-widest text-aurora-1">{code}</p>
+          <p className="font-mono text-sm tracking-widest text-aurora-1">{formatInviteCode(code)}</p>
         </div>
 
         {loading ? null : user !== null ? (

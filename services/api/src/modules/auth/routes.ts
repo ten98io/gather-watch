@@ -39,6 +39,7 @@ function serializeRoom(room: RoomDoc): Room {
     policies: room.policies,
     relayMode: room.relayMode,
     theater: room.theater,
+    expiresAt: room.expiresAt,
     createdAt: room.createdAt,
   };
 }

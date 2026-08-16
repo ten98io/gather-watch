@@ -214,6 +214,18 @@ export type SetTheaterBody = z.infer<typeof SetTheaterBody>;
 export const SetTheaterResponse = z.object({ room: Room });
 export type SetTheaterResponse = z.infer<typeof SetTheaterResponse>;
 
+/** Rename a room (host/mods). */
+export const UpdateRoomBody = z.object({ name: z.string().min(1).max(120) });
+export type UpdateRoomBody = z.infer<typeof UpdateRoomBody>;
+
+export const UpdateRoomResponse = z.object({ room: Room });
+export type UpdateRoomResponse = z.infer<typeof UpdateRoomResponse>;
+
+/** Delete a room (host only): members, invites, and history removed;
+ *  live sockets are disconnected. */
+export const DeleteRoomResponse = Ok;
+export type DeleteRoomResponse = z.infer<typeof DeleteRoomResponse>;
+
 // ---------- messages ----------
 
 export const ListMessagesQuery = z.object({
@@ -688,6 +700,8 @@ export const rest = {
     banMember: { body: BanMemberBody, response: BanMemberResponse },
     createInvite: { body: CreateInviteBody, response: CreateInviteResponse },
     setTheater: { body: SetTheaterBody, response: SetTheaterResponse },
+    updateRoom: { body: UpdateRoomBody, response: UpdateRoomResponse },
+    deleteRoom: { response: DeleteRoomResponse },
   },
   messages: {
     listMessages: { query: ListMessagesQuery, response: ListMessagesResponse },

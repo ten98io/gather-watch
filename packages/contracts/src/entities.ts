@@ -24,6 +24,18 @@ export type AssetId = z.infer<typeof AssetId>;
 export const InviteCode = brandedId().min(4).max(16).brand<'InviteCode'>();
 export type InviteCode = z.infer<typeof InviteCode>;
 
+/** Display form of an invite code: 12-char codes render as XXXX-XXXX-XXXX;
+ *  legacy shorter codes render as-is. The hyphen is presentation-only —
+ *  join paths strip it. */
+export function formatInviteCode(code: string): string {
+  return code.length === 12 ? `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}` : code;
+}
+
+/** Normalize user input for join: strip hyphens/spaces, lowercase. */
+export function normalizeInviteCode(input: string): string {
+  return input.replace(/[-\s]/g, '').toLowerCase();
+}
+
 export const SessionId = brandedId().brand<'SessionId'>();
 export type SessionId = z.infer<typeof SessionId>;
 
@@ -76,6 +88,9 @@ export const Room = z.object({
   relayMode: RelayMode.default('mesh'),
   /** Theater layout: stage-focused view with the shared media front and center. */
   theater: z.boolean().default(false),
+  /** Free-plan rooms expire (default 4h, reset by activity); null = persists
+   *  (premium / legacy). Swept server-side; clients show a countdown. */
+  expiresAt: Timestamp.nullable().default(null),
   createdAt: Timestamp,
 });
 export type Room = z.infer<typeof Room>;

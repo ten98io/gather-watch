@@ -16,6 +16,7 @@ import type {
   ServerEventType,
   ServerPayloadOf,
 } from '../modules/types';
+import { FREE_ROOM_TTL_MS } from '../modules/rooms/service';
 
 /** Build a server envelope. The generic cast is safe: ServerPayloadOf<T> is
  *  exactly the payload of ServerEventOf<T> by construction. */
@@ -40,6 +41,23 @@ export function createEventWriter(deps: {
   const { store, bus, log } = deps;
   // roomId → tail of the per-room emit chain.
   const chains = new Map<string, Promise<unknown>>();
+  // roomId → last activity-bump ts (free-plan room TTL resets on activity,
+  // throttled to one store write per room per minute).
+  const lastActivityBump = new Map<string, number>();
+
+  const bumpRoomActivity = (roomId: string): void => {
+    const now = Date.now();
+    if (now - (lastActivityBump.get(roomId) ?? 0) < 60_000) return;
+    lastActivityBump.set(roomId, now);
+    void store.rooms
+      .updateOne(
+        { id: roomId as RoomId, expiresAt: { $ne: null } },
+        { expiresAt: now + FREE_ROOM_TTL_MS },
+      )
+      .catch((err: unknown) => {
+        log.warn({ err, roomId }, 'room activity bump failed');
+      });
+  };
 
   return {
     async emit<T extends ServerEventType>(
@@ -59,6 +77,7 @@ export function createEventWriter(deps: {
           ts: event.ts,
           payload,
         });
+        bumpRoomActivity(roomId);
         const message: RoomBusMessage = { event, targetUserId: null };
         await bus.publish(roomChannel(roomId), message);
         return event;

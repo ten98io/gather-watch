@@ -27,6 +27,7 @@ export class CallMesh {
   private readonly mesh: MeshManager;
   private readonly turn: TurnCredentialManager;
   private readonly unsubscribers: Array<() => void> = [];
+  private readonly localTrackSubs = new Set<(role: TrackRole, track: MediaStreamTrack | null) => void>();
   private started = false;
 
   constructor(private readonly conn: RoomConnection, private readonly localUserId: UserId) {
@@ -83,6 +84,15 @@ export class CallMesh {
   /** Publish/replace/remove a local track for a role on every peer link. */
   setLocalTrack(role: TrackRole, track: MediaStreamTrack | null): void {
     this.mesh.setLocalTrack(role, track as unknown as Parameters<MeshManager['setLocalTrack']>[1]);
+    for (const fn of [...this.localTrackSubs]) fn(role, track);
+  }
+
+  /** Local track changes (own cam preview in the call grid). */
+  onLocalTrack(fn: (role: TrackRole, track: MediaStreamTrack | null) => void): () => void {
+    this.localTrackSubs.add(fn);
+    return () => {
+      this.localTrackSubs.delete(fn);
+    };
   }
 
   /** Subscribe to remote tracks; `source` is the publishing user id. */

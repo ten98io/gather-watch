@@ -133,6 +133,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
           policies: room.policies,
           relayMode: room.relayMode,
           theater: room.theater,
+          expiresAt: room.expiresAt,
           createdAt: room.createdAt,
         },
         memberCount: await store.members.count({ roomId: room.id }),

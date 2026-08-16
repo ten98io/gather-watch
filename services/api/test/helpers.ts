@@ -86,6 +86,7 @@ export async function seedRoom(store: StorePort, ownerId?: string): Promise<Seed
     queue: { items: [], version: 0 },
     restream: null,
     master: null,
+    expiresAt: null,
   };
   await store.rooms.insertOne(room);
 

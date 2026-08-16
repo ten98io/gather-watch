@@ -8,6 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { formatInviteCode } from '@playin/contracts';
 import type { MemberRole, PresenceEntry, RoomId } from '@playin/contracts';
 import { api } from '@/lib/api';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
@@ -49,9 +50,10 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
 
   const copyInvite = async (): Promise<void> => {
     const link = `${window.location.origin}/join/${room.inviteCode}`;
+    const pretty = formatInviteCode(room.inviteCode);
     try {
       await navigator.clipboard.writeText(link);
-      toast.success('Invite link copied');
+      toast.success(`Invite copied: ${pretty}`);
     } catch {
       toast.error(link); // clipboard blocked — surface the link itself
     }

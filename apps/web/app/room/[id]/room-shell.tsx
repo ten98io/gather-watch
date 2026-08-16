@@ -5,11 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '@playin/api-client';
-import { SetTheaterResponse } from '@playin/contracts';
+import { SetTheaterResponse, formatInviteCode } from '@playin/contracts';
 import type { RoomId } from '@playin/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { toast } from '@/components/ui/toast';
+import { ExpiryChip, RoomMenu } from '@/components/room/RoomMenu';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -18,6 +19,7 @@ import { ChatPane } from '@/components/chat/ChatPane'; // wave 2
 import { QueuePane } from '@/components/queue/QueuePane'; // wave 2
 import { CallStrip } from '@/components/call/CallStrip'; // wave 2
 import { PeoplePane } from '@/components/people/PeoplePane'; // wave 2
+import { CallGrid } from '@/components/call/CallGrid';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -172,8 +174,12 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
         <Badge variant={room.kind === 'watch' ? 'aurora' : 'default'}>
           {room.kind === 'watch' ? 'Watch' : 'Listen'}
         </Badge>
-        <Badge variant="muted" className="hidden font-mono sm:inline-flex">{room.inviteCode}</Badge>
+        <Badge variant="muted" className="hidden font-mono sm:inline-flex">
+          {formatInviteCode(room.inviteCode)}
+        </Badge>
+        <ExpiryChip room={room} />
         {member.role !== 'member' && <Badge variant="default">{member.role}</Badge>}
+        <RoomMenu room={room} canManage={canToggleTheater} />
         {canToggleTheater && (
           <Button
             variant={room.theater ? 'secondary' : 'ghost'}
@@ -201,6 +207,7 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
         <div className="relative flex min-h-0 flex-1">
           <main className="relative min-w-0 flex-1" aria-label="Stage area">
             <ConnectionPill />
+            <CallGrid theater={room.theater} />
             <StagePane roomId={roomId} />
           </main>
           {room.theater ? (
@@ -228,6 +235,7 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
         <>
           <main className="relative min-h-0 flex-1" aria-label="Stage area">
             <ConnectionPill />
+            <CallGrid theater={room.theater} />
             <StagePane roomId={roomId} />
           </main>
           <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>

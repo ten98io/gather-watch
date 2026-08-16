@@ -323,6 +323,9 @@ export function Composer({
           disabled={disabled}
           rows={Math.min(4, Math.max(1, draft.split('\n').length))}
           aria-label="Message"
+          autoCorrect="on"
+          autoCapitalize="sentences"
+          spellCheck
           className="min-h-[40px] min-w-0 flex-1 resize-none rounded-ctl border border-border-glass bg-glass px-3 py-2 text-sm text-hi placeholder:text-low focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <Button

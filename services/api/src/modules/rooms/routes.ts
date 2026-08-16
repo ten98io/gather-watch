@@ -16,12 +16,13 @@ import {
   SetTheaterBody,
   TransferHostBody,
   UpdatePoliciesBody,
+  UpdateRoomBody,
 } from '@playin/contracts';
 import { AppError } from '../../lib/errors';
 import { requireAccount, requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import type { AuthContext } from '../types';
-import { RoomsService } from './service';
+import { RoomsService, startRoomExpirySweeper } from './service';
 import { getRoomsRuntime } from './runtime';
 import { serializeMember, serializeRoom } from './serialize';
 
@@ -37,7 +38,9 @@ function assertGuestScope(auth: AuthContext, roomId: string): void {
 export const roomsRoutes: FastifyPluginAsync = async (app) => {
   const service = new RoomsService(app.deps);
   const runtime = getRoomsRuntime(app.deps);
+  const stopExpirySweeper = startRoomExpirySweeper(app.deps);
   app.addHook('onClose', async () => {
+    stopExpirySweeper();
     await runtime.close();
   });
 
@@ -168,6 +171,21 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
     const body = parseWith(SetTheaterBody, request.body);
     const room = await service.setTheater(request.params.roomId, auth.userId, body.enabled);
     return { room: serializeRoom(room) };
+  });
+
+  app.patch<RoomParams>('/rooms/:roomId', async (request) => {
+    const auth = requireAuth(request);
+    assertGuestScope(auth, request.params.roomId);
+    const body = parseWith(UpdateRoomBody, request.body);
+    const room = await service.renameRoom(request.params.roomId, auth.userId, body.name);
+    return { room: serializeRoom(room) };
+  });
+
+  app.delete<RoomParams>('/rooms/:roomId', async (request) => {
+    const auth = requireAuth(request);
+    assertGuestScope(auth, request.params.roomId);
+    await service.deleteRoom(request.params.roomId, auth.userId);
+    return { ok: true as const };
   });
 
   app.post('/push/room-mute', async (request) => {

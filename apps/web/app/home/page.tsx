@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AdminOverviewResponse } from '@playin/contracts';
+import { AdminOverviewResponse, normalizeInviteCode } from '@playin/contracts';
 import type { RoomKind } from '@playin/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -125,9 +125,9 @@ export default function HomePage() {
 
   const joinByCode = (e: FormEvent) => {
     e.preventDefault();
-    const trimmed = code.trim();
-    if (trimmed.length === 0) return;
-    router.push(`/join/${encodeURIComponent(trimmed)}`);
+    const normalized = normalizeInviteCode(code);
+    if (normalized.length === 0) return;
+    router.push(`/join/${encodeURIComponent(normalized)}`);
   };
 
   return (

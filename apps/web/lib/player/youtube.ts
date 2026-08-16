@@ -115,6 +115,8 @@ export class YouTubeAdapter implements PlayerAdapter {
             playsinline: 1,
             disablekb: 1, // room keyboard map owns the keys (DESIGN.md §9)
             modestbranding: 1,
+            iv_load_policy: 3, // no in-video annotations
+            fs: 0, // no fullscreen button — the room's own chrome handles it
           },
           events: {
             onReady: () => {

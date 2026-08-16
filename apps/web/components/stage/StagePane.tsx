@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 import { EmoteOverlay } from './EmoteOverlay';
+import { ListenStage } from './ListenStage';
 import { PlayerControls } from './PlayerControls';
 import { ModeBStage } from './ModeBStage';
 
@@ -327,22 +328,32 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
           <>
             {/* Both mount points stay in the tree; the inactive one is hidden
                 so adapters survive transient state without re-mounting. */}
-            <div className={cn('h-full w-full', adapterKind === 'youtube' ? 'flex items-center justify-center' : 'hidden')}>
-              <div ref={ytContainerRef} className="aspect-video max-h-full w-full" />
+            {/* YouTube chrome is suppressed: the iframe is inert
+                (pointer-events-none) and a click layer toggles play/pause —
+                the room's transport bar is the ONLY control surface. */}
+            <div className={cn('relative h-full w-full', adapterKind === 'youtube' ? 'flex items-center justify-center' : 'hidden')}>
+              <div ref={ytContainerRef} className="pointer-events-none aspect-video max-h-full w-full" />
+              {adapterKind === 'youtube' && playback !== null && (
+                <button
+                  type="button"
+                  aria-label={playback.playing ? 'Pause' : 'Play'}
+                  className="absolute inset-0 h-full w-full cursor-pointer"
+                  onClick={() => {
+                    if (!controlEnabled || adapter === null) return;
+                    if (playback.playing) connection.syncPause(adapter.positionMs());
+                    else connection.syncPlay(adapter.positionMs());
+                  }}
+                />
+              )}
             </div>
             {listen ? (
-              <div className={cn('flex w-full flex-col items-center gap-4 p-6', adapterKind === 'native' ? '' : 'hidden')}>
-                <div className="glass-panel flex h-48 w-48 items-center justify-center rounded-panel shadow-glow">
-                  {currentItem?.artworkUrl != null ? (
-                    <img
-                      src={currentItem.artworkUrl}
-                      alt=""
-                      className="h-full w-full rounded-panel object-cover"
-                    />
-                  ) : (
-                    <span aria-hidden className="text-5xl">🎧</span>
-                  )}
-                </div>
+              <div className={cn('flex w-full flex-col items-center gap-4 p-6', adapterKind === 'native' || mediaRef === null ? '' : 'hidden')}>
+                <ListenStage
+                  adapter={adapter}
+                  currentItem={currentItem}
+                  playing={playback?.playing === true}
+                />
+                {/* The audio element is the real player — visualizer taps it. */}
                 <video ref={mediaElRef} className="hidden" playsInline crossOrigin="anonymous" />
               </div>
             ) : (
@@ -357,7 +368,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 aria-label="Shared video"
               />
             )}
-            {mediaRef === null && <EmptyStage listen={listen} />}
+            {mediaRef === null && !listen && <EmptyStage listen={listen} />}
           </>
         )}
         <SyncPulse pulseKey={pulseKey} />

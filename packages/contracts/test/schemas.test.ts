@@ -150,6 +150,7 @@ const room = {
   policies,
   relayMode: 'mesh',
   theater: false,
+  expiresAt: null,
   createdAt: TS,
 };
 
