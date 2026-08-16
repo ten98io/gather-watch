@@ -15,7 +15,12 @@
  * All decisions come from the pure modules; this file is DOM plumbing only.
  *
  * Protocol with the background worker:
- *   ← { kind: 'drive', playing, positionMs, rate }   apply room state
+ *   ← { kind: 'drive', playing, positionMs, rate, elastic? }
+ *          Apply the room's decision. `elastic` (driver.ts's
+ *          {@link ElasticDirective}) is the decision itself and wins whenever
+ *          it is present and well-formed; `playing`/`positionMs`/`rate` are
+ *          the legacy shape, kept so an OLD build of this script still
+ *          reproduces that decision under its own fixed bands. See drive().
  *   ← { kind: 'driveOff' }                            release the element
  *   ← { kind: 'frameRole', role: 'driver' | 'idle' }  election result
  *   ← { kind: 'castNative' } → { clicked, reason }    press the site's own
@@ -27,6 +32,8 @@
 import { performNativeCast } from './cast';
 import type { CastResult, CastTarget } from './cast';
 import { WEB_ORIGINS } from './config';
+import { appliesVerbatim, elasticDecision, parseElasticDirective } from './driver';
+import type { ElasticDirective } from './driver';
 import {
   applyDecision,
   decideDrive,
@@ -62,7 +69,13 @@ const MAX_SCAN_ELEMENTS = 8000;
 
 let driven = false;
 let role: 'driver' | 'idle' = 'idle';
-let lastCommand: { playing: boolean; positionMs: number; rate: number } | null = null;
+let lastCommand: {
+  playing: boolean;
+  positionMs: number;
+  rate: number;
+  /** null when the worker sent no block, or sent one we cannot trust. */
+  elastic: ElasticDirective | null;
+} | null = null;
 
 let cachedMedia: HTMLMediaElement | null = null;
 let scanDirty = true;
@@ -183,16 +196,42 @@ function reportProvider(): void {
 // Driving
 // ---------------------------------------------------------------------------
 
+/**
+ * Apply the room's latest decision to this frame's element.
+ *
+ * The background worker's elastic driver holds the telemetry history, the
+ * learned per-viewer anchor and the seek rate-limiter, so when it sends an
+ * `elastic` block that decision is FINAL and goes to the element unaltered.
+ * Never re-derive it here from `positionMs`: doing so corrects toward a raw
+ * position the anchor deliberately moved away from, seeks on this frame's
+ * schedule rather than the rate-limiter's, and overrides every deliberate
+ * non-correction ('stalled', 'seek-suppressed', 'rate-locked') — each of which
+ * means send the player nothing at all.
+ *
+ * Two cases still belong to this frame, and both land on mediaDriver's legacy
+ * fixed bands: a message carrying no usable block (an older worker driving a
+ * newer content script), and the worker's own 'no-telemetry' decision, which
+ * says nothing is reporting back to it and we are on our own.
+ */
 function drive(): void {
   if (!driven || lastCommand === null) return;
   const el = currentMedia();
   if (el === null) return;
-  const telemetry = readTelemetry(el as MediaElementLike);
-  const decision = decideDrive(telemetry, lastCommand.positionMs, {
-    playing: lastCommand.playing,
-    rate: lastCommand.rate,
-  });
-  applyDecision(el as MediaElementLike, decision);
+  const media = el as MediaElementLike;
+
+  const directive = lastCommand.elastic;
+  if (directive !== null && appliesVerbatim(directive)) {
+    applyDecision(media, elasticDecision(directive));
+    return;
+  }
+
+  applyDecision(
+    media,
+    decideDrive(readTelemetry(media), lastCommand.positionMs, {
+      playing: lastCommand.playing,
+      rate: lastCommand.rate,
+    }),
+  );
 }
 
 function sendTelemetry(): void {
@@ -266,6 +305,7 @@ chrome.runtime.onMessage.addListener(
           playing: msg['playing'] === true,
           positionMs: typeof msg['positionMs'] === 'number' ? msg['positionMs'] : 0,
           rate: typeof msg['rate'] === 'number' ? msg['rate'] : 1,
+          elastic: parseElasticDirective(msg['elastic']),
         };
         drive();
         return false;

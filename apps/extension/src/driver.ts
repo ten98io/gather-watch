@@ -3,7 +3,7 @@
  *  PlaybackDriver — the one contract — and the extension's elastic corrector
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Two things live here, and they are deliberately separate:
+ * Three things live here, and they are deliberately separate:
  *
  *  1. {@link PlaybackDriver}: the interface EVERY playback surface implements
  *     (docs/EXTENSION_FIRST.md, Part 2 "One contract, three implementations").
@@ -17,6 +17,12 @@
  *     commands. It never touches the DOM, chrome.* or Date.now — every input
  *     arrives as an argument — which is what makes the whole sync policy
  *     unit-testable.
+ *
+ *  3. {@link ElasticDirective} and its parser: that decision as it crosses to
+ *     the content script, which applies it verbatim. The decision is made
+ *     ONCE, here; anything downstream that re-derives it from raw positions
+ *     defeats the learned anchor, the seek rate-limiter and every deliberate
+ *     non-correction ('stalled', 'seek-suppressed', 'rate-locked').
  *
  * ── Why a driver contract and not just an adapter ──────────────────────────
  * apps/web's `PlayerAdapter` OWNS its player: it created the <video> or the
@@ -46,6 +52,8 @@
 import { DriftController, LISTEN_ELASTIC, STRICT_SYNC, WATCH_ELASTIC } from '@playin/sync-core';
 import type { ElasticDriftOptions } from '@playin/sync-core';
 import type { MediaRef } from '@playin/contracts';
+
+import type { DriveDecision } from './mediaDriver';
 
 /* ═════════════════════════ 1. the shared contract ════════════════════════ */
 
@@ -313,6 +321,102 @@ export interface DriveCommand {
   reason: DriveReason;
 }
 
+/* ── the wire block: this decision, carried to the content script ── */
+
+/**
+ * A {@link DriveCommand} as it crosses the process boundary — background.ts's
+ * drive loop puts this on the `drive` message as `elastic`, and the content
+ * script applies it VERBATIM.
+ *
+ * It is narrowed to what may actually touch a player. `wirePositionMs` belongs
+ * to the message rather than here (it is the compatibility shim for a content
+ * script that predates this block), and `driftMs`/`anchorOffsetMs` are carried
+ * for a HUD that does not exist inside a content frame — so neither is parsed.
+ */
+export interface ElasticDirective {
+  transport: 'play' | 'pause' | 'none';
+  seekToMs: number | null;
+  setRate: number | null;
+  /**
+   * The worker's own label for this decision. Descriptive only — the three
+   * fields above are what happens. Kept as a plain string, not a
+   * {@link DriveReason}, because a reason a newer worker invented must not
+   * cost us a perfectly good command. Empty when none was sent.
+   */
+  reason: string;
+}
+
+/** Browsers cap playbackRate here; past it (or at or below zero) the number on
+ *  the wire is corruption, not a decision. */
+const MAX_WIRE_RATE = 16;
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * Read the `elastic` block off a `drive` message.
+ *
+ * It arrives from a worker that may be a DIFFERENT BUILD of this extension, so
+ * nothing here is trusted: anything unexpected in the three command fields
+ * returns null and the caller falls back to the legacy fixed-band corrector
+ * rather than guessing what was meant. Total — it runs inside the drive loop
+ * and must never throw.
+ */
+export function parseElasticDirective(raw: unknown): ElasticDirective | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+
+  const transport = r['transport'];
+  if (transport !== 'play' && transport !== 'pause' && transport !== 'none') return null;
+
+  // `null` is the explicit "leave it alone"; absent is not the same thing, and
+  // a build that forgot the field is one we cannot second-guess.
+  const seekToMs = r['seekToMs'];
+  if (seekToMs !== null && !isFiniteNumber(seekToMs)) return null;
+
+  const setRate = r['setRate'];
+  if (setRate !== null && !isFiniteNumber(setRate)) return null;
+  if (setRate !== null && (setRate <= 0 || setRate > MAX_WIRE_RATE)) return null;
+
+  return {
+    transport,
+    seekToMs,
+    setRate,
+    reason: typeof r['reason'] === 'string' ? r['reason'] : '',
+  };
+}
+
+/**
+ * Is this decision the worker's to make? Every reason but one is.
+ *
+ * 'no-telemetry' is the worker saying nothing is reporting back to it, and the
+ * drive loop sends that one otherwise-idle command precisely so the content
+ * script keeps following the room under its own local bands. Honouring it
+ * verbatim would mean doing nothing at all, forever, on a tab whose telemetry
+ * never arrives.
+ */
+export function appliesVerbatim(directive: ElasticDirective): boolean {
+  return directive.reason !== 'no-telemetry';
+}
+
+/**
+ * The directive as a command for one media element.
+ *
+ * Deliberately a rename and nothing more: the worker owns the telemetry, the
+ * learned anchor and the seek rate-limiter, so re-deriving any of this
+ * downstream is the defect this function exists to close. 'idle', 'stalled',
+ * 'seek-suppressed' and 'rate-locked' name themselves by carrying none of the
+ * three fields, and the player is then sent nothing at all.
+ */
+export function elasticDecision(directive: ElasticDirective): DriveDecision {
+  return {
+    seekToMs: directive.seekToMs,
+    setRate: directive.setRate,
+    action: directive.transport,
+  };
+}
+
 /** Observable driver state, for HUDs and the honest room-status string. */
 export interface ElasticDriverState {
   profile: SyncProfile;
@@ -398,8 +502,6 @@ export class ElasticDriver {
   private voiceActive = false;
   private stalled = false;
   private driftMs = 0;
-  /** A host intent (seek / track change) is waiting to be applied verbatim. */
-  private pendingRealign = false;
 
   constructor(opts?: ElasticDriverOptions) {
     this.profileName = opts?.profile ?? 'watch';

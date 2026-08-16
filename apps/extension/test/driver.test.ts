@@ -6,13 +6,22 @@ import {
   OBSERVER_CAPABILITIES,
   SYNC_PRESETS,
   TELEMETRY_STALE_MS,
+  appliesVerbatim,
+  elasticDecision,
   mediaKeyOf,
+  parseElasticDirective,
   profileForContent,
   projectedPositionMs,
   syncStatusLabel,
   voiceActiveFrom,
 } from '../src/driver';
-import type { DriveCommand, DriverTelemetry, RoomFrame } from '../src/driver';
+import type {
+  DriveCommand,
+  DriveReason,
+  DriverTelemetry,
+  ElasticDirective,
+  RoomFrame,
+} from '../src/driver';
 import { LEGACY_BANDS, decideDrive } from '../src/mediaDriver';
 
 /* ── a player that can be told to misbehave in the ways real ones do ── */
@@ -468,6 +477,122 @@ describe('ElasticDriver — the wire contract with the content script', () => {
     expect(projectedPositionMs({ ...sample, playing: false }, 1500)).toBe(10_000);
     // Clock going backwards must never rewind the projection.
     expect(projectedPositionMs(sample, 0)).toBe(10_000);
+  });
+});
+
+describe('the elastic block, as it crosses to the content script', () => {
+  /** The block exactly as background.ts's drive loop puts it on the wire. */
+  const wireBlock = (cmd: DriveCommand): Record<string, unknown> => ({
+    transport: cmd.transport,
+    seekToMs: cmd.seekToMs,
+    setRate: cmd.setRate,
+    driftMs: Math.round(cmd.driftMs),
+    anchorOffsetMs: Math.round(cmd.anchorOffsetMs),
+    reason: cmd.reason,
+  });
+
+  const directive = (reason: string): ElasticDirective => ({
+    transport: 'none',
+    seekToMs: null,
+    setRate: null,
+    reason,
+  });
+
+  it('carries every decision a real run produces, unchanged', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const { commands } = simulate(driver, { ticks: 40, lagMs: 9000, stallTicks: [5, 6] });
+    // A run that produced only one kind of decision would prove nothing.
+    expect(new Set(commands.map((c) => c.reason)).size).toBeGreaterThan(2);
+
+    for (const cmd of commands) {
+      const parsed = parseElasticDirective(wireBlock(cmd));
+      expect(parsed).not.toBeNull();
+      if (parsed === null) continue;
+      expect(elasticDecision(parsed)).toEqual({
+        seekToMs: cmd.seekToMs,
+        setRate: cmd.setRate,
+        action: cmd.transport,
+      });
+    }
+  });
+
+  it('turns a decision to do nothing into nothing at all for the player', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const { commands } = simulate(driver, { ticks: 30, lagMs: 8000 });
+    const doNothing = commands.filter((c) => c.idle);
+    expect(doNothing.length).toBeGreaterThan(0);
+
+    for (const cmd of doNothing) {
+      const parsed = parseElasticDirective(wireBlock(cmd));
+      expect(parsed === null ? null : elasticDecision(parsed)).toEqual({
+        seekToMs: null,
+        setRate: null,
+        action: 'none',
+      });
+    }
+  });
+
+  it('refuses a block it cannot trust, so the caller falls back instead of guessing', () => {
+    const good = { transport: 'none', seekToMs: null, setRate: null, reason: 'idle' };
+    expect(parseElasticDirective(good)).not.toBeNull();
+
+    const untrustworthy: unknown[] = [
+      null,
+      undefined,
+      'none',
+      42,
+      [],
+      { ...good, transport: 'stop' },
+      { seekToMs: null, setRate: null, reason: 'idle' }, // no transport at all
+      { transport: 'none', setRate: null, reason: 'idle' }, // no seek field
+      { transport: 'none', seekToMs: null, reason: 'idle' }, // no rate field
+      { ...good, seekToMs: '600000' },
+      { ...good, seekToMs: Number.NaN },
+      { ...good, seekToMs: Number.POSITIVE_INFINITY },
+      { ...good, setRate: 0 },
+      { ...good, setRate: -1 },
+      { ...good, setRate: 17 },
+      { ...good, setRate: Number.NaN },
+    ];
+    for (const raw of untrustworthy) expect(parseElasticDirective(raw)).toBeNull();
+  });
+
+  it('lets a HUD number be wrong without costing a perfectly good command', () => {
+    // driftMs and anchorOffsetMs are report-only; a content frame shows nothing.
+    expect(
+      parseElasticDirective({
+        transport: 'none',
+        seekToMs: null,
+        setRate: 1.03,
+        driftMs: Number.NaN,
+        anchorOffsetMs: 'lots',
+        reason: 'nudge',
+      }),
+    ).toEqual({ transport: 'none', seekToMs: null, setRate: 1.03, reason: 'nudge' });
+  });
+
+  it('keeps a reason it has never heard of, and says so when none was sent', () => {
+    // A newer worker's vocabulary must not cost us its command.
+    expect(parseElasticDirective({ ...directive('ad-break') })?.reason).toBe('ad-break');
+    expect(
+      parseElasticDirective({ transport: 'none', seekToMs: null, setRate: null })?.reason,
+    ).toBe('');
+  });
+
+  it('hands the decision back only when the worker had no telemetry', () => {
+    expect(appliesVerbatim(directive('no-telemetry'))).toBe(false);
+    const owned: DriveReason[] = [
+      'idle',
+      'transport',
+      'nudge',
+      'seek',
+      'seek-suppressed',
+      'stalled',
+      'rate-locked',
+      'restore-rate',
+    ];
+    for (const reason of owned) expect(appliesVerbatim(directive(reason))).toBe(true);
+    expect(appliesVerbatim(directive(''))).toBe(true);
   });
 });
 
