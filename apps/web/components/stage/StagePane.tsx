@@ -367,19 +367,26 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     return () => clearTimeout(h);
   }, [fullSync, wantsPlay, localReady, localPlaying, localBuffering, mediaIdentity, startAttempt]);
 
-  /** Is a provider surface with its own chrome on screen for us to shield?
-   *  Not for Mode B (the share owns the stage), not for approximate-tier
-   *  embeds (their iframe is the only control they have), and not for a
-   *  listen room's hidden audio element (ListenStage owns that space). */
-  const providerSurface =
-    !showModeB &&
-    playback !== null &&
-    mediaRef !== null &&
-    fullSync &&
-    !(listen && adapterKind === 'native');
+  /** Are we driving a player on this device at all? True for every full-sync
+   *  source in either kind of room — it is what decides whether a refused
+   *  start is worth recovering, independent of who draws the surface. Not for
+   *  Mode B (the share owns the stage) and not for approximate-tier embeds
+   *  (their iframe is the only control they have). */
+  const drivenSurface = !showModeB && playback !== null && mediaRef !== null && fullSync;
+
+  /** Is there provider chrome on screen for us to shield? Only in a watch
+   *  room: a listen room shows the artwork hero and keeps the provider's
+   *  iframe mounted but invisible behind it, so there is nothing to cover —
+   *  and a shield there would hide the very identity the room is for. */
+  const providerSurface = drivenSurface && !listen;
+
+  /** A listen room's full-sync provider: audible, never visible. Native audio
+   *  is excluded because its element is already offscreen, and approximate
+   *  embeds because their iframe is the only control surface they have. */
+  const providerAudioOnly = listen && fullSync && adapterKind !== 'native';
 
   const gate = stageGate({
-    active: providerSurface,
+    active: drivenSurface,
     wantsPlay,
     localPlaying,
     blocked: playRefused || startStalled,
@@ -568,10 +575,20 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 iframe is the only control surface that exists. */}
             <div
               className={cn(
-                'relative h-full w-full',
+                'h-full w-full',
                 adapterKind !== null && adapterKind !== 'native'
                   ? 'flex items-center justify-center'
                   : 'hidden',
+                // In a listen room a full-sync provider is an audio source, not
+                // a picture. Its iframe stays mounted and playing but invisible
+                // behind the hero — opacity rather than `hidden`, because
+                // display:none suspends these players in some browsers.
+                // `absolute` and `relative` are mutually exclusive here on
+                // purpose: cn() is a plain joiner, and Tailwind emits
+                // `.relative` after `.absolute`, so emitting both loses.
+                providerAudioOnly
+                  ? 'pointer-events-none absolute inset-0 opacity-0'
+                  : 'relative',
               )}
             >
               <div
@@ -591,7 +608,9 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
               <div
                 className={cn(
                   'relative h-full w-full',
-                  adapterKind === 'native' || mediaRef === null ? '' : 'hidden',
+                  // Approximate-tier embeds keep their own visible player; every
+                  // other source in a listen room plays behind the hero.
+                  adapterKind === 'embed' ? 'hidden' : '',
                 )}
               >
                 <ListenStage
@@ -600,6 +619,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                   playing={playback?.playing === true}
                   queueItems={queueItems}
                   currentIndex={playback?.queueIndex ?? null}
+                  blocked={gate === 'blocked'}
+                  onActivate={activateStage}
                   {...(transportNode !== null ? { transport: transportNode } : {})}
                 />
                 {/* The audio element is the real player — visualizer taps it. */}

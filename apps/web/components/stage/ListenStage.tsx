@@ -154,6 +154,8 @@ export function ListenStage({
   queueItems,
   currentIndex,
   transport,
+  blocked = false,
+  onActivate,
 }: {
   adapter: PlayerAdapter | null;
   currentItem: QueueItem | undefined;
@@ -164,6 +166,10 @@ export function ListenStage({
   currentIndex: number | null;
   /** The room's real transport, rendered inline under the hero. */
   transport?: ReactNode;
+  /** This browser refused to start playback; only a user gesture can fix it. */
+  blocked?: boolean;
+  /** Runs that gesture — recovers the refused start on this device. */
+  onActivate?: () => void;
 }) {
   const artworkUrl = currentItem?.artworkUrl ?? null;
   const [accent, setAccent] = useState<string>(ARTWORK_FALLBACK_ACCENT);
@@ -197,54 +203,73 @@ export function ListenStage({
     >
       <ArtworkBackdrop src={artworkUrl} />
 
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center gap-5 overflow-y-auto px-4 py-6">
-        {currentItem === undefined ? (
-          <EmptyState
-            icon={<MusicIcon size={22} />}
-            title="Nothing playing yet"
-            description="Add a track from the Queue tab — everyone hears the same beat, in time."
-          />
-        ) : (
-          <>
-            {/* Hero: one column, narrow enough to work on a phone. */}
-            <div className="flex w-full max-w-[19rem] flex-col items-center gap-4 sm:max-w-sm">
-              <NowPlaying
-                variant="hero"
-                showProgress={false}
-                title={currentItem.title}
-                kind="music"
-                artworkUrl={artworkUrl}
-                provider={providerLabel(currentItem.mediaRef)}
-              />
-              {/* Inline, not a floating video-style bar: nothing here needs to
-                  get out of the way of moving picture. */}
-              {transport !== undefined && <div className="w-full">{transport}</div>}
-            </div>
-
-            <Visualizer adapter={adapter} playing={playing} accent={accent} />
-          </>
-        )}
-
-        {upNext.length > 0 && (
-          <section className="w-full max-w-sm" aria-label="Up next">
-            <h3 className="px-1 pb-1 text-label uppercase tracking-wide text-low">Up next</h3>
-            <ul className="flex flex-col">
-              {upNext.map((item) => (
-                <MediaRow
-                  as="li"
-                  key={item.id}
-                  artwork={{ src: item.artworkUrl, alt: item.title, kind: 'music' }}
-                  title={item.title}
-                  meta={
-                    item.durationMs === null
-                      ? providerLabel(item.mediaRef)
-                      : `${providerLabel(item.mediaRef)} · ${formatMs(item.durationMs)}`
-                  }
+      {/* The scroll port and the centring are separate elements on purpose.
+          `justify-center` on a scrolling box clips overflow at the top and
+          puts it out of reach of the scrollbar; centring an inner min-h-full
+          column centres while it fits and scrolls from the top once hero,
+          transport and up-next together outgrow the stage. */}
+      <div className="relative z-10 min-h-0 flex-1 overflow-y-auto">
+        <div className="flex min-h-full w-full flex-col items-center justify-center gap-5 px-4 py-6">
+          {currentItem === undefined ? (
+            <EmptyState
+              icon={<MusicIcon size={22} />}
+              title="Nothing playing yet"
+              description="Add a track from the Queue tab — everyone hears the same beat, in time."
+            />
+          ) : (
+            <>
+              {/* Hero: one column, narrow enough to work on a phone. */}
+              <div className="flex w-full max-w-[19rem] flex-col items-center gap-4 sm:max-w-sm">
+                <NowPlaying
+                  variant="hero"
+                  showProgress={false}
+                  title={currentItem.title}
+                  kind="music"
+                  artworkUrl={artworkUrl}
+                  provider={providerLabel(currentItem.mediaRef)}
                 />
-              ))}
-            </ul>
-          </section>
-        )}
+                {/* Inline, not a floating video-style bar: nothing here needs to
+                    get out of the way of moving picture. */}
+                {transport !== undefined && <div className="w-full">{transport}</div>}
+
+                {/* Autoplay reality: the room is playing but this browser refused
+                    to start. One plain affordance, never a silent dead player. */}
+                {blocked && onActivate !== undefined && (
+                  <button
+                    type="button"
+                    onClick={onActivate}
+                    className="glass-raised w-full rounded-ctl px-3 py-2 text-body text-hi transition-colors hover:text-accent"
+                  >
+                    Tap to start listening together
+                  </button>
+                )}
+              </div>
+
+              <Visualizer adapter={adapter} playing={playing} accent={accent} />
+            </>
+          )}
+
+          {upNext.length > 0 && (
+            <section className="w-full max-w-sm" aria-label="Up next">
+              <h3 className="px-1 pb-1 text-label uppercase tracking-wide text-low">Up next</h3>
+              <ul className="flex flex-col">
+                {upNext.map((item) => (
+                  <MediaRow
+                    as="li"
+                    key={item.id}
+                    artwork={{ src: item.artworkUrl, alt: item.title, kind: 'music' }}
+                    title={item.title}
+                    meta={
+                      item.durationMs === null
+                        ? providerLabel(item.mediaRef)
+                        : `${providerLabel(item.mediaRef)} · ${formatMs(item.durationMs)}`
+                    }
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );
