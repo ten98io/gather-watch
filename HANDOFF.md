@@ -6,6 +6,30 @@ Pick this up in a fresh session. Read this file first, then
 
 ---
 
+## ⚡ LIVE: gather.watch is deployed and serving (2026-08-17)
+
+Railway project **Gather**: `api` + `web` + `Redis` (media service DELETED —
+users never upload streams; chat attachments use the `attachments` Railway
+Bucket in `ams` via reference variables). Email: Cloudflare Email Service,
+sender `email.gather.watch`. Repo: `mustafagandhi/gather-watch`. The brand is
+**Gather**; `@playin/*` became `@gather/*` (boundary-aware rename — `playing`
+untouched).
+
+Shipped since the last handoff revision, all verified: extension-preferred
+driving (step 2), the free-tier TURN relay cap, local intent capture (your
+hand on the site's player speaks for you), one design system in
+`packages/design` (WCAG guards incl. ink-on-fill), the injected overlay on
+shared tokens, attachments read via stable capability URLs
+(`/assets/:id/content` → 60s presigned GET), and **adaptive rooms** — the
+watch/listen choice is gone; `mediaKindFor(ref)` routes the stage per playing
+item (`room.kind` is vestigial on the wire, drives nothing).
+
+Still open: config-as-code paths in the Railway dashboard (deploys hard-swap
+until set — user-visible blink), LiveKit deletion (approved, post-launch),
+relay-guard residuals (task chip), web-slimming deletions (still gated),
+mobile RN type defects (hero size, unbundled mono font). `docs/COST_MODEL.md`
+holds verified rates and the two unclosable lines.
+
 ## Status: the room work is VERIFIED and on `main`
 
 The previous session's tree was never actually broken — the build failure was
