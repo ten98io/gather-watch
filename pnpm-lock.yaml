@@ -39,6 +39,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sync-core
     devDependencies:
+      '@playin/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       '@types/chrome':
         specifier: ^0.2.6
         version: 0.2.6

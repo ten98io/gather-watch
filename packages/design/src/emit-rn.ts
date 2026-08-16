@@ -14,14 +14,21 @@
  * be maintained twice.
  */
 
-import type { ColorTokenName, ThemeName } from './tokens';
+import type { ColorTokenName, FillTokenName, ThemeName } from './tokens';
 import type { FontFamily, Layout, Motion, RadiusName, SpacingName, TypeStepName } from './scales';
-import { COLOR_TOKEN_NAMES, resolveColorToken } from './tokens';
+import { COLOR_TOKEN_NAMES, FILL_TOKENS, inkOn, resolveColorToken } from './tokens';
 import { formatRgba } from './emit-css';
 import { fontFamily, layout, motion, radii, spacing, typeRamp } from './scales';
 
 /** Every token as a colour string RN understands: `#rrggbb` or `rgba(r,g,b,a)`. */
 export type RnPalette = Readonly<Record<ColorTokenName, string>>;
+
+/**
+ * The label colour for each filled control, already chosen against that fill.
+ * RN has no custom properties, so the choice is resolved here rather than
+ * deferred to a `var()` the way the CSS emitter can.
+ */
+export type RnInkOnFill = Readonly<Record<FillTokenName, string>>;
 
 /** RN wants font weight as a string and letter spacing in px, not em. */
 export interface RnTypeStep {
@@ -58,6 +65,7 @@ export interface RnGlow {
 export interface RnTheme {
   readonly name: ThemeName;
   readonly palette: RnPalette;
+  readonly inkOn: RnInkOnFill;
   readonly auroraGradient: RnAuroraGradient;
   readonly glow: RnGlow;
   readonly type: RnTypeRamp;
@@ -75,6 +83,20 @@ export function emitRnPalette(theme: ThemeName): RnPalette {
     const resolved = resolveColorToken(theme, name);
     out[name] = resolved.kind === 'overlay' ? formatRgba(resolved.hex, resolved.alpha) : resolved.hex;
   }
+  return out;
+}
+
+/**
+ * The ink each filled control's label takes in one theme.
+ *
+ * A separate map rather than a `palette` entry because it is not a token: it
+ * is a per-fill ANSWER, and the fill is the key. `--accent-ink` being a single
+ * palette entry is how mobile ended up drawing a near-white label on every
+ * vivid dark-theme fill.
+ */
+export function emitRnInkOnFill(theme: ThemeName): RnInkOnFill {
+  const out = {} as Record<FillTokenName, string>;
+  for (const fill of FILL_TOKENS) out[fill] = inkOn(theme, fill).hex;
   return out;
 }
 
@@ -131,6 +153,7 @@ export function emitRnTheme(theme: ThemeName): RnTheme {
   return {
     name: theme,
     palette: emitRnPalette(theme),
+    inkOn: emitRnInkOnFill(theme),
     auroraGradient: emitRnAuroraGradient(theme),
     glow: emitRnGlow(theme),
     type: emitRnTypeRamp(),

@@ -26,7 +26,16 @@
 import type { Oklch } from './oklch';
 import type { ColorTokenName, ThemeName } from './tokens';
 import { hexToRgb, oklchToHex } from './oklch';
-import { COLOR_TOKEN_NAMES, colorTokens, cssVarName } from './tokens';
+import {
+  COLOR_TOKEN_NAMES,
+  FILL_TOKENS,
+  INKS,
+  colorTokens,
+  cssVarName,
+  inkCssVarName,
+  inkOn,
+  inkOnCssVarName,
+} from './tokens';
 import { fontFamily, layout, motion, radii, spacing, typeRamp } from './scales';
 
 /** `oklch(…)` keeps the authored colour; `hex` renders it for older targets. */
@@ -145,13 +154,55 @@ function colorDeclarations(theme: ThemeName, format: CssColorFormat): Declaratio
   });
 }
 
-/** Just the declarations for one theme — no selector, no braces. */
+/**
+ * The ink group: the two absolute inks, then one `--ink-on-<fill>` per filled
+ * control pointing at whichever of them clears WCAG AA on that fill.
+ *
+ * Emitted per theme even though the two inks are theme-independent, because
+ * WHICH one a fill takes is not — dark's fills are vivid and light and nearly
+ * all take black, most of light's take white. That is the whole correction:
+ * `--accent-ink` flipped with the theme while the fills under it did not, so
+ * every filled label in dark mode measured under 4.5:1.
+ *
+ * `var(--ink-black)` rather than a literal so a listen room rebinding
+ * `--accent` to an artwork colour can retarget `--ink-on-accent` by name.
+ */
+function inkDeclarations(theme: ThemeName, format: CssColorFormat): Declaration[] {
+  const declarations: Declaration[] = [
+    {
+      property: inkCssVarName('inkBlack'),
+      value: format === 'hex' ? INKS.inkBlack.hex : formatOklch(INKS.inkBlack.oklch),
+      note: 'ink on a filled control — absolute, chosen per fill, never per theme',
+    },
+    {
+      property: inkCssVarName('inkWhite'),
+      value: format === 'hex' ? INKS.inkWhite.hex : formatOklch(INKS.inkWhite.oklch),
+    },
+  ];
+  for (const fill of FILL_TOKENS) {
+    declarations.push({
+      property: inkOnCssVarName(fill),
+      value: `var(${inkCssVarName(inkOn(theme, fill).name)})`,
+    });
+  }
+  return declarations;
+}
+
+/**
+ * Just the declarations for one theme — no selector, no braces.
+ *
+ * Two groups, separately aligned: the palette, then the ink. Separate so that
+ * adding the longer `--ink-on-aurora-1` name does not re-pad every colour
+ * declaration in the generated stylesheets.
+ */
 export function emitCssVariables(theme: ThemeName, options: CssEmitOptions = {}): string {
-  return renderDeclarations(
-    colorDeclarations(theme, options.colorFormat ?? 'oklch'),
-    options.indent ?? '  ',
-    options.includeComments ?? true,
-  );
+  const format = options.colorFormat ?? 'oklch';
+  const indent = options.indent ?? '  ';
+  const comments = options.includeComments ?? true;
+  return [
+    renderDeclarations(colorDeclarations(theme, format), indent, comments),
+    renderDeclarations(inkDeclarations(theme, format), indent, comments),
+  ].join('\n\n');
 }
 
 /** One `selector { … }` block for one theme. */

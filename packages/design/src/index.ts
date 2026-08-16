@@ -41,6 +41,9 @@ export type {
   ColorToken,
   ColorTokenName,
   EffectiveSurface,
+  FillTokenName,
+  Ink,
+  InkName,
   OverlayToken,
   ResolvedColor,
   SolidToken,
@@ -48,6 +51,8 @@ export type {
 } from './tokens';
 export {
   COLOR_TOKEN_NAMES,
+  FILL_TOKENS,
+  INKS,
   OVERLAY_SURFACES,
   STANDALONE_UI_TOKENS,
   SURFACE_LADDER,
@@ -56,6 +61,10 @@ export {
   colorTokens,
   cssVarName,
   effectiveSurfaces,
+  inkCssVarName,
+  inkForFill,
+  inkOn,
+  inkOnCssVarName,
   resolveAlias,
   resolveColorToken,
 } from './tokens';
@@ -101,6 +110,7 @@ export {
 export type {
   RnAuroraGradient,
   RnGlow,
+  RnInkOnFill,
   RnPalette,
   RnTheme,
   RnTypeRamp,
@@ -109,6 +119,7 @@ export type {
 export {
   emitRnAuroraGradient,
   emitRnGlow,
+  emitRnInkOnFill,
   emitRnPalette,
   emitRnTheme,
   emitRnTypeRamp,

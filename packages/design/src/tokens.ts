@@ -18,7 +18,7 @@
  */
 
 import type { Oklch } from './oklch';
-import { compositeOver } from './contrast';
+import { compositeOver, contrastRatio } from './contrast';
 import { oklchToHex } from './oklch';
 
 /** Dark is the primary theme; light ("Daylight") is a first-class variant. */
@@ -215,12 +215,16 @@ export const COLOR_TOKEN_NAMES: readonly ColorTokenName[] = [
 ];
 
 /**
- * `bgVoid` → `--bg-void`, `surface0` → `--surface-0`, `aurora1` → `--aurora-1`.
+ * `bgVoid` → `bg-void`, `surface0` → `surface-0`, `aurora1` → `aurora-1`.
  * The digit case is why this is not a plain camel-to-kebab: the ladder and the
  * aurora hues are numbered, and web's stylesheet already spells them that way.
  */
+const kebab = (name: string): string =>
+  name.replace(/([a-z])([A-Z0-9])/g, '$1-$2').toLowerCase();
+
+/** `bgVoid` → `--bg-void`. */
 export function cssVarName(token: ColorTokenName): string {
-  return `--${token.replace(/([a-z])([A-Z0-9])/g, '$1-$2').toLowerCase()}`;
+  return `--${kebab(token)}`;
 }
 
 /** Follow aliases to the token that actually carries a value. */
@@ -284,6 +288,112 @@ export const STANDALONE_UI_TOKENS: readonly ColorTokenName[] = [
   'danger',
   'warn',
 ];
+
+/**
+ * Tokens that are the BACKGROUND of a filled control — a primary button, a
+ * destructive button, a status pill — and therefore have a label drawn on top
+ * of them. Every one is held to WCAG_AA_TEXT against the ink `inkOn` picks.
+ *
+ * `aurora2` and `aurora3` are here even though `STANDALONE_UI_TOKENS` excludes
+ * them: they never appear as a fill on their own, but they are two of the three
+ * stops of the 135° gradient (DESIGN.md §2) that IS the primary button's fill,
+ * so a label crosses them.
+ */
+export type FillTokenName =
+  | 'aurora1'
+  | 'aurora2'
+  | 'aurora3'
+  | 'accent'
+  | 'success'
+  | 'danger'
+  | 'warn';
+
+/** Emission order, mirroring `COLOR_TOKEN_NAMES`. */
+export const FILL_TOKENS: readonly FillTokenName[] = [
+  'aurora1',
+  'aurora2',
+  'aurora3',
+  'accent',
+  'success',
+  'danger',
+  'warn',
+];
+
+/**
+ * ── Ink on a fill ─────────────────────────────────────────────────────────
+ *
+ * A fill and the ink on it are a PAIR, and the ink has to be chosen against
+ * the fill it lands on — never against the theme. `accentInk` was the theme's
+ * answer to the question, and being theme-relative is exactly what broke it:
+ * it is a near-white in BOTH themes, so it sat on dark's vivid, light fills and
+ * measured 3.80:1 on `accent`, 2.99:1 on `danger`, 1.67:1 on `warn`. Every
+ * filled label in the dark theme shipped under AA.
+ *
+ * These two inks are absolute — the sRGB endpoints — and neither is a token,
+ * so no palette tuning can flip one out from under a fill.
+ *
+ * They are NOT derived from the near-black/near-white already in the palette,
+ * because those do not reach: on light `success` (#008758), dark `bgVoid`
+ * measures 4.42:1 and `accentInk` 4.29:1, so max(near-black, near-white) is
+ * still an AA failure. Pure black clears it at 4.61:1. The endpoints are also
+ * the only pair of values in the system that nothing else can move.
+ */
+const INK_BLACK: Oklch = { l: 0, c: 0, h: 0 };
+const INK_WHITE: Oklch = { l: 1, c: 0, h: 0 };
+
+export type InkName = 'inkBlack' | 'inkWhite';
+
+/** A chosen ink: which of the two, in the authored form and as sRGB. */
+export interface Ink {
+  readonly name: InkName;
+  readonly oklch: Oklch;
+  readonly hex: string;
+}
+
+/** The two inks, and the only two. Theme-independent by construction. */
+export const INKS: Readonly<Record<InkName, Ink>> = {
+  inkBlack: { name: 'inkBlack', oklch: INK_BLACK, hex: oklchToHex(INK_BLACK) },
+  inkWhite: { name: 'inkWhite', oklch: INK_WHITE, hex: oklchToHex(INK_WHITE) },
+};
+
+/** `inkBlack` → `--ink-black`. */
+export function inkCssVarName(ink: InkName): string {
+  return `--${kebab(ink)}`;
+}
+
+/** `accent` → `--ink-on-accent`, `aurora1` → `--ink-on-aurora-1`. */
+export function inkOnCssVarName(fill: FillTokenName): string {
+  return `--ink-on-${kebab(fill)}`;
+}
+
+/**
+ * The ink for an arbitrary fill colour, by measurement: whichever of the two
+ * has the higher contrast against it.
+ *
+ * Exported alongside `inkOn` because `--accent` is not a constant — a listen
+ * room rebinds it to the track's artwork colour at runtime, and the ink on it
+ * has to be recomputed from the colour that actually landed. A consumer doing
+ * that sets `--ink-on-accent` to the returned `hex` at the same time.
+ *
+ * An exact tie (a fill at the luminance midpoint, ≈#777) goes to `inkBlack`.
+ * Arbitrary, but fixed, so the function stays deterministic.
+ */
+export function inkForFill(fillHex: string): Ink {
+  const onBlack = contrastRatio(INKS.inkBlack.hex, fillHex);
+  const onWhite = contrastRatio(INKS.inkWhite.hex, fillHex);
+  return onBlack >= onWhite ? INKS.inkBlack : INKS.inkWhite;
+}
+
+/**
+ * The ink to put on one fill token in one theme.
+ *
+ * Per FILL, not per gradient: the primary button's fill is three stops, and a
+ * single ink has to clear all three. Dark's do (black is ≥5.21:1 on every
+ * stop); light's do not — see the guard in test/palette.test.ts.
+ */
+export function inkOn(theme: ThemeName, fill: FillTokenName): Ink {
+  return inkForFill(resolveColorToken(theme, fill).hex);
+}
 
 /** A surface as text actually meets it: opaque, with any wash already composited. */
 export interface EffectiveSurface {

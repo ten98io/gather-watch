@@ -26,6 +26,17 @@
   --danger:         oklch(0.68 0.21 25);
   --warn:           oklch(0.82 0.16 85);
   --focus-ring:     oklch(0.72 0.2 295);
+
+  /* ink on a filled control — absolute, chosen per fill, never per theme */
+  --ink-black:       oklch(0 0 0);
+  --ink-white:       oklch(1 0 0);
+  --ink-on-aurora-1: var(--ink-black);
+  --ink-on-aurora-2: var(--ink-black);
+  --ink-on-aurora-3: var(--ink-black);
+  --ink-on-accent:   var(--ink-black);
+  --ink-on-success:  var(--ink-black);
+  --ink-on-danger:   var(--ink-black);
+  --ink-on-warn:     var(--ink-black);
 }
 
 :root[data-theme='light'] {
@@ -54,4 +65,15 @@
   /* measured floor: 0.62 fell to 2.88:1 on --surface-3, under the 3:1 non-text bar; 0.58 holds >=3.42:1 */
   --warn:           oklch(0.58 0.14 85);
   --focus-ring:     oklch(0.58 0.18 295);
+
+  /* ink on a filled control — absolute, chosen per fill, never per theme */
+  --ink-black:       oklch(0 0 0);
+  --ink-white:       oklch(1 0 0);
+  --ink-on-aurora-1: var(--ink-white);
+  --ink-on-aurora-2: var(--ink-white);
+  --ink-on-aurora-3: var(--ink-black);
+  --ink-on-accent:   var(--ink-white);
+  --ink-on-success:  var(--ink-black);
+  --ink-on-danger:   var(--ink-white);
+  --ink-on-warn:     var(--ink-black);
 }

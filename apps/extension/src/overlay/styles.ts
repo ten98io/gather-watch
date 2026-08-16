@@ -3,8 +3,13 @@
  * shadow root, plus the handful of properties that are locked onto the host
  * element itself.
  *
- * Owns: every rule the panel is drawn with, the light/dark palette, and the
- * host-level layout guarantees.
+ * Owns: every rule the panel is drawn with, and the host-level layout
+ * guarantees.
+ *
+ * Deliberately NOT: colour. Every value comes from @playin/design through
+ * tokens.generated.ts — the same palette web and mobile render. A hex literal
+ * here is how the overlay became a third design system once already, and
+ * test/design-tokens.test.ts now fails if one comes back.
  *
  * Deliberately NOT: anything that touches the page. No rule here can match a
  * page element (a shadow tree's styles do not escape it), nothing is added to
@@ -19,6 +24,8 @@
  * visible, where, and does it steal clicks" are set that way, on our own
  * element, and nowhere else. Everything else lives in the stylesheet below.
  */
+
+import { TOKEN_CSS } from './tokens.generated';
 
 /** Just under the 32-bit ceiling: leave room for a site that stacks above us. */
 const Z_INDEX = '2147483000';
@@ -63,12 +70,18 @@ export const HOST_LOCKS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
- * The stylesheet. Colours follow the reader's system setting; motion is only
- * added when the reader has not asked for less of it. Both are media queries
- * rather than JavaScript, so a change of setting is picked up with no listener
- * to leak and nothing to re-render.
+ * The stylesheet. The token block leads, then the rules that read it.
+ *
+ * Colours follow the reader's system setting; motion is only added when the
+ * reader has not asked for less of it. Both are media queries rather than
+ * JavaScript, so a change of setting is picked up with no listener to leak and
+ * nothing to re-render.
+ *
+ * `all: initial` does not touch custom properties (it is excluded from the
+ * shorthand along with `direction` and `unicode-bidi`), so the tokens declared
+ * above survive the reset regardless of block order.
  */
-export const OVERLAY_CSS = `
+export const OVERLAY_CSS = `${TOKEN_CSS}
 :host {
   all: initial;
   position: fixed;
@@ -76,31 +89,8 @@ export const OVERLAY_CSS = `
   pointer-events: none;
   color-scheme: light dark;
 
-  --playin-bg: #ffffff;
-  --playin-bg-soft: #f3f4f6;
-  --playin-line: rgba(0, 0, 0, 0.12);
-  --playin-ink: #14161a;
-  --playin-ink-soft: #5b6270;
-  --playin-accent: #3b5bdb;
-  --playin-accent-ink: #ffffff;
-  --playin-focus: #1c7ed6;
-  --playin-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
-  --playin-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, sans-serif;
-}
-
-@media (prefers-color-scheme: dark) {
-  :host {
-    --playin-bg: #16181d;
-    --playin-bg-soft: #202329;
-    --playin-line: rgba(255, 255, 255, 0.14);
-    --playin-ink: #f2f4f8;
-    --playin-ink-soft: #a9b0be;
-    --playin-accent: #5c7cfa;
-    --playin-accent-ink: #0b0d12;
-    --playin-focus: #74c0fc;
-    --playin-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
-  }
+  /* DESIGN.md §4: elevation is glow, not shadow. Same expression web uses. */
+  --lift: 0 0 40px -12px color-mix(in oklch, var(--aurora-1) 22%, transparent);
 }
 
 *,
@@ -123,27 +113,40 @@ button {
 /* A focus ring that stays visible on any backdrop, including a black player. */
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid var(--playin-focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
+/*
+ * The ink on an accent fill is the theme's ground, NOT --accent-ink: measured
+ * against packages/design's own guard, --accent-ink on --accent is 3.80:1 in
+ * dark, under WCAG_AA_TEXT, and this label is 12px/600 — normal-size text.
+ * --bg-void holds 5.00:1 dark and 4.85:1 light, and inverts with the theme the
+ * way the old hand-written palette did.
+ */
 .handle {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 8px 13px;
-  border-radius: 999px;
-  background: var(--playin-accent);
-  color: var(--playin-accent-ink);
-  font: 600 12px/1.2 var(--playin-font);
-  box-shadow: var(--playin-shadow);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--bg-void);
+  font: 600 12px/1.2 var(--font-sans);
+  box-shadow: var(--lift);
   white-space: nowrap;
 }
 .handle[hidden] {
   display: none;
 }
 
+/*
+ * OPAQUE, deliberately: --surface-1, not --surface-glass. The panel is drawn
+ * over a page nobody chose, so a wash would take its readability from whatever
+ * happens to be behind it. Every text pair below is measured against this
+ * surface and against --surface-2, in both themes.
+ */
 .panel {
   pointer-events: auto;
   display: flex;
@@ -151,12 +154,12 @@ input:focus-visible {
   width: 320px;
   max-width: calc(100vw - 32px);
   max-height: 70vh;
-  background: var(--playin-bg);
-  color: var(--playin-ink);
-  font: 400 13px/1.45 var(--playin-font);
-  border: 1px solid var(--playin-line);
-  border-radius: 12px;
-  box-shadow: var(--playin-shadow);
+  background: var(--surface-1);
+  color: var(--text-hi);
+  font: 400 13px/1.45 var(--font-sans);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-card);
+  box-shadow: var(--lift);
   overflow: hidden;
 }
 .panel[hidden] {
@@ -168,8 +171,8 @@ input:focus-visible {
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  background: var(--playin-bg-soft);
-  border-bottom: 1px solid var(--playin-line);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--hairline);
   cursor: grab;
   user-select: none;
   touch-action: none;
@@ -193,26 +196,26 @@ input:focus-visible {
 .status {
   margin: 2px 0 0;
   font-size: 12px;
-  color: var(--playin-ink-soft);
+  color: var(--text-mid);
   overflow-wrap: anywhere;
 }
 
 .hide {
   flex: 0 0 auto;
   padding: 3px 9px;
-  border: 1px solid var(--playin-line);
-  border-radius: 8px;
-  background: var(--playin-bg);
-  color: var(--playin-ink-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-mid);
   font-size: 12px;
 }
 .hide:hover {
-  color: var(--playin-ink);
+  color: var(--text-hi);
 }
 
 .people {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--playin-line);
+  border-bottom: 1px solid var(--hairline);
 }
 .section-title {
   margin: 0 0 6px;
@@ -220,7 +223,7 @@ input:focus-visible {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--playin-ink-soft);
+  color: var(--text-low);
 }
 .people-list {
   list-style: none;
@@ -238,9 +241,9 @@ input:focus-visible {
   gap: 5px;
   max-width: 100%;
   padding: 3px 9px;
-  border: 1px solid var(--playin-line);
-  border-radius: 999px;
-  background: var(--playin-bg-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
 }
 .person-name {
   font-weight: 600;
@@ -251,10 +254,10 @@ input:focus-visible {
 }
 .person-note {
   font-size: 11px;
-  color: var(--playin-ink-soft);
+  color: var(--text-low);
 }
 .person-empty {
-  color: var(--playin-ink-soft);
+  color: var(--text-mid);
 }
 
 .messages {
@@ -279,7 +282,7 @@ input:focus-visible {
   margin-right: 6px;
 }
 .msg[data-mine='true'] .msg-author {
-  color: var(--playin-accent);
+  color: var(--accent);
 }
 
 .ahead,
@@ -287,7 +290,7 @@ input:focus-visible {
   margin: 0;
   padding: 0 12px 8px;
   font-size: 12px;
-  color: var(--playin-ink-soft);
+  color: var(--text-mid);
 }
 .ahead[hidden],
 .notice[hidden] {
@@ -298,25 +301,26 @@ input:focus-visible {
   display: flex;
   gap: 8px;
   padding: 10px 12px;
-  border-top: 1px solid var(--playin-line);
-  background: var(--playin-bg-soft);
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
 }
 .input {
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
-  color: var(--playin-ink);
-  background: var(--playin-bg);
-  border: 1px solid var(--playin-line);
-  border-radius: 8px;
+  color: var(--text-hi);
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
   padding: 7px 9px;
 }
+/* --bg-void for the same measured reason as .handle. */
 .send {
   flex: 0 0 auto;
   padding: 7px 13px;
-  border-radius: 8px;
-  background: var(--playin-accent);
-  color: var(--playin-accent-ink);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg-void);
   font-weight: 600;
 }
 .input[disabled],
@@ -330,15 +334,15 @@ input:focus-visible {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  border-top: 1px solid var(--playin-line);
+  border-top: 1px solid var(--hairline);
 }
 .link {
-  color: var(--playin-ink-soft);
+  color: var(--text-mid);
   font-size: 12px;
   text-decoration: underline;
 }
 .link:hover {
-  color: var(--playin-ink);
+  color: var(--text-hi);
 }
 
 @media (prefers-reduced-motion: no-preference) {
