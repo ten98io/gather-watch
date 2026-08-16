@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mountOverlay } from '../src/overlay/mount';
 import type { OverlayHandle, OverlayStorage } from '../src/overlay/mount';
 import { EDGE_MARGIN, PANEL_WIDTH } from '../src/overlay/position';
-import type { OverlayOutbound, OverlayRoomState } from '../src/overlay/state';
+import type { OverlayMessage, OverlayOutbound, OverlayRoomState } from '../src/overlay/state';
 import {
   FakeDocument,
   FakeElement,
@@ -16,6 +16,7 @@ import {
   oneByClass,
   pageElements,
 } from './fakeDom';
+import type { EventProps } from './fakeDom';
 
 /**
  * The overlay is exercised the way a page would meet it: mounted into a
@@ -32,8 +33,10 @@ interface Harness {
   sent: OverlayOutbound[];
   store: Map<string, unknown>;
   writes: number;
-  /** Keys the page can see on the document's event surface. */
+  /** Keys the page heard as they bubbled back up. */
   pageKeys: string[];
+  /** Keys the page heard on the way DOWN — where a player listens to win. */
+  pageCaptureKeys: string[];
   /** Listeners the PAGE had before the overlay arrived. */
   pageListeners: number;
 }
@@ -52,15 +55,22 @@ function room(over: Partial<OverlayRoomState> = {}): OverlayRoomState {
   };
 }
 
+function said(id: string, text = id): OverlayMessage {
+  return { id, author: 'Ana', text };
+}
+
 interface MountInput {
   initialState?: OverlayRoomState;
   store?: Map<string, unknown>;
   hostname?: string;
   withStorage?: boolean;
+  /** False for a browser too old to have a top layer to ask for. */
+  popover?: boolean;
 }
 
 function mount(input: MountInput = {}): Harness {
   const doc = new FakeDocument(input.hostname ?? 'example.com', VIEWPORT.width, VIEWPORT.height);
+  doc.popoverSupport = input.popover !== false;
   const sent: OverlayOutbound[] = [];
   const store = input.store ?? new Map<string, unknown>();
   const harness: Harness = {
@@ -71,11 +81,14 @@ function mount(input: MountInput = {}): Harness {
     store,
     writes: 0,
     pageKeys: [],
+    pageCaptureKeys: [],
     pageListeners: 0,
   };
 
-  // The page's own hotkey handler — a player listens exactly like this.
+  // The page's own hotkey handlers, registered before the overlay exists and in
+  // both phases — a player that means to win listens on the way down.
   doc.addEventListener('keydown', (ev: FakeEvent) => harness.pageKeys.push(ev.key));
+  doc.addEventListener('keydown', (ev: FakeEvent) => harness.pageCaptureKeys.push(ev.key), true);
   harness.pageListeners = doc.listenerCount();
 
   const storage: OverlayStorage = {
@@ -117,6 +130,31 @@ function shadowOf(host: FakeElement): FakeShadowRoot {
   return shadow;
 }
 
+/** A click the way a browser makes one: hit-test to a control, then dispatch. */
+function click(host: FakeElement, control: FakeElement, props: EventProps = {}): FakeEvent {
+  shadowOf(host).hitTarget = control;
+  return dispatchOn(control, 'click', { clientX: 500, clientY: 200, ...props });
+}
+
+/** The same control, worked from the keyboard: focus, and no pointer at all. */
+function keyActivate(host: FakeElement, control: FakeElement): FakeEvent {
+  shadowOf(host).hitTarget = null;
+  control.focus();
+  return dispatchOn(control, 'click', { detail: 0 });
+}
+
+/** Press a key at a control, which first has to have focus to receive one. */
+function typeKey(control: FakeElement, props: EventProps): FakeEvent {
+  control.focus();
+  return dispatchOn(control, 'keydown', props);
+}
+
+/** Put the pointer down on a control, hit test and all. */
+function pressOn(host: FakeElement, control: FakeElement, props: EventProps): FakeEvent {
+  shadowOf(host).hitTarget = control;
+  return dispatchOn(control, 'pointerdown', props);
+}
+
 beforeEach(() => {
   failNextSend = false;
   snapshot = undefined;
@@ -148,6 +186,10 @@ describe('mountOverlay — isolation from the page', () => {
     for (const property of ['position', 'pointer-events', 'z-index', 'display', 'visibility']) {
       expect(host.style.getPropertyPriority(property)).toBe('important');
     }
+    // Only two edges are the position; the other two must stay unset or the
+    // box is stretched between them.
+    expect(host.style.getPropertyValue('right')).toBe('auto');
+    expect(host.style.getPropertyValue('bottom')).toBe('auto');
   });
 
   it('puts its stylesheet inside the shadow root and nowhere else', () => {
@@ -204,9 +246,31 @@ describe('mountOverlay — chat', () => {
     const input = oneByClass(host, 'input');
 
     input.value = '  hello everyone  ';
-    dispatchOn(input, 'keydown', { key: 'Enter' });
+    typeKey(input, { key: 'Enter' });
 
     expect(sent).toContainEqual({ kind: 'overlay:chat', text: 'hello everyone' });
+    expect(input.value).toBe('');
+  });
+
+  it('leaves Enter to the input method while a word is still being chosen', () => {
+    const { host, sent } = mount({ initialState: room() });
+    const input = oneByClass(host, 'input');
+    const chats = (): OverlayOutbound[] => sent.filter((m) => m.kind === 'overlay:chat');
+
+    // Enter here picks the characters being composed. It is not "send".
+    input.value = 'にほんご';
+    typeKey(input, { key: 'Enter', isComposing: true });
+    expect(chats()).toHaveLength(0);
+    expect(input.value).toBe('にほんご');
+
+    // The same fact from a browser that only sets the old keyCode.
+    typeKey(input, { key: 'Enter', keyCode: 229 });
+    expect(chats()).toHaveLength(0);
+    expect(input.value).toBe('にほんご');
+
+    // And the Enter that really does end the sentence still sends it.
+    typeKey(input, { key: 'Enter' });
+    expect(sent).toContainEqual({ kind: 'overlay:chat', text: 'にほんご' });
     expect(input.value).toBe('');
   });
 
@@ -216,7 +280,7 @@ describe('mountOverlay — chat', () => {
     const input = oneByClass(host, 'input');
 
     input.value = 'did this send?';
-    dispatchOn(input, 'keydown', { key: 'Enter' });
+    typeKey(input, { key: 'Enter' });
     await flush();
 
     expect(input.value).toBe('did this send?');
@@ -258,36 +322,94 @@ describe('mountOverlay — chat', () => {
   });
 });
 
-describe('mountOverlay — the keyboard boundary', () => {
-  it('keeps the overlay’s own keys away from the page', () => {
-    const { host, pageKeys } = mount({ initialState: room() });
-    const input = oneByClass(host, 'input');
+describe('mountOverlay — the boundary with the page', () => {
+  it('keeps the overlay’s own keys from a player listening on the way down', () => {
+    const { host, pageKeys, pageCaptureKeys } = mount({ initialState: room() });
 
-    dispatchOn(input, 'keydown', { key: ' ' });
-    dispatchOn(oneByClass(host, 'send'), 'keydown', { key: 'ArrowRight' });
+    // A space typed in chat is the case that matters: on the page it is "pause".
+    typeKey(oneByClass(host, 'input'), { key: ' ' });
+    typeKey(oneByClass(host, 'send'), { key: 'ArrowRight' });
 
+    expect(pageCaptureKeys).toEqual([]);
     expect(pageKeys).toEqual([]);
   });
 
-  it('leaves every key the page fires for itself alone', () => {
-    const { doc, pageKeys } = mount({ initialState: room() });
+  it('cannot be got round by listening on the window after we did', () => {
+    const { doc, host } = mount({ initialState: room() });
+    const heard: string[] = [];
+    doc.defaultView.addEventListener('keydown', (ev: FakeEvent) => heard.push(ev.key), true);
+
+    typeKey(oneByClass(host, 'input'), { key: ' ' });
+
+    expect(heard).toEqual([]);
+  });
+
+  it('does not let the page read what was typed, pasted or composed in chat', () => {
+    const { doc, host } = mount({ initialState: room() });
+    const heard: string[] = [];
+    const families = [
+      'paste',
+      'copy',
+      'cut',
+      'beforeinput',
+      'input',
+      'compositionstart',
+      'compositionupdate',
+      'compositionend',
+      'drop',
+    ];
+    for (const type of families) {
+      doc.addEventListener(type, (ev: FakeEvent) => heard.push(`down:${ev.type}`), true);
+      doc.addEventListener(type, (ev: FakeEvent) => heard.push(`up:${ev.type}`));
+    }
+
+    const input = oneByClass(host, 'input');
+    input.focus();
+    for (const type of families) dispatchOn(input, type, { clientX: 500, clientY: 200 });
+
+    expect(heard).toEqual([]);
+  });
+
+  it('leaves every event the page fires for itself alone', () => {
+    const { doc, pageKeys, pageCaptureKeys } = mount({ initialState: room() });
     const player = doc.body.appendChild(doc.createElement('video'));
+    const pastes: string[] = [];
+    doc.addEventListener('paste', (ev: FakeEvent) => pastes.push(ev.type), true);
 
     dispatchOn(player, 'keydown', { key: ' ' });
     dispatchOn(doc.body, 'keydown', { key: 'ArrowLeft' });
+    dispatchOn(player, 'paste', {});
 
+    expect(pageCaptureKeys).toEqual([' ', 'ArrowLeft']);
     expect(pageKeys).toEqual([' ', 'ArrowLeft']);
+    expect(pastes).toEqual(['paste']);
   });
 
   it('does not let a click on the panel reach the page underneath', () => {
     const { doc, host } = mount({ initialState: room() });
     const clicks: string[] = [];
-    doc.addEventListener('click', () => clicks.push('page'));
+    doc.addEventListener('click', () => clicks.push('page-down'), true);
+    doc.addEventListener('click', () => clicks.push('page-up'));
 
-    dispatchOn(oneByClass(host, 'send'), 'click');
+    click(host, oneByClass(host, 'send'));
     dispatchOn(doc.body, 'click');
 
-    expect(clicks).toEqual(['page']);
+    expect(clicks).toEqual(['page-down', 'page-up']);
+  });
+
+  it('stops an event the page aims at the host as well', () => {
+    const { doc, host } = mount({ initialState: room() });
+    const heard: string[] = [];
+    doc.addEventListener('click', (ev: FakeEvent) => {
+      heard.push(ev.target === doc.body ? 'page' : 'host');
+    }, true);
+
+    // The host is the only node of ours the page can reach, and everything that
+    // happens inside the overlay says it came from there.
+    dispatchOn(host, 'click', { clientX: 500, clientY: 200 });
+    dispatchOn(doc.body, 'click');
+
+    expect(heard).toEqual(['page']);
   });
 });
 
@@ -297,30 +419,32 @@ describe('mountOverlay — collapsing', () => {
     const panel = oneByClass(host, 'panel');
     const handle = oneByClass(host, 'handle');
 
-    dispatchOn(oneByClass(host, 'input'), 'keydown', { key: 'Escape' });
+    typeKey(oneByClass(host, 'input'), { key: 'Escape' });
 
     expect(panel.hidden).toBe(true);
     expect(handle.hidden).toBe(false);
     // Focus went to the control that replaced the one it was on — not nowhere,
-    // and not into a trap.
-    expect(doc.activeElement).toBe(handle);
+    // and not into a trap. The page is told only that the host has focus.
+    expect(shadowOf(host).activeElement).toBe(handle);
+    expect(doc.activeElement).toBe(host);
   });
 
   it('comes back from the handle, by click or by keyboard', () => {
-    const { doc, host } = mount({ initialState: room() });
-    dispatchOn(oneByClass(host, 'hide'), 'click');
+    const { host } = mount({ initialState: room() });
+    click(host, oneByClass(host, 'hide'));
     expect(oneByClass(host, 'panel').hidden).toBe(true);
 
-    dispatchOn(oneByClass(host, 'handle'), 'click');
+    // No pointer behind this one: it is Enter on the focused handle.
+    keyActivate(host, oneByClass(host, 'handle'));
 
     expect(oneByClass(host, 'panel').hidden).toBe(false);
     expect(oneByClass(host, 'handle').hidden).toBe(true);
-    expect(doc.activeElement).toBe(oneByClass(host, 'hide'));
+    expect(shadowOf(host).activeElement).toBe(oneByClass(host, 'hide'));
   });
 
   it('counts what arrived while it was away, and says so in words', () => {
     const { host, overlay } = mount({ initialState: room() });
-    dispatchOn(oneByClass(host, 'hide'), 'click');
+    click(host, oneByClass(host, 'hide'));
 
     overlay.update(
       room({
@@ -335,8 +459,36 @@ describe('mountOverlay — collapsing', () => {
     expect(handle.textContent).toContain('2 new');
     expect(handle.getAttribute('aria-label')).toContain('Show the Playin panel');
 
-    dispatchOn(handle, 'click');
+    click(host, handle);
     expect(oneByClass(host, 'handle').textContent).toBe('Playin');
+  });
+
+  it('does not call the room’s backlog unread', async () => {
+    snapshot = room({ messages: [said('m1'), said('m2'), said('m3')] });
+    const { host, overlay } = mount();
+    const handle = oneByClass(host, 'handle');
+
+    // Away before the room had said anything at all, so all three arrive while
+    // the panel is collapsed — but every one of them was already said.
+    click(host, oneByClass(host, 'hide'));
+    await flush();
+    expect(handle.textContent).toBe('Playin');
+
+    overlay.update(room({ messages: [said('m1'), said('m2'), said('m3'), said('m4')] }));
+    expect(handle.textContent).toContain('1 new');
+  });
+
+  it('counts arrivals, not the rows a rebuilt list redraws', () => {
+    const { host, overlay } = mount({
+      initialState: room({ messages: [said('m1'), said('m2'), said('m3')] }),
+    });
+    click(host, oneByClass(host, 'hide'));
+
+    // The room dropped its oldest message, so the whole list is drawn again —
+    // and one line of it is new.
+    overlay.update(room({ messages: [said('m2'), said('m3'), said('m4')] }));
+
+    expect(oneByClass(host, 'handle').textContent).toContain('1 new');
   });
 });
 
@@ -347,7 +499,7 @@ describe('mountOverlay — moving and remembering', () => {
     const startLeft = VIEWPORT.width - PANEL_WIDTH - EDGE_MARGIN;
     const idleListeners = doc.listenerCount();
 
-    dispatchOn(head, 'pointerdown', { clientX: 1000, clientY: 100 });
+    pressOn(host, head, { clientX: 1000, clientY: 100 });
     dispatchOn(doc.body, 'pointermove', { clientX: 940, clientY: 200 });
 
     expect(host.style.getPropertyValue('left')).toBe(`${startLeft - 60}px`);
@@ -363,11 +515,27 @@ describe('mountOverlay — moving and remembering', () => {
     expect(doc.listenerCount()).toBe(idleListeners);
   });
 
+  it('ends a drag that finishes over the header it was holding', () => {
+    const { doc, host } = mount({ initialState: room() });
+    const head = oneByClass(host, 'head');
+    const idleListeners = doc.listenerCount();
+
+    pressOn(host, head, { clientX: 1000, clientY: 100 });
+    expect(doc.listenerCount()).toBeGreaterThan(idleListeners);
+
+    // The pointer never left the header, so this ending never reaches the page.
+    shadowOf(host).hitTarget = head;
+    dispatchOn(head, 'pointerup', { clientX: 1000, clientY: 100 });
+
+    expect(doc.listenerCount()).toBe(idleListeners);
+    expect(head.getAttribute('data-dragging')).toBeNull();
+  });
+
   it('does not start a drag from the Hide button', () => {
     const { doc, host } = mount({ initialState: room() });
     const before = host.style.getPropertyValue('left');
 
-    dispatchOn(oneByClass(host, 'hide'), 'pointerdown', { clientX: 1000, clientY: 100 });
+    pressOn(host, oneByClass(host, 'hide'), { clientX: 1000, clientY: 100 });
     dispatchOn(doc.body, 'pointermove', { clientX: 500, clientY: 400 });
 
     expect(host.style.getPropertyValue('left')).toBe(before);
@@ -376,10 +544,10 @@ describe('mountOverlay — moving and remembering', () => {
   it('remembers where it was put, per site, and comes back there', async () => {
     const store = new Map<string, unknown>();
     const first = mount({ initialState: room(), store });
-    dispatchOn(oneByClass(first.host, 'head'), 'pointerdown', { clientX: 1000, clientY: 100 });
+    pressOn(first.host, oneByClass(first.host, 'head'), { clientX: 1000, clientY: 100 });
     dispatchOn(first.doc.body, 'pointermove', { clientX: 900, clientY: 300 });
     dispatchOn(first.doc.body, 'pointerup', {});
-    dispatchOn(oneByClass(first.host, 'hide'), 'click');
+    click(first.host, oneByClass(first.host, 'hide'));
     first.overlay.destroy();
 
     expect(store.get('playin.overlay.v1:example.com')).toEqual({
@@ -411,8 +579,8 @@ describe('mountOverlay — moving and remembering', () => {
 
     // Collapsed in storage, but the user opened the panel before the read came
     // back — the panel stays open.
-    dispatchOn(oneByClass(host, 'hide'), 'click');
-    dispatchOn(oneByClass(host, 'handle'), 'click');
+    click(host, oneByClass(host, 'hide'));
+    click(host, oneByClass(host, 'handle'));
     await flush();
 
     expect(oneByClass(host, 'panel').hidden).toBe(false);
@@ -420,8 +588,40 @@ describe('mountOverlay — moving and remembering', () => {
 });
 
 describe('mountOverlay — the page changing under it', () => {
-  it('follows the film into fullscreen and back out', () => {
+  it('rises above a fullscreen <video>, which draws no children at all', () => {
     const { doc, host } = mount({ initialState: room() });
+    const player = doc.body.appendChild(doc.createElement('video'));
+
+    doc.fullscreenElement = player;
+    doc.fire(new FakeEvent('fullscreenchange'), false, true);
+
+    // Not inside the video — nothing put there is ever painted — but in the top
+    // layer, which is painted above it.
+    expect(host.parentNode).toBe(doc.body);
+    expect(host.popoverOpen).toBe(true);
+    expect(host.getAttribute('popover')).toBe('manual');
+
+    doc.fullscreenElement = null;
+    doc.fire(new FakeEvent('fullscreenchange'), false, true);
+
+    expect(host.popoverOpen).toBe(false);
+    expect(host.getAttribute('popover')).toBeNull();
+    expect(host.parentNode).toBe(doc.body);
+  });
+
+  it('rises above a fullscreen player element without moving into it', () => {
+    const { doc, host } = mount({ initialState: room() });
+    const player = doc.body.appendChild(doc.createElement('div'));
+
+    doc.fullscreenElement = player;
+    doc.fire(new FakeEvent('fullscreenchange'), false, true);
+
+    expect(host.popoverOpen).toBe(true);
+    expect(host.parentNode).toBe(doc.body);
+  });
+
+  it('follows the film inside where the browser has no top layer to ask for', () => {
+    const { doc, host } = mount({ initialState: room(), popover: false });
     const player = doc.body.appendChild(doc.createElement('div'));
 
     doc.fullscreenElement = player;
@@ -431,6 +631,20 @@ describe('mountOverlay — the page changing under it', () => {
     doc.fullscreenElement = null;
     doc.fire(new FakeEvent('fullscreenchange'), false, true);
     expect(host.parentNode).toBe(doc.body);
+  });
+
+  it('stays where it is when an old browser fullscreens a bare <video>', () => {
+    const { doc, host } = mount({ initialState: room(), popover: false });
+    const player = doc.body.appendChild(doc.createElement('video'));
+
+    doc.fullscreenElement = player;
+    doc.fire(new FakeEvent('fullscreenchange'), false, true);
+
+    // Out of sight until the film leaves fullscreen: there is no third place to
+    // put it, and inside the video is nowhere.
+    expect(host.parentNode).toBe(doc.body);
+    expect(host.popoverOpen).toBe(false);
+    expect(byClass(host, 'panel')).toHaveLength(1);
   });
 
   it('stays reachable when the window is resized smaller', () => {
@@ -471,8 +685,8 @@ describe('mountOverlay — leaving', () => {
     const { host, sent } = mount({ initialState: room() });
     const links = byClass(host, 'link');
 
-    dispatchOn(links[0] as FakeElement, 'click');
-    dispatchOn(links[1] as FakeElement, 'click');
+    click(host, links[0] as FakeElement);
+    click(host, links[1] as FakeElement);
 
     expect(sent).toContainEqual({ kind: 'overlay:open-app' });
     expect(sent).toContainEqual({ kind: 'overlay:leave' });
@@ -481,6 +695,7 @@ describe('mountOverlay — leaving', () => {
   it('takes every node and every listener with it when it goes', () => {
     const { doc, host, overlay, pageListeners } = mount({ initialState: room() });
     expect(doc.listenerCount()).toBeGreaterThan(pageListeners);
+    expect(doc.defaultView.listenerCount()).toBeGreaterThan(0);
 
     overlay.destroy();
 
@@ -499,7 +714,7 @@ describe('mountOverlay — leaving', () => {
     const { doc, host, overlay, pageListeners } = mount({ initialState: room() });
     const idleListeners = doc.listenerCount();
 
-    dispatchOn(oneByClass(host, 'head'), 'pointerdown', { clientX: 900, clientY: 100 });
+    pressOn(host, oneByClass(host, 'head'), { clientX: 900, clientY: 100 });
     expect(doc.listenerCount()).toBeGreaterThan(idleListeners);
 
     overlay.destroy();

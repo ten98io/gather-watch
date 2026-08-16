@@ -2,9 +2,15 @@
  * A hand-built DOM for the overlay tests.
  *
  * Owns: just enough of a page for `mountOverlay` to run in node — elements,
- * attributes, a closed shadow root, focus, and event propagation with capture,
- * bubbling and `stopPropagation` — plus the bookkeeping a test needs to ask
- * "did you leave anything behind?".
+ * attributes, a closed shadow root, focus, the top layer, and event propagation
+ * from the window down and back with capture, bubbling and both kinds of
+ * `stopPropagation` — plus the bookkeeping a test needs to ask "did you leave
+ * anything behind?".
+ *
+ * Two details are modelled because the overlay's isolation stands or falls on
+ * them: the WINDOW is the first thing on an event's way down (which is where a
+ * player registers when it means to win), and an event that started inside a
+ * closed shadow root tells everything outside it that the HOST fired it.
  *
  * Deliberately NOT: a browser. There is no layout, no CSS, and no HTML parser
  * — which is the point of two of these tests. `innerHTML` THROWS here on
@@ -23,6 +29,12 @@ export interface EventProps {
   button?: number;
   clientX?: number;
   clientY?: number;
+  /** How many clicks. Zero is what a browser sends for a button worked by key. */
+  detail?: number;
+  /** The key is part of a word an input method is still assembling. */
+  isComposing?: boolean;
+  /** The old spelling of the same fact, which some browsers still send. */
+  keyCode?: number;
 }
 
 export class FakeEvent {
@@ -32,11 +44,15 @@ export class FakeEvent {
   currentTarget: FakeEventTarget | null = null;
   defaultPrevented = false;
   propagationStopped = false;
+  immediatePropagationStopped = false;
   readonly key: string;
   readonly shiftKey: boolean;
   readonly button: number;
   readonly clientX: number;
   readonly clientY: number;
+  readonly detail: number;
+  readonly isComposing: boolean;
+  readonly keyCode: number;
 
   constructor(type: string, props: EventProps = {}) {
     this.type = type;
@@ -46,10 +62,19 @@ export class FakeEvent {
     this.button = props.button ?? 0;
     this.clientX = props.clientX ?? 0;
     this.clientY = props.clientY ?? 0;
+    this.detail = props.detail ?? 1;
+    this.isComposing = props.isComposing === true;
+    this.keyCode = props.keyCode ?? 0;
   }
 
   stopPropagation(): void {
     this.propagationStopped = true;
+  }
+
+  /** Also silences the listeners registered after this one on the same target. */
+  stopImmediatePropagation(): void {
+    this.propagationStopped = true;
+    this.immediatePropagationStopped = true;
   }
 
   preventDefault(): void {
@@ -90,6 +115,7 @@ export class FakeEventTarget {
 
   fire(event: FakeEvent, capturing: boolean, atTarget: boolean): void {
     for (const registration of [...this.registrations]) {
+      if (event.immediatePropagationStopped) return;
       if (registration.type !== event.type) continue;
       if (!atTarget && registration.capture !== capturing) continue;
       event.currentTarget = this;
@@ -140,6 +166,11 @@ export class FakeElement extends FakeEventTarget {
   scrollHeight = 0;
   clientHeight = 0;
   readonly ownerDocument: FakeDocument;
+  /** In the page's top layer, painted above whatever went fullscreen. */
+  popoverOpen = false;
+  /** Absent on a browser too old for the top layer — which the overlay checks. */
+  showPopover?: () => void;
+  hidePopover?: () => void;
   private readonly attributes = new Map<string, string>();
   private closedShadow: FakeShadowRoot | null = null;
 
@@ -147,6 +178,15 @@ export class FakeElement extends FakeEventTarget {
     super();
     this.tagName = tagName.toUpperCase();
     this.ownerDocument = ownerDocument;
+    if (ownerDocument.popoverSupport) {
+      this.showPopover = (): void => {
+        if (!this.hasAttribute('popover')) throw new Error('not a popover');
+        this.popoverOpen = true;
+      };
+      this.hidePopover = (): void => {
+        this.popoverOpen = false;
+      };
+    }
   }
 
   /** The overlay must never assign HTML. Failing loudly here is the test. */
@@ -216,19 +256,58 @@ export class FakeElement extends FakeEventTarget {
     this.attributes.delete(name);
   }
 
+  contains(other: FakeElement | null): boolean {
+    let node: FakeElement | FakeDocument | null = other;
+    while (node instanceof FakeElement) {
+      if (node === this) return true;
+      node = node.parentNode;
+    }
+    return false;
+  }
+
+  /** The shadow tree this node lives in, if it lives in one. */
+  shadowHome(): FakeShadowRoot | null {
+    if (this instanceof FakeShadowRoot) return this;
+    let node: FakeElement | FakeDocument | null = this.parentNode;
+    while (node instanceof FakeElement) {
+      if (node instanceof FakeShadowRoot) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
   focus(): void {
-    this.ownerDocument.activeElement = this;
+    const home = this.shadowHome();
+    if (home === null) {
+      this.ownerDocument.activeElement = this;
+      return;
+    }
+    home.activeElement = this;
+    // A closed root hides its nodes: the page is told the HOST has focus, which
+    // is all it is ever told about anything of ours.
+    this.ownerDocument.activeElement = home.host;
   }
 }
 
 export class FakeShadowRoot extends FakeElement {
   readonly host: FakeElement;
   readonly mode: 'open' | 'closed';
+  /** Which node inside this tree has focus. Only the root's owner may ask. */
+  activeElement: FakeElement | null = null;
+  /**
+   * What the browser's hit test would find. There is no layout here, so a
+   * dispatch says where the pointer landed instead of a rectangle deciding.
+   */
+  hitTarget: FakeElement | null = null;
 
   constructor(host: FakeElement, mode: 'open' | 'closed') {
     super('#shadow-root', host.ownerDocument);
     this.host = host;
     this.mode = mode;
+  }
+
+  elementFromPoint(_x: number, _y: number): FakeElement | null {
+    return this.hitTarget;
   }
 }
 
@@ -239,6 +318,8 @@ export class FakeDocument extends FakeEventTarget {
   readonly location: { hostname: string };
   fullscreenElement: FakeElement | null = null;
   activeElement: FakeElement | null = null;
+  /** Chrome grew the top layer in 114. Set false to be an older browser. */
+  popoverSupport = true;
 
   constructor(hostname = 'example.com', width = 1280, height = 720) {
     super();
@@ -277,32 +358,53 @@ export class FakeWindow extends FakeEventTarget {
 function eventParentOf(node: FakeEventTarget): FakeEventTarget | null {
   if (node instanceof FakeShadowRoot) return node.host;
   if (node instanceof FakeElement) return node.parentNode;
+  if (node instanceof FakeDocument) return node.defaultView;
   return null;
 }
 
 /**
- * Capture down, fire at the target, bubble back up — through the shadow
- * boundary, because that is exactly the path the overlay has to stop events on.
+ * Capture down from the WINDOW, fire at the target, bubble back up — through
+ * the shadow boundary, because that is exactly the path the overlay has to stop
+ * events on, and the window is exactly where a player registers when it wants
+ * to be first.
+ *
+ * Outside the shadow tree the event says it came from the HOST, the way a
+ * browser retargets it. That is the only thing the page is ever told about
+ * which of our controls was used.
  */
 export function dispatchOn(target: FakeElement, type: string, props: EventProps = {}): FakeEvent {
   const event = new FakeEvent(type, props);
-  event.target = target;
   const path: FakeEventTarget[] = [];
   let node: FakeEventTarget | null = target;
   while (node !== null) {
     path.push(node);
     node = eventParentOf(node);
   }
-  for (let i = path.length - 1; i >= 1; i -= 1) {
-    if (event.propagationStopped) return event;
-    path[i]?.fire(event, true, false);
-  }
-  if (!event.propagationStopped) target.fire(event, false, true);
-  if (!event.bubbles) return event;
-  for (let i = 1; i < path.length; i += 1) {
-    if (event.propagationStopped) return event;
-    path[i]?.fire(event, false, false);
-  }
+  const rootIndex = path.findIndex((entry) => entry instanceof FakeShadowRoot);
+  const fromOutside = rootIndex >= 0 ? (path[rootIndex + 1] ?? target) : target;
+  const seenBy = (index: number): FakeEventTarget =>
+    rootIndex >= 0 && index > rootIndex ? fromOutside : target;
+
+  const run = (): void => {
+    for (let i = path.length - 1; i >= 1; i -= 1) {
+      if (event.propagationStopped) return;
+      event.target = seenBy(i);
+      path[i]?.fire(event, true, false);
+    }
+    if (!event.propagationStopped) {
+      event.target = target;
+      target.fire(event, false, true);
+    }
+    if (!event.bubbles) return;
+    for (let i = 1; i < path.length; i += 1) {
+      if (event.propagationStopped) return;
+      event.target = seenBy(i);
+      path[i]?.fire(event, false, false);
+    }
+  };
+
+  run();
+  event.target = target;
   return event;
 }
 

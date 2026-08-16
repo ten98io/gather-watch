@@ -323,3 +323,50 @@ describe('drive — release', () => {
     expect(player.touched).toEqual([]);
   });
 });
+
+/**
+ * The election is the ONLY thing that lets a frame touch the element. A
+ * command is not a licence: the worker addresses a frame by id, and a frame
+ * whose id was reused, or whose claim went stale a tick ago (an ad roll swaps
+ * the element, a source swap zeroes the duration, a fullscreen transition
+ * resizes it), must not take the player back from whoever now holds it.
+ */
+describe('drive — only the elected frame', () => {
+  it('ignores a command sent to a frame the election demoted', () => {
+    deliver({ kind: 'frameRole', role: 'idle' });
+    deliver({ kind: 'driveOff' });
+
+    deliver(driveMessage(640_000, block({ reason: 'no-telemetry' })));
+
+    expect(player.touched).toEqual([]);
+  });
+
+  it('stays stopped for every later command, not only the first', () => {
+    deliver({ kind: 'frameRole', role: 'idle' });
+
+    for (const at of [640_000, 641_000, 642_000]) {
+      deliver(driveMessage(at, block({ seekToMs: at, reason: 'seek' })));
+    }
+
+    expect(player.touched).toEqual([]);
+  });
+
+  it('ignores a command with no block either — the legacy path is not a way in', () => {
+    deliver({ kind: 'frameRole', role: 'idle' });
+
+    deliver(driveMessage(604_000));
+
+    expect(player.touched).toEqual([]);
+  });
+
+  it('drives again only when the election says so again', () => {
+    deliver({ kind: 'frameRole', role: 'idle' });
+    deliver(driveMessage(612_000, block({ seekToMs: 612_000, reason: 'seek' })));
+    expect(player.touched).toEqual([]);
+
+    deliver({ kind: 'frameRole', role: 'driver' });
+    deliver(driveMessage(612_000, block({ seekToMs: 612_000, reason: 'seek' })));
+
+    expect(player.touched).toEqual(['seek:612000']);
+  });
+});

@@ -31,11 +31,23 @@ const Z_INDEX = '2147483000';
 export const HOST_LOCKS: ReadonlyArray<readonly [string, string]> = [
   ['position', 'fixed'],
   ['display', 'block'],
+  // `left` and `top` are the position; the other two edges must stay unset or
+  // the box is stretched between them. The page can set them, and so does the
+  // browser's own `[popover] { inset: 0 }` when the overlay joins the top layer
+  // to sit above a fullscreen film.
+  ['right', 'auto'],
+  ['bottom', 'auto'],
   ['width', 'auto'],
   ['height', 'auto'],
   ['margin', '0'],
   ['padding', '0'],
   ['border', '0'],
+  // The panel draws its own background and its own rounded corners. Anything
+  // painted on the host itself shows up as a square behind them — which is what
+  // both a page rule and the browser's `[popover] { background-color: Canvas }`
+  // would do.
+  ['background', 'transparent'],
+  ['overflow', 'visible'],
   ['max-width', 'none'],
   ['max-height', 'none'],
   ['min-width', '0'],

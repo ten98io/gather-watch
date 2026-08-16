@@ -21,13 +21,21 @@
  *          it is present and well-formed; `playing`/`positionMs`/`rate` are
  *          the legacy shape, kept so an OLD build of this script still
  *          reproduces that decision under its own fixed bands. See drive().
- *   ← { kind: 'driveOff' }                            release the element
- *   ← { kind: 'frameRole', role: 'driver' | 'idle' }  election result
+ *   ← { kind: 'driveOff' }                            release the element now
+ *   ← { kind: 'frameRole', role: 'driver' | 'idle' }  election result, and the
+ *                                                     ONLY grant to drive
+ *   ← { kind: 'overlay', state }                      show/refresh the room
+ *                                                     overlay (top frame only)
+ *   ← { kind: 'overlayOff' }                          take the overlay away
  *   ← { kind: 'castNative' } → { clicked, reason }    press the site's own
  *                                                     cast button
  *   → { kind: 'frameClaim', metrics, url }            election input
  *   → { kind: 'telemetry', positionMs, durationMs, playing, rate }
  *   → { kind: 'provider', provider }                  (top frame, on route)
+ *   → { kind: 'overlay:state' } → the room for THIS tab, or null when it is
+ *                                 not the tab in the room
+ *   → { kind: 'overlay:chat' | 'overlay:leave' | 'overlay:open-app' }
+ *                                 sent by the overlay itself (see overlay/)
  */
 import { performNativeCast } from './cast';
 import type { CastResult, CastTarget } from './cast';
@@ -44,6 +52,9 @@ import {
   toMetrics,
 } from './mediaDriver';
 import type { MediaElementLike, MediaMetrics, MediaProbe } from './mediaDriver';
+// Types only — erased at compile time, so this does NOT pull the overlay in.
+// The module itself is imported dynamically; see showRoomOverlay below.
+import type { OverlayHandle, OverlayRoomState, OverlaySend, OverlayStorage } from './overlay';
 import {
   PROTOCOL_MIN_VERSION,
   PROTOCOL_VERSION,
@@ -67,6 +78,18 @@ const RESCAN_MIN_MS = 2000;
 const MAX_SHADOW_DEPTH = 8;
 const MAX_SCAN_ELEMENTS = 8000;
 
+/**
+ * Whether this frame currently applies commands, and whether it is allowed to
+ * at all. The two are not the same and the difference is load-bearing:
+ *   `role`   — the election's answer to "may this frame drive?". It changes on
+ *              a `frameRole` message and on nothing else, in either direction.
+ *              A frame starts idle, so a frame nobody elected drives nothing.
+ *   `driven` — whether a command has arrived since. `driveOff` clears it
+ *              ("release the element now"); it does not grant or revoke the
+ *              role, which is the background's to say.
+ * Every drive path checks the role, so being demoted actually stops this frame
+ * instead of pausing it until the next command arrives.
+ */
 let driven = false;
 let role: 'driver' | 'idle' = 'idle';
 let lastCommand: {
@@ -214,7 +237,7 @@ function reportProvider(): void {
  * says nothing is reporting back to it and we are on our own.
  */
 function drive(): void {
-  if (!driven || lastCommand === null) return;
+  if (role !== 'driver' || !driven || lastCommand === null) return;
   const el = currentMedia();
   if (el === null) return;
   const media = el as MediaElementLike;
@@ -239,6 +262,125 @@ function sendTelemetry(): void {
   if (el === null) return;
   const t = readTelemetry(el as MediaElementLike);
   void chrome.runtime.sendMessage({ kind: 'telemetry', ...t }).catch(() => undefined);
+}
+
+// ---------------------------------------------------------------------------
+// The room overlay — top frame, and only on the tab that is in a room
+// ---------------------------------------------------------------------------
+
+/**
+ * The room UI, drawn on the site the user is actually watching.
+ *
+ * Two rules decide whether it exists at all, and they are the reason this file
+ * asks rather than assumes:
+ *   - the TOP frame only. This script runs in every frame of every page, and
+ *     an overlay per iframe is the failure mode this extension already has the
+ *     scars from.
+ *   - a tab that is in a room. The background worker knows which tab that is
+ *     (exactly one, the driven tab) and nothing here guesses: `overlay:state`
+ *     answers with the room, or with null for every other tab in the browser.
+ *
+ * `./overlay` is imported DYNAMICALLY, so the panel, its stylesheet and its
+ * state machine are never evaluated on the overwhelming majority of pages,
+ * which are in no room. (The bundler still inlines the bytes into content.js —
+ * MV3 content scripts must stay one self-contained file — but the module body
+ * does not run until the first mount.)
+ */
+const isTopFrame = window.top === window;
+
+let roomOverlay: OverlayHandle | null = null;
+/** The state we want shown; null means "no room", which is also "no overlay". */
+let wantedRoom: OverlayRoomState | null = null;
+/** An import is not instant, and a second mount while it is in flight is how
+ *  an overlay gets stacked on itself. */
+let overlayLoading = false;
+
+/**
+ * The overlay's only route out. It resolves when the worker accepted the
+ * message and rejects when it did not — the overlay puts a real sentence in
+ * front of the user on a rejection, so silently resolving would be a lie.
+ */
+const overlaySend: OverlaySend = async (message) => {
+  const reply: unknown = await chrome.runtime.sendMessage(message);
+  const value = readReply(reply);
+  if (value === undefined) throw new Error('The room did not take that.');
+  return value;
+};
+
+/** Position and collapsed state, remembered per site. Failures are survivable
+ *  — the overlay simply opens where it always opens. */
+const overlayStorage: OverlayStorage = {
+  read: async (key) => {
+    const bag: Record<string, unknown> = await chrome.storage.local.get(key);
+    return bag[key];
+  },
+  write: async (key, value) => {
+    await chrome.storage.local.set({ [key]: value });
+  },
+};
+
+/** The worker's `{ ok, value }` envelope. undefined = it refused, or is gone. */
+function readReply(reply: unknown): unknown {
+  if (typeof reply !== 'object' || reply === null) return undefined;
+  const bag = reply as Record<string, unknown>;
+  if (bag['ok'] !== true) return undefined;
+  return bag['value'] ?? null;
+}
+
+async function showRoomOverlay(state: OverlayRoomState): Promise<void> {
+  wantedRoom = state;
+  if (roomOverlay !== null) {
+    roomOverlay.update(state);
+    return;
+  }
+  if (overlayLoading) return;
+  overlayLoading = true;
+  try {
+    const { mountOverlay } = await import('./overlay');
+    const wanted = wantedRoom;
+    // The room may have ended, or another call may have mounted, while the
+    // module was loading. Either way there is nothing to mount now.
+    if (wanted === null || roomOverlay !== null) return;
+    roomOverlay = mountOverlay({
+      document,
+      send: overlaySend,
+      storage: overlayStorage,
+      initialState: wanted,
+    });
+  } catch {
+    // Nothing to show. The next refresh tries again.
+  } finally {
+    overlayLoading = false;
+  }
+}
+
+function hideRoomOverlay(): void {
+  wantedRoom = null;
+  roomOverlay?.destroy();
+  roomOverlay = null;
+}
+
+/**
+ * Ask the worker whether this tab is in a room, and act on the answer.
+ *
+ * Called on load and after every route change, which is what makes the overlay
+ * survive both a reload and an SPA navigation: an existing panel is updated in
+ * place (never re-mounted, so navigating fifty times leaves one), and a tab
+ * that is no longer the room's loses it.
+ */
+function refreshRoomOverlay(): void {
+  if (!isTopFrame) return;
+  void chrome.runtime
+    .sendMessage({ kind: 'overlay:state' })
+    .then((reply: unknown) => {
+      const value = readReply(reply);
+      if (typeof value === 'object' && value !== null) {
+        void showRoomOverlay(value as OverlayRoomState);
+      } else {
+        hideRoomOverlay();
+      }
+    })
+    .catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +442,10 @@ chrome.runtime.onMessage.addListener(
   ) => {
     switch (msg.kind) {
       case 'drive':
+        // A command is not a licence. Only the elected frame drives, so a frame
+        // that was demoted — or was never elected at all — drops the command
+        // instead of taking the element back from whoever holds it.
+        if (role !== 'driver') return false;
         driven = true;
         lastCommand = {
           playing: msg['playing'] === true,
@@ -319,6 +465,18 @@ chrome.runtime.onMessage.addListener(
           driven = false;
           lastCommand = null;
         }
+        return false;
+      case 'overlay': {
+        // One room, one overlay, in the tab's own document — never in an
+        // iframe, which would put a second copy on the page.
+        if (!isTopFrame) return false;
+        const state = msg['state'];
+        if (typeof state !== 'object' || state === null) hideRoomOverlay();
+        else void showRoomOverlay(state as OverlayRoomState);
+        return false;
+      }
+      case 'overlayOff':
+        hideRoomOverlay();
         return false;
       case 'castNative':
         castNative()
@@ -349,10 +507,15 @@ const nav = watchNavigation(
     cachedMedia = null;
     scanDirty = true;
     lastScanAt = 0;
+    // The element this frame was driving is gone; the ROLE is not ours to
+    // revoke, so the election is left to say whether this frame still wins.
     driven = false;
     lastCommand = null;
     reportProvider();
     reportClaim(true);
+    // A route change can mean the tab left the room's content, or that the
+    // site replaced the page under a panel that is still standing.
+    refreshRoomOverlay();
   },
 );
 
@@ -383,6 +546,7 @@ for (const type of ['loadedmetadata', 'durationchange', 'emptied', 'play', 'paus
 window.addEventListener('pagehide', () => {
   nav.dispose();
   observer.disconnect();
+  hideRoomOverlay();
 });
 
 setInterval(() => {
@@ -435,3 +599,6 @@ if (window.top === window && WEB_ORIGINS.includes(location.origin)) {
 
 reportProvider();
 reportClaim(true);
+// Nothing is injected here: this asks whether the tab is in a room, and the
+// answer for almost every page in almost every tab is "no".
+refreshRoomOverlay();

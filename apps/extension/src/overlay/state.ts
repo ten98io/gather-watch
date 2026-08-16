@@ -101,42 +101,90 @@ const LINE_FEED = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
 
 /**
+ * Characters that occupy no space at all. Named one by one, because what a
+ * reviewer must be able to check is exactly this list.
+ */
+const INVISIBLE: ReadonlySet<number> = new Set([
+  0x00ad, // soft hyphen
+  0x180e, // Mongolian vowel separator
+  0x200b, // zero-width space
+  0x200c, // zero-width non-joiner
+  0x200d, // zero-width joiner
+  0x200e, // left-to-right mark
+  0x200f, // right-to-left mark
+  0x2060, // word joiner
+  0xfeff, // zero-width no-break space
+]);
+
+/**
+ * What a string is FOR, which is what decides how hard it is scrubbed.
+ *
+ * `name` — anything that stands for somebody or somewhere: a display name, a
+ *   room title, an id. It has to be exactly what it looks like.
+ * `line` — one line of content, as the user typed it. Their words, minus the
+ *   newlines a one-line composer has nowhere to put.
+ * `body` — content that arrived from the room, newlines and all.
+ */
+type TextKind = 'name' | 'line' | 'body';
+
+/**
  * Drop what cannot be seen and should not be trusted.
  *
- * Two families go. Control characters, which are noise at best. And the
- * bidirectional overrides, which are worse than noise: a name padded with one
- * renders right-to-left and can be made to look like somebody else's line —
- * the text would be escaped perfectly and still lie about who said it.
+ * Three families go from everything. Control characters, which are noise at
+ * best. The bidirectional overrides and isolates, which are worse than noise: a
+ * name padded with one renders right-to-left and can be made to look like
+ * somebody else's line — the text would be escaped perfectly and still lie
+ * about who said it. And any spelling difference that is only a difference of
+ * encoding, which canonical (NFC) composition settles.
+ *
+ * ── Where the line is drawn on the invisible characters ───────────────────
+ * They go from a NAME and stay in a MESSAGE. A name has to be exactly what it
+ * looks like: 'A<zero-width space>na' and 'Ana' draw identical pixels, so two
+ * people in the list are indistinguishable and no amount of escaping helps. In
+ * message text the very same characters do real work — a zero-width joiner is
+ * what holds a family emoji together, a zero-width non-joiner is ordinary
+ * spelling in Persian — and a message is content, not identity. Names also lose
+ * runs of whitespace (the people list collapses them when it draws, so 'A  na'
+ * would sit beside 'A na' looking the same) and every exotic space along with
+ * them.
+ *
+ * What is deliberately NOT done: policing scripts. A Cyrillic 'А' looks like a
+ * Latin 'A', and a table of look-alikes would turn away real names in Russian,
+ * Greek and Serbian to catch a trick whose real answer is identity rather than
+ * spelling. Variation selectors stay for the same reason: U+FE0F is what makes
+ * an emoji an emoji, and it is not a way to fake a name that U+200B was not.
  *
  * Written as a scan rather than a character class so the code points it drops
  * are named in the source instead of hidden inside an invisible regex.
  */
-function scrub(value: string, multiline: boolean): string {
+function scrub(value: string, kind: TextKind): string {
+  const name = kind === 'name';
   let out = '';
-  for (const ch of value) {
+  for (const ch of value.normalize('NFC')) {
     const code = ch.codePointAt(0) ?? 0;
     if (code === TAB || code === LINE_FEED || code === CARRIAGE_RETURN) {
-      out += multiline ? ch : ' ';
+      out += kind === 'body' ? ch : ' ';
       continue;
     }
     if (code <= C0_END || code === DELETE_CHAR) continue;
     if (code >= C1_START && code <= C1_END) continue;
     if (code >= BIDI_OVERRIDE_START && code <= BIDI_OVERRIDE_END) continue;
     if (code >= BIDI_ISOLATE_START && code <= BIDI_ISOLATE_END) continue;
+    if (name && INVISIBLE.has(code)) continue;
     out += ch;
   }
-  return out;
+  return name ? out.replace(/\s+/g, ' ') : out;
 }
 
-function safeText(value: unknown, max: number, multiline: boolean): string {
+function safeText(value: unknown, max: number, kind: TextKind): string {
   if (typeof value !== 'string') return '';
-  const out = scrub(value, multiline).trim();
+  const out = scrub(value, kind).trim();
   return out.length > max ? `${out.slice(0, max - 1)}…` : out;
 }
 
 /** Trim and bound something the user typed, before it goes to the room. */
 export function safeOutgoing(value: string): string {
-  return safeText(value, MAX_OUTGOING_TEXT, false);
+  return safeText(value, MAX_OUTGOING_TEXT, 'line');
 }
 
 /* ─────────────────────────── the normalised view ─────────────────────────── */
@@ -267,14 +315,37 @@ export function aheadLine(count: number): string {
     : `${n} messages are waiting until you reach those moments.`;
 }
 
+/**
+ * Scrubbing alone does NOT stop impersonation — it completes it. Dropping the
+ * zero-width characters maps 'A<U+200B>na' onto 'Ana', so the impostor renders
+ * byte-identical to the person they are copying instead of merely similar.
+ *
+ * Normalising is still right (it is what makes the collision detectable at
+ * all); the missing half is saying so. When two people in the room resolve to
+ * the same visible name, BOTH are marked — marking only the newcomer would
+ * tell you which is which only if you already knew.
+ *
+ * The mark is a short piece of their own id: stable across renders, already
+ * known to everyone in the room, and not something the impostor can choose.
+ */
+function disambiguate(people: PersonView[]): PersonView[] {
+  const counts = new Map<string, number>();
+  for (const person of people) counts.set(person.name, (counts.get(person.name) ?? 0) + 1);
+  return people.map((person) =>
+    (counts.get(person.name) ?? 0) > 1
+      ? { ...person, name: `${person.name} (${person.id.slice(-4)})` }
+      : person,
+  );
+}
+
 function readPeople(raw: unknown): PersonView[] {
   if (!Array.isArray(raw)) return [];
   const out: PersonView[] = [];
   for (const entry of raw.slice(0, MAX_PEOPLE)) {
     if (!isRecord(entry)) continue;
-    const id = safeText(entry['id'], 64, false);
+    const id = safeText(entry['id'], 64, 'name');
     if (id.length === 0) continue;
-    const name = safeText(entry['name'], MAX_PERSON_NAME, false);
+    const name = safeText(entry['name'], MAX_PERSON_NAME, 'name');
     out.push({
       id,
       name: name.length > 0 ? name : 'Someone',
@@ -283,7 +354,7 @@ function readPeople(raw: unknown): PersonView[] {
       away: entry['away'] === true,
     });
   }
-  return out;
+  return disambiguate(out);
 }
 
 function readMessages(raw: unknown): MessageView[] {
@@ -292,10 +363,10 @@ function readMessages(raw: unknown): MessageView[] {
   // The tail is what a person is reading; an unbounded backlog is only memory.
   for (const entry of raw.slice(-MAX_MESSAGES)) {
     if (!isRecord(entry)) continue;
-    const id = safeText(entry['id'], 64, false);
-    const text = safeText(entry['text'], MAX_MESSAGE_TEXT, true);
+    const id = safeText(entry['id'], 64, 'name');
+    const text = safeText(entry['text'], MAX_MESSAGE_TEXT, 'body');
     if (id.length === 0 || text.length === 0) continue;
-    const author = safeText(entry['author'], MAX_PERSON_NAME, false);
+    const author = safeText(entry['author'], MAX_PERSON_NAME, 'name');
     out.push({
       id,
       author: author.length > 0 ? author : 'Someone',
@@ -317,7 +388,7 @@ function readMessages(raw: unknown): MessageView[] {
 export function normalizeRoomState(raw: unknown): RoomView {
   if (!isRecord(raw)) return EMPTY_VIEW;
   const connection = readConnection(raw['connection']);
-  const roomName = safeText(raw['roomName'], MAX_ROOM_NAME, false);
+  const roomName = safeText(raw['roomName'], MAX_ROOM_NAME, 'name');
   return {
     connection,
     roomTitle: roomName.length > 0 ? roomName : UNTITLED_ROOM,

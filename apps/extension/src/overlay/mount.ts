@@ -24,14 +24,17 @@
  * host-level layout locked with inline `!important` because `:host` rules lose
  * to the page's own rules matching the host (see styles.ts).
  *
- * ── Why events stop at the host ───────────────────────────────────────────
+ * ── Why events stop before the page hears them ────────────────────────────
  * A player's hotkeys live on the page's document: Space pauses, arrows seek.
- * Typing "space bar" into our chat box would pause everyone's film. So every
- * event that ORIGINATES inside the overlay is stopped at the host, on its way
- * out. Nothing the page fires is touched — a page-originated key never travels
- * through our host at all — so the site keeps every shortcut it had.
+ * Typing "space bar" into our chat box would pause everyone's film, and one
+ * `paste` listener on the page would read what was pasted into it. So every
+ * event that ORIGINATES inside the overlay is stopped at the top of the page's
+ * event path and handed to our own controls from there; boundary.ts owns that
+ * and explains it. Nothing the page fires is touched, so the site keeps every
+ * shortcut it had.
  */
 
+import { guardOverlayEvents } from './boundary';
 import { clampPoint, defaultPoint, memoryKey, readMemory } from './position';
 import type { OverlayPoint, Viewport } from './position';
 import { EMPTY_VIEW, describePeople, normalizeRoomState, personNote, safeOutgoing } from './state';
@@ -78,23 +81,19 @@ const PIN_SLACK_PX = 24;
 const FALLBACK_VIEWPORT: Viewport = { width: 1280, height: 720 };
 
 /**
- * Events that mean something to a player and would be acted on twice if they
- * escaped the overlay. Both the pointer and the mouse families are listed
- * because a page may listen for either.
+ * Elements that draw no children of their own. A fullscreen <video> renders
+ * exactly its own picture and an <iframe> renders another document, so a panel
+ * appended INSIDE one is never painted at all.
  */
-const PAGE_GUARDS: readonly string[] = [
-  'keydown',
-  'keyup',
-  'keypress',
-  'pointerdown',
-  'pointerup',
-  'mousedown',
-  'mouseup',
-  'click',
-  'dblclick',
-  'contextmenu',
-  'wheel',
-];
+const DRAWS_NO_CHILDREN: ReadonlySet<string> = new Set([
+  'VIDEO',
+  'AUDIO',
+  'IMG',
+  'IFRAME',
+  'EMBED',
+  'OBJECT',
+  'CANVAS',
+]);
 
 function isRecordLike(value: unknown): boolean {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -117,6 +116,10 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   let collapsed = false;
   let unread = 0;
   let sending = false;
+  /** The overlay has been told the room's real state at least once. */
+  let stateSeen = false;
+  /** The host is in the page's top layer, above whatever went fullscreen. */
+  let inTopLayer = false;
   /** The user has taken charge of these, so a late storage read must not undo it. */
   let userMoved = false;
   let userToggled = false;
@@ -161,6 +164,9 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   // CLOSED, not open: `host.shadowRoot` stays null, so the page cannot read or
   // restyle a single node of ours through it.
   const shadow = host.attachShadow({ mode: 'closed' });
+  // Everything that starts in the overlay stops before the page hears it, and
+  // reaches our own controls through `boundary.on`. See boundary.ts.
+  const boundary = guardOverlayEvents({ document: doc, host, root: shadow });
   const styleEl = doc.createElement('style');
   styleEl.textContent = OVERLAY_CSS;
   shadow.appendChild(styleEl);
@@ -353,11 +359,17 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     return !Number.isFinite(gap) || gap <= PIN_SLACK_PX;
   };
 
-  const renderMessages = (next: RoomView): void => {
+  /**
+   * `backlog` marks the first state the overlay is ever given. What is in it
+   * was already said, however long ago the panel was collapsed, so none of it
+   * is waiting to be read.
+   */
+  const renderMessages = (next: RoomView, backlog: boolean): void => {
     const ids = next.messages.map((message) => message.id);
     const appended =
       renderedIds.length <= ids.length && renderedIds.every((id, index) => ids[index] === id);
     const pinned = nearBottom();
+    const shown = new Set(renderedIds);
     if (!appended) {
       messagesEl.textContent = '';
       renderedIds = [];
@@ -365,22 +377,31 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     const fresh = next.messages.slice(renderedIds.length);
     for (const message of fresh) messagesEl.appendChild(messageNode(message));
     renderedIds = ids;
-    if (fresh.length > 0) {
-      if (collapsed) unread += fresh.length;
-      // Follow the conversation, but never yank someone who scrolled back.
-      if (pinned) messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
+    if (fresh.length === 0) return;
+    // The badge counts arrivals, not rows drawn: a list rebuilt because the
+    // room dropped its oldest message is redrawn in full and is almost all
+    // messages this reader has already read.
+    if (collapsed && !backlog) unread += ids.filter((id) => !shown.has(id)).length;
+    // Follow the conversation, but never yank someone who scrolled back.
+    if (pinned) messagesEl.scrollTop = messagesEl.scrollHeight;
   };
 
-  const render = (next: RoomView): void => {
+  const render = (next: RoomView, backlog: boolean): void => {
     current = next;
     setText(roomEl, next.roomTitle);
     setText(statusEl, next.statusLine);
     renderPeople(next);
-    renderMessages(next);
+    renderMessages(next, backlog);
     setLine(aheadEl, next.aheadLine);
     syncComposer();
     syncHandle();
+  };
+
+  /** Draw a state that came from the room, backlog or not. */
+  const apply = (raw: unknown): void => {
+    const backlog = !stateSeen;
+    stateSeen = true;
+    render(normalizeRoomState(raw), backlog);
   };
 
   /* ── collapse / expand ── */
@@ -452,15 +473,10 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
 
   /* ── wiring ── */
 
-  // Everything that starts in the overlay stops at the overlay. See the header.
-  for (const type of PAGE_GUARDS) {
-    listen(host, type, (ev) => ev.stopPropagation());
-  }
-
-  listen(head, 'pointerdown', (ev) => {
+  boundary.on(head, 'pointerdown', (ev, target) => {
     const pointer = ev as PointerEvent;
     if (typeof pointer.button === 'number' && pointer.button !== 0) return;
-    if (pointer.target === hideBtn) return;
+    if (target === hideBtn || hideBtn.contains(target)) return;
     drag = {
       pointerX: pointer.clientX,
       pointerY: pointer.clientY,
@@ -475,8 +491,11 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     listen(doc, 'pointerup', () => endDrag(), dragDisposers, true);
     listen(doc, 'pointercancel', () => endDrag(), dragDisposers, true);
   });
+  // A drag usually ends with the pointer still over the header it is holding,
+  // and an ending like that never reaches the page listener above.
+  boundary.on(shadow, 'pointerup', () => endDrag());
 
-  listen(panel, 'keydown', (ev) => {
+  boundary.on(panel, 'keydown', (ev) => {
     if ((ev as KeyboardEvent).key !== 'Escape') return;
     // Escape puts the room away. It never traps: focus lands on the handle,
     // one key away from bringing the panel back.
@@ -484,26 +503,32 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     setCollapsed(true, { moveFocus: true, save: true });
   });
 
-  listen(input, 'keydown', (ev) => {
+  boundary.on(input, 'keydown', (ev) => {
     const keyboard = ev as KeyboardEvent;
+    // Enter during composition belongs to the input method, not to us: someone
+    // writing Japanese, Chinese or Korean presses it to choose the characters
+    // they are in the middle of, and sending here would post half a word and
+    // empty the box mid-sentence. `keyCode` 229 is the same fact, from a
+    // browser that does not set `isComposing`.
+    if (keyboard.isComposing || keyboard.keyCode === 229) return;
     if (keyboard.key !== 'Enter' || keyboard.shiftKey) return;
     keyboard.preventDefault();
     submit();
   });
 
-  listen(sendBtn, 'click', () => submit());
-  listen(hideBtn, 'click', () => {
+  boundary.on(sendBtn, 'click', () => submit());
+  boundary.on(hideBtn, 'click', () => {
     userToggled = true;
     setCollapsed(true, { moveFocus: true, save: true });
   });
-  listen(handle, 'click', () => {
+  boundary.on(handle, 'click', () => {
     userToggled = true;
     setCollapsed(false, { moveFocus: true, save: true });
   });
-  listen(openBtn, 'click', () => {
+  boundary.on(openBtn, 'click', () => {
     void opts.send({ kind: 'overlay:open-app' }).catch(() => undefined);
   });
-  listen(leaveBtn, 'click', () => {
+  boundary.on(leaveBtn, 'click', () => {
     void opts.send({ kind: 'overlay:leave' }).catch(() => undefined);
   });
 
@@ -514,31 +539,102 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     });
   }
 
+  /**
+   * Put the host in the page's top layer, which is painted above the fullscreen
+   * element however it was made. Returns false where the browser has no top
+   * layer to ask for (Chrome grew `showPopover` in 114).
+   */
+  const enterTopLayer = (): boolean => {
+    if (inTopLayer) return true;
+    if (typeof host.showPopover !== 'function') return false;
+    try {
+      // Manual: a popover that dismisses itself on the next click would take
+      // the room away the first time somebody touched the film. The attribute
+      // is the one name the host ever carries, and it only lasts as long as the
+      // film is fullscreen; a page rule matching it still loses to the inline
+      // locks that decide whether the overlay is visible at all (styles.ts).
+      host.setAttribute('popover', 'manual');
+      host.showPopover();
+    } catch {
+      host.removeAttribute('popover');
+      return false;
+    }
+    inTopLayer = true;
+    return true;
+  };
+
+  const leaveTopLayer = (): void => {
+    if (!inTopLayer) return;
+    inTopLayer = false;
+    try {
+      host.hidePopover();
+    } catch {
+      // Already out of the top layer, which is where this was taking it.
+    }
+    host.removeAttribute('popover');
+  };
+
+  const goHome = (): void => {
+    if (host.parentNode !== container) container.appendChild(host);
+  };
+
+  /**
+   * Follow the film into fullscreen.
+   *
+   * The fullscreen element is painted in the top layer, above everything else
+   * on the page, so an overlay left in <body> simply disappears at exactly the
+   * moment people are watching together. The top layer is where the overlay
+   * goes too: a popover joins it AFTER the fullscreen element did, which puts
+   * it above, and that holds whatever went fullscreen — a <div> player, a bare
+   * <video>, an <iframe>.
+   *
+   * Without a top layer the only other way up is to move INSIDE the fullscreen
+   * element, which works only when that element draws its children. On the
+   * older browsers where it comes to that, a fullscreen <video> or <iframe>
+   * leaves the overlay with nowhere to be: a replaced element paints none of
+   * its children, and a fullscreen <iframe> is a different document that
+   * nothing in this one can appear inside. The panel comes back when the film
+   * leaves fullscreen; there is no third place to put it.
+   */
+  const followFullscreen = (): void => {
+    if (destroyed) return;
+    const stage = doc.fullscreenElement;
+    if (stage === null) {
+      leaveTopLayer();
+      goHome();
+      return;
+    }
+    goHome();
+    if (enterTopLayer()) return;
+    if (!DRAWS_NO_CHILDREN.has(stage.tagName) && host.parentNode !== stage) {
+      stage.appendChild(host);
+    }
+  };
+
   if (opts.followFullscreen !== false) {
-    // A fullscreen element is painted above everything outside it, so an
-    // overlay left in <body> simply disappears when the film goes fullscreen —
-    // which is exactly when people are watching together. Moving the host is
-    // safe: it is fixed-position and takes no clicks, so the player's own
-    // layout cannot notice it.
-    listen(doc, 'fullscreenchange', () => {
-      if (destroyed) return;
-      const target: Element = doc.fullscreenElement ?? container;
-      if (host.parentNode !== target) target.appendChild(host);
-    });
+    listen(doc, 'fullscreenchange', followFullscreen);
+    // Run it once for the state we are mounting INTO. The overlay mounts when
+    // the tab joins a room, which is very often already mid-video and already
+    // fullscreen; waiting for a change event means it is invisible until the
+    // user happens to toggle fullscreen off and on again.
+    followFullscreen();
   }
 
   /* ── first paint ── */
 
-  render(normalizeRoomState(opts.initialState));
-
   if (opts.initialState === undefined) {
+    // Nothing has been said about the room yet, so this paints the frame and
+    // not a single message; the snapshot below is the first real state.
+    render(EMPTY_VIEW, true);
     void opts
       .send({ kind: 'overlay:state' })
       .then((snapshot) => {
         if (destroyed || !isRecordLike(snapshot)) return;
-        render(normalizeRoomState(snapshot));
+        apply(snapshot);
       })
       .catch(() => undefined);
+  } else {
+    apply(opts.initialState);
   }
 
   if (storage !== null) {
@@ -562,12 +658,13 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   return {
     update(state: OverlayRoomState): void {
       if (destroyed) return;
-      render(normalizeRoomState(state));
+      apply(state);
     },
     destroy(): void {
       if (destroyed) return;
       destroyed = true;
       endDrag();
+      boundary.destroy();
       for (const off of disposers.splice(0)) off();
       host.remove();
     },
