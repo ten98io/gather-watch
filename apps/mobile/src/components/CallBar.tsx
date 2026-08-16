@@ -2,7 +2,7 @@
  * CallBar — in-room call strip. HONEST BOUNDARY: this build does not bundle
  * @livekit/react-native + react-native-webrtc (native config-plugin weight,
  * no toolchains in CI). What is REAL here:
- *  - the LiveKit token round-trip (POST /livekit/token via RestClient);
+ *  - the LiveKit token round-trip (POST /rtc/livekit-token via RestClient);
  *  - presence of call participants (from the room stream) rendered as orbs.
  * What is a documented stub: actually joining the SFU session. Pressing Join
  * mints a token, then shows the boundary panel instead of pretending to be

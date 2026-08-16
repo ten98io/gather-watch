@@ -525,7 +525,7 @@ export class RestClient {
         this.request({
           label: 'livekit.token',
           method: 'POST',
-          path: '/livekit/token',
+          path: '/rtc/livekit-token',
           schema: LivekitTokenResponse,
           body,
         }),
