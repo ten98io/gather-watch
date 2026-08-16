@@ -42,7 +42,11 @@ function mediaKey(state: PlaybackState | null): string {
   const ref = state?.mediaRef;
   if (state === null || ref === null || ref === undefined) return 'none';
   const id =
-    ref.kind === 'hls' ? ref.url : ref.kind === 'youtube' ? ref.videoId : ref.url;
+    ref.kind === 'youtube' || ref.kind === 'vimeo'
+      ? ref.videoId
+      : ref.kind === 'embed'
+        ? ref.embedUrl
+        : ref.url;
   return `${ref.kind}:${id}:${state.seq}`;
 }
 

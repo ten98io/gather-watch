@@ -14,10 +14,13 @@ import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { canAct } from '@/lib/permissions';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
-import { adapterKindFor, mediaKey } from '@/lib/player/adapter';
+import { adapterKindFor, isFullSyncKind, mediaKey } from '@/lib/player/adapter';
 import type { PlayerAdapter } from '@/lib/player/adapter';
 import { NativeAdapter } from '@/lib/player/native';
 import { YouTubeAdapter } from '@/lib/player/youtube';
+import { SoundCloudAdapter } from '@/lib/player/soundcloud';
+import { VimeoAdapter } from '@/lib/player/vimeo';
+import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -124,7 +127,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const listen = room.kind === 'listen';
 
   const mediaElRef = useRef<HTMLVideoElement | null>(null);
-  const ytContainerRef = useRef<HTMLDivElement | null>(null);
+  const embedContainerRef = useRef<HTMLDivElement | null>(null);
   const [adapter, setAdapter] = useState<PlayerAdapter | null>(null);
   const [muted, setMuted] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -148,8 +151,16 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         setAdapter(null);
       };
     }
-    if (adapterKind === 'youtube' && ytContainerRef.current !== null) {
-      const a = new YouTubeAdapter(ytContainerRef.current);
+    const el = embedContainerRef.current;
+    if (adapterKind !== null && adapterKind !== 'native' && el !== null) {
+      const a =
+        adapterKind === 'youtube'
+          ? new YouTubeAdapter(el)
+          : adapterKind === 'soundcloud'
+            ? new SoundCloudAdapter(el)
+            : adapterKind === 'vimeo'
+              ? new VimeoAdapter(el)
+              : new EmbedAdapter(el);
       setAdapter(a);
       return () => {
         a.destroy();
@@ -171,7 +182,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   }, [adapter, mediaIdentity]);
 
   useSyncEngine({
-    adapter,
+    adapter: isFullSyncKind(adapterKind) ? adapter : null,
     playback,
     clock: connection.clock,
     onDriftSample: debug ? setDriftMs : undefined,
@@ -326,24 +337,67 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
           <ModeBStage restream={restream} />
         ) : (
           <>
-            {/* Both mount points stay in the tree; the inactive one is hidden
-                so adapters survive transient state without re-mounting. */}
-            {/* YouTube chrome is suppressed: the iframe is inert
-                (pointer-events-none) and a click layer toggles play/pause —
-                the room's transport bar is the ONLY control surface. */}
-            <div className={cn('relative h-full w-full', adapterKind === 'youtube' ? 'flex items-center justify-center' : 'hidden')}>
-              <div ref={ytContainerRef} className="pointer-events-none aspect-video max-h-full w-full" />
-              {adapterKind === 'youtube' && playback !== null && (
-                <button
-                  type="button"
-                  aria-label={playback.playing ? 'Pause' : 'Play'}
-                  className="absolute inset-0 h-full w-full cursor-pointer"
-                  onClick={() => {
-                    if (!controlEnabled || adapter === null) return;
-                    if (playback.playing) connection.syncPause(adapter.positionMs());
-                    else connection.syncPlay(adapter.positionMs());
-                  }}
-                />
+            {/* All iframe adapters share one mount point. Full-sync embeds
+                (YouTube/SoundCloud/Vimeo) are INERT — pointer-events-none plus
+                a click layer that toggles play/pause — so the room's transport
+                bar is the only control surface. Approximate-tier embeds
+                (Spotify/Apple/Tidal/Deezer) stay interactive because their
+                iframe is the only control surface that exists. */}
+            <div
+              className={cn(
+                'relative h-full w-full',
+                adapterKind !== null && adapterKind !== 'native'
+                  ? 'flex items-center justify-center'
+                  : 'hidden',
+              )}
+            >
+              <div
+                ref={embedContainerRef}
+                className={cn(
+                  'aspect-video max-h-full w-full',
+                  adapterKind !== 'embed' && 'pointer-events-none',
+                )}
+              />
+              {adapterKind !== null &&
+                adapterKind !== 'native' &&
+                adapterKind !== 'embed' &&
+                playback !== null && (
+                  <button
+                    type="button"
+                    aria-label={playback.playing ? 'Pause' : 'Play'}
+                    className="absolute inset-0 h-full w-full cursor-pointer"
+                    onClick={() => {
+                      if (!controlEnabled || adapter === null) return;
+                      if (playback.playing) connection.syncPause(adapter.positionMs());
+                      else connection.syncPlay(adapter.positionMs());
+                    }}
+                  />
+                )}
+              {/* While paused, the provider's iframe chrome (YouTube's red
+                  button / "Watch on" bar) is fully covered by OUR paused
+                  backdrop — one play button exists, and it is ours. */}
+              {adapterKind !== null &&
+                adapterKind !== 'native' &&
+                adapterKind !== 'embed' &&
+                playback !== null &&
+                !playback.playing && (
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-void/95"
+                  >
+                    <span className="font-display text-lg font-semibold text-mid">
+                      {currentItem?.title ?? 'Paused'}
+                    </span>
+                    <span className="glass-raised flex h-16 w-16 items-center justify-center rounded-full text-2xl text-hi shadow-glow">
+                      ▶
+                    </span>
+                    <span className="text-xs text-low">Press play — everyone starts together</span>
+                  </div>
+                )}
+              {adapterKind === 'embed' && (
+                <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-[10px] text-white/90">
+                  Approximate sync — this service’s embed plays on each device
+                </span>
               )}
             </div>
             {listen ? (
@@ -398,7 +452,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       </div>
 
       {/* transport chrome */}
-      {!showModeB && playback !== null && (
+      {!showModeB && playback !== null && adapterKind !== 'embed' && (
         <div
           className={cn(
             'absolute inset-x-4 bottom-4 z-20 transition-opacity duration-300',

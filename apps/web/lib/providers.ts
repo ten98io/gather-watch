@@ -1,0 +1,165 @@
+/**
+ * Mode A provider registry — every supported service, its URL parser, and its
+ * HONEST capability tier:
+ *
+ *  full-sync   real player API (YouTube/SoundCloud/Vimeo) → drift-corrected
+ *  approximate official embed with no position API (Spotify/Apple Music/
+ *              Tidal/Deezer) → play starts together, never corrected. The UI
+ *              badges this; nothing is faked.
+ *  extension   DRM services (Netflix, Prime Video, Disney+, Max, Hulu,
+ *              Paramount+, Peacock, Crunchyroll) → no embed exists and capture
+ *              renders black by OS design. These ride the browser-extension
+ *              content-script path (everyone's own player, everyone's own
+ *              account). In the web app they queue as informational rows.
+ */
+import type { MediaRef } from '@playin/contracts';
+
+export type ProviderCapability = 'full-sync' | 'approximate' | 'extension';
+
+export interface Provider {
+  id: string;
+  name: string;
+  icon: string;
+  capability: ProviderCapability;
+  /** Queue-add hint shown when a URL parses to this provider. */
+  note: string;
+}
+
+export const PROVIDERS: readonly Provider[] = [
+  { id: 'youtube', name: 'YouTube', icon: '▶', capability: 'full-sync', note: 'Frame-accurate sync' },
+  { id: 'youtubemusic', name: 'YouTube Music', icon: '♫', capability: 'full-sync', note: 'Frame-accurate sync' },
+  { id: 'soundcloud', name: 'SoundCloud', icon: '☁', capability: 'full-sync', note: 'Frame-accurate sync' },
+  { id: 'vimeo', name: 'Vimeo', icon: 'Ⓥ', capability: 'full-sync', note: 'Frame-accurate sync' },
+  { id: 'spotify', name: 'Spotify', icon: '●', capability: 'approximate', note: 'Official embed · approximate sync' },
+  { id: 'applemusic', name: 'Apple Music', icon: '◆', capability: 'approximate', note: 'Official embed · approximate sync' },
+  { id: 'tidal', name: 'Tidal', icon: '≈', capability: 'approximate', note: 'Official embed · approximate sync' },
+  { id: 'deezer', name: 'Deezer', icon: '▤', capability: 'approximate', note: 'Official embed · approximate sync' },
+  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: 'DRM — browser extension (everyone’s own account)' },
+  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'DRM — browser extension' },
+  { id: 'direct', name: 'Direct URL / upload', icon: '🔗', capability: 'full-sync', note: 'mp4/mp3/m3u8 — frame-accurate' },
+] as const;
+
+export function providerById(id: string): Provider | undefined {
+  return PROVIDERS.find((p) => p.id === id);
+}
+
+export interface ParsedProviderUrl {
+  provider: Provider;
+  /** null for extension-tier providers (no playable MediaRef exists). */
+  ref: MediaRef | null;
+  titleHint: string | null;
+}
+
+/** Parse a pasted URL into a provider + MediaRef (or an extension-tier row). */
+export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
+  const url = raw.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) return null;
+  let host = '';
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '').replace(/^m\./, '');
+  } catch {
+    return null;
+  }
+  const found = (id: string, ref: MediaRef | null, titleHint: string | null = null): ParsedProviderUrl => {
+    const provider = providerById(id);
+    if (provider === undefined) throw new Error(`unknown provider ${id}`);
+    return { provider, ref, titleHint };
+  };
+
+  // YouTube + YouTube Music (same videoId space).
+  if (host === 'youtu.be' || host.endsWith('youtube.com')) {
+    const yt = /(?:youtube\.com\/(?:watch\?[^#]*v=|shorts\/|music\/)|youtu\.be\/)([\w-]{6,})/.exec(url);
+    const videoId = yt?.[1] ?? (/[?&]v=([\w-]{6,})/.exec(url)?.[1]);
+    if (videoId === undefined) return null;
+    return found(
+      host === 'music.youtube.com' ? 'youtubemusic' : 'youtube',
+      { kind: 'youtube', videoId },
+      `YouTube · ${videoId}`,
+    );
+  }
+
+  if (host === 'soundcloud.com' || host === 'on.soundcloud.com') {
+    return found('soundcloud', { kind: 'soundcloud', url }, 'SoundCloud track');
+  }
+
+  const vimeo = /vimeo\.com\/(?:video\/)?(\d{6,})/.exec(url);
+  if (vimeo?.[1] !== undefined) {
+    return found('vimeo', { kind: 'vimeo', videoId: vimeo[1] }, `Vimeo · ${vimeo[1]}`);
+  }
+
+  const spotify = /open\.spotify\.com\/(track|album|playlist|episode|show)\/([\w]+)/.exec(url);
+  if (spotify?.[1] !== undefined && spotify[2] !== undefined) {
+    return found('spotify', {
+      kind: 'embed',
+      provider: 'spotify',
+      embedUrl: `https://open.spotify.com/embed/${spotify[1]}/${spotify[2]}`,
+      title: null,
+    });
+  }
+
+  if (host === 'music.apple.com') {
+    const path = new URL(url).pathname;
+    return found('applemusic', {
+      kind: 'embed',
+      provider: 'applemusic',
+      embedUrl: `https://embed.music.apple.com${path}`,
+      title: null,
+    });
+  }
+
+  const tidal = /tidal\.com\/(?:browse\/)?(track|album|playlist)\/([\w-]+)/.exec(url);
+  if (tidal?.[1] !== undefined && tidal[2] !== undefined) {
+    return found('tidal', {
+      kind: 'embed',
+      provider: 'tidal',
+      embedUrl: `https://embed.tidal.com/${tidal[1]}s/${tidal[2]}`,
+      title: null,
+    });
+  }
+
+  const deezer = /deezer\.com\/(?:\w+\/)?(track|album|playlist)\/(\d+)/.exec(url);
+  if (deezer?.[1] !== undefined && deezer[2] !== undefined) {
+    return found('deezer', {
+      kind: 'embed',
+      provider: 'deezer',
+      embedUrl: `https://widget.deezer.com/widget/dark/${deezer[1]}/${deezer[2]}`,
+      title: null,
+    });
+  }
+
+  // DRM tier — recognized, never embedded.
+  const drmHosts: Record<string, string> = {
+    'netflix.com': 'netflix',
+    'primevideo.com': 'primevideo',
+    'disneyplus.com': 'disneyplus',
+    'max.com': 'max',
+    'hulu.com': 'hulu',
+    'paramountplus.com': 'paramountplus',
+    'peacocktv.com': 'peacock',
+    'crunchyroll.com': 'crunchyroll',
+  };
+  const drmId = Object.entries(drmHosts).find(([h]) => host === h || host.endsWith(`.${h}`))?.[1];
+  if (drmId !== undefined) return found(drmId, null);
+
+  // Direct media.
+  const lower = url.split('?')[0]?.toLowerCase() ?? '';
+  const mime = lower.endsWith('.m3u8')
+    ? 'application/x-mpegURL'
+    : lower.endsWith('.mp3')
+      ? 'audio/mpeg'
+      : lower.endsWith('.m4a') || lower.endsWith('.aac')
+        ? 'audio/aac'
+        : lower.endsWith('.webm')
+          ? 'video/webm'
+          : lower.endsWith('.mp4')
+            ? 'video/mp4'
+            : null;
+  if (mime === null) return null;
+  return found('direct', { kind: 'url', url, mime }, url.split('/').pop() ?? url);
+}

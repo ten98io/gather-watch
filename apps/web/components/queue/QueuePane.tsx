@@ -6,11 +6,12 @@
  * vote-to-skip with the room's configured threshold, and click-to-play via
  * sync.setTrack. Server-authoritative queue.state drives everything.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { QueueItem, QueueItemId, RoomId } from '@playin/contracts';
 import { api } from '@/lib/api';
-import { canAct, formatMs, mediaRefFromUrl } from '@/lib/permissions';
+import { canAct, formatMs } from '@/lib/permissions';
+import { parseProviderUrl } from '@/lib/providers';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -121,7 +122,7 @@ function QueueRow({
         <img src={item.artworkUrl} alt="" className="h-10 w-10 rounded-ctl object-cover" />
       ) : (
         <span aria-hidden className="flex h-10 w-10 items-center justify-center rounded-ctl bg-raised">
-          {item.mediaRef.kind === 'youtube' ? '▶' : item.mediaRef.kind === 'hls' ? '🎬' : '🔗'}
+          {item.mediaRef.kind === 'youtube' ? '▶' : item.mediaRef.kind === 'hls' ? '🎬' : item.mediaRef.kind === 'soundcloud' ? '☁' : item.mediaRef.kind === 'vimeo' ? 'Ⓥ' : item.mediaRef.kind === 'embed' ? '●' : '🔗'}
         </span>
       )}
       <div className="min-w-0 flex-1">
@@ -206,38 +207,65 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
   const currentIndex = playback?.queueIndex ?? null;
 
   const add = (): void => {
-    const ref = mediaRefFromUrl(draft);
-    if (ref === null) {
-      setError('Paste a YouTube link or a direct media URL (mp4/mp3/m3u8)');
+    const parsed = parseProviderUrl(draft);
+    if (parsed === null) {
+      setError('Paste a link from a supported service or a direct media URL (mp4/mp3/m3u8)');
+      return;
+    }
+    if (parsed.ref === null) {
+      // DRM tier: recognized, but there is nothing to embed — honest stop.
+      setError(
+        `${parsed.provider.name} is DRM-protected: no embed exists. It works via the Playin browser extension (everyone watches through their own account) — landing as a separate app.`,
+      );
       return;
     }
     const title =
-      ref.kind === 'youtube' ? `YouTube · ${ref.videoId}` : (ref.url.split('/').pop() ?? ref.url);
-    connection.queueAdd({ mediaRef: ref, title, durationMs: null, artworkUrl: null });
+      parsed.titleHint ??
+      (parsed.ref.kind === 'youtube' ? `YouTube · ${parsed.ref.videoId}` : 'Shared media');
+    connection.queueAdd({
+      mediaRef: parsed.ref,
+      title,
+      durationMs: null,
+      artworkUrl: null,
+    });
     setDraft('');
     setError(null);
   };
 
+  const parsedPreview = useMemo(() => {
+    const trimmed = draft.trim();
+    if (trimmed.length < 8) return null;
+    return parseProviderUrl(trimmed);
+  }, [draft]);
+
   return (
     <section aria-label="Queue" data-room={roomId} className="flex h-full min-h-0 flex-col">
       {canQueue && (
-        <div className="flex gap-2 border-b border-border-glass p-2">
-          <Input
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') add();
-            }}
-            placeholder="Add YouTube or media URL…"
-            aria-label="Add to queue"
-          />
-          <Button size="sm" onClick={add}>Add</Button>
-          <Button size="sm" variant="secondary" onClick={() => setLibraryOpen(true)}>
-            Library
-          </Button>
+        <div className="flex flex-col gap-1 border-b border-border-glass p-2">
+          <div className="flex gap-2">
+            <Input
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') add();
+              }}
+              placeholder="Add YouTube, SoundCloud, Vimeo, Spotify…"
+              aria-label="Add to queue"
+            />
+            <Button size="sm" onClick={add}>Add</Button>
+            <Button size="sm" variant="secondary" onClick={() => setLibraryOpen(true)}>
+              Library
+            </Button>
+          </div>
+          {parsedPreview !== null && (
+            <p className="px-1 text-[10px] text-low">
+              {parsedPreview.provider.icon} {parsedPreview.provider.name} ·{' '}
+              {parsedPreview.provider.note}
+            </p>
+          )}
         </div>
       )}
       {error !== null && <p className="px-3 pt-1 text-xs text-warn">{error}</p>}

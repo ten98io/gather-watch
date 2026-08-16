@@ -150,19 +150,17 @@ function Controls(props: {
   );
 }
 
-function YouTubeStage(props: { videoId: string }) {
+function EmbedStage(props: { uri: string; label: string }) {
   return (
     <View style={styles.stageBody}>
       <WebView
-        source={{
-          uri: `https://www.youtube.com/embed/${props.videoId}?playsinline=1&rel=0`,
-        }}
+        source={{ uri: props.uri }}
         style={styles.flex}
         allowsFullscreenVideo
         mediaPlaybackRequiresUserAction={false}
       />
       <Text style={styles.limitation}>
-        YouTube on mobile: sync is approximate (embed API bridge pending) — direct/HLS
+        {props.label} on mobile: sync is approximate (embed bridge pending) — direct/HLS
         sources are frame-accurate.
       </Text>
     </View>
@@ -182,8 +180,26 @@ export function Stage(props: {
 
   const mediaRef = playback?.mediaRef ?? null;
   const nativeSource = useMemo(() => {
-    if (mediaRef === null || mediaRef.kind === 'youtube') return null;
+    if (mediaRef === null || (mediaRef.kind !== 'hls' && mediaRef.kind !== 'url')) return null;
     return { uri: mediaRef.url };
+  }, [mediaRef]);
+
+  /** WebView embed URL for the no-native-player kinds (approximate sync). */
+  const embedUri = useMemo(() => {
+    if (mediaRef === null) return null;
+    if (mediaRef.kind === 'youtube') {
+      return `https://www.youtube.com/embed/${mediaRef.videoId}?playsinline=1&rel=0`;
+    }
+    if (mediaRef.kind === 'soundcloud') {
+      return `https://w.soundcloud.com/player/?url=${encodeURIComponent(mediaRef.url)}&auto_play=false`;
+    }
+    if (mediaRef.kind === 'vimeo') {
+      return `https://player.vimeo.com/video/${mediaRef.videoId}`;
+    }
+    if (mediaRef.kind === 'embed') {
+      return mediaRef.embedUrl;
+    }
+    return null;
   }, [mediaRef]);
 
   const player = useVideoPlayer(nativeSource, (p) => {
@@ -238,8 +254,21 @@ export function Stage(props: {
             Add to the queue from the Queue tab — everyone’s player follows along.
           </Text>
         </View>
-      ) : mediaRef.kind === 'youtube' ? (
-        <YouTubeStage videoId={mediaRef.videoId} />
+      ) : embedUri !== null ? (
+        <EmbedStage
+          uri={embedUri}
+          label={
+            mediaRef?.kind === 'youtube'
+              ? 'YouTube'
+              : mediaRef?.kind === 'soundcloud'
+                ? 'SoundCloud'
+                : mediaRef?.kind === 'vimeo'
+                  ? 'Vimeo'
+                  : mediaRef?.kind === 'embed'
+                    ? mediaRef.provider
+                    : 'Embed'
+          }
+        />
       ) : (
         <View style={styles.stageBody}>
           <VideoView

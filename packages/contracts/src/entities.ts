@@ -111,6 +111,23 @@ export const MediaRef = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('hls'), assetId: AssetId, url: z.string().url() }),
   z.object({ kind: z.literal('youtube'), videoId: z.string().min(1) }),
   z.object({ kind: z.literal('url'), url: z.string().url(), mime: z.string().min(1) }),
+  /** SoundCloud track/playlist URL — full sync via the official Widget API. */
+  z.object({ kind: z.literal('soundcloud'), url: z.string().url() }),
+  /** Vimeo video id — full sync via the official player.js postMessage API. */
+  z.object({ kind: z.literal('vimeo'), videoId: z.string().min(1) }),
+  /**
+   * Official embed players without a position API (Spotify, Apple Music,
+   * Tidal, Deezer): transport commands are issued simultaneously, so sync is
+   * approximate — never drift-corrected. Clients must badge it as such.
+   * DRM services (Netflix/Prime/Disney+/Max/Hulu) are NOT MediaRefs — they
+   * ride the browser-extension content-script path (everyone's own player).
+   */
+  z.object({
+    kind: z.literal('embed'),
+    provider: z.enum(['spotify', 'applemusic', 'tidal', 'deezer']),
+    embedUrl: z.string().url(),
+    title: z.string().min(1).nullable(),
+  }),
 ]);
 export type MediaRef = z.infer<typeof MediaRef>;
 

@@ -19,9 +19,9 @@ export type AdapterEvent =
 
 export interface PlayerAdapter {
   /** Which MediaRef kinds this adapter plays. */
-  readonly kind: 'native' | 'youtube';
+  readonly kind: 'native' | 'youtube' | 'soundcloud' | 'vimeo' | 'embed';
   /** Load a ref. 'ready' fires when position/duration are meaningful. */
-  load(ref: Extract<MediaRef, { kind: 'hls' | 'url' | 'youtube' }>): void;
+  load(ref: MediaRef): void;
   play(): void;
   pause(): void;
   seekTo(ms: number): void;
@@ -43,18 +43,29 @@ export function mediaKey(
 ): string {
   if (mediaRef === null || mediaRef === undefined) return 'none';
   const id =
-    mediaRef.kind === 'hls'
-      ? mediaRef.url
-      : mediaRef.kind === 'youtube'
-        ? mediaRef.videoId
+    mediaRef.kind === 'youtube' || mediaRef.kind === 'vimeo'
+      ? mediaRef.videoId
+      : mediaRef.kind === 'embed'
+        ? mediaRef.embedUrl
         : mediaRef.url;
   return `${mediaRef.kind}:${id}:${seq ?? 0}`;
 }
 
+export type AdapterKind = 'native' | 'youtube' | 'soundcloud' | 'vimeo' | 'embed';
+
 /** Which adapter plays this ref; null = nothing playable. */
-export function adapterKindFor(ref: MediaRef | null): 'native' | 'youtube' | null {
+export function adapterKindFor(ref: MediaRef | null): AdapterKind | null {
   if (ref === null) return null;
-  return ref.kind === 'youtube' ? 'youtube' : 'native';
+  if (ref.kind === 'youtube') return 'youtube';
+  if (ref.kind === 'soundcloud') return 'soundcloud';
+  if (ref.kind === 'vimeo') return 'vimeo';
+  if (ref.kind === 'embed') return 'embed';
+  return 'native';
+}
+
+/** True when the adapter kind supports transport + drift correction. */
+export function isFullSyncKind(kind: AdapterKind | null): boolean {
+  return kind === 'native' || kind === 'youtube' || kind === 'soundcloud' || kind === 'vimeo';
 }
 
 /** True when the ref's bytes are HLS (m3u8) rather than progressive. */
