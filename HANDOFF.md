@@ -99,6 +99,40 @@ Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
 
 ---
 
+## Installing the extension (it now actually runs)
+
+```bash
+pnpm --filter @playin/extension build
+```
+
+Then in Chrome: `chrome://extensions` → turn on **Developer mode** → **Load
+unpacked** → pick `apps/extension/dist`.
+
+There is no automated path for your everyday browser and that is deliberate on
+Chrome's part: **Chrome 137+ ignores `--load-extension` outright** (verified —
+a probe extension left no trace in the profile). The CDP
+`Extensions.loadUnpacked` method still works, but only against a Chrome started
+with `--remote-debugging-port` and `--enable-unsafe-extension-debugging`, which
+is fine for a throwaway verification profile and not something to do to your
+real browser.
+
+The web app finds the extension **without any configuration**: the content
+script announces its id on Playin origins. `NEXT_PUBLIC_PLAYIN_EXTENSION_ID`
+only pins it (build-time id wins over the announcement).
+
+Verified end-to-end in a real Chrome, not just in tests:
+
+| Check | Result |
+|---|---|
+| service worker starts | no exceptions, no console errors |
+| content script announces its id | id matches the loaded extension |
+| `hello` over the external channel | `ok`, protocol v1 |
+| advertised capabilities | includes the new `modeB.desktop` |
+
+**Not yet verified:** an actual screen/window capture reaching a room. That
+needs a real display and a second peer; a headless profile has no picker. It is
+the remaining gate on WEB_SLIMMING step 1.
+
 ## Next actions, in order
 
 1. ~~Verify + commit the current tree.~~ Done — gates green, merged to `main`.
@@ -109,7 +143,23 @@ Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
    `~/.claude/projects/-Users-mg-Desktop-playin/2583c315-*/workflows/scripts/playin-elastic-extension-wf_2780b452-bb4.js`
    — note there is **no** `playin-overlay-wf_*.js`; that filename in the old
    handoff was wrong.
-4. **Then the web slimming**, strictly in the order in
+4. **Web slimming is PART DONE.** Step 1 (`desktopCapture`) and step 3 (the
+   install funnel component + the `useExtensionDriver` hook) are built,
+   adversarially reviewed, and their defects fixed. What remains:
+   - **Step 2 is not wired.** Nothing in the running app mounts `ExtensionGate`
+     or calls `useExtensionDriver` — `StagePane.tsx` has no reference to
+     either. The pieces exist; the integration does not.
+   - **Steps 4-5 (the deletions) are BLOCKED by the ordering rule**, and the
+     block is real, not caution. The rule gates deletion on "a room with the
+     extension installed drives playback correctly", and the extension is not
+     yet a verified playback driver — the overlay wave (item 3 above) never
+     finished. Deleting `lib/player/*` today would leave the product unable to
+     play anything.
+   - Note the blast radius when it is time: the adapters are not leaf files.
+     `StagePane`, `ListenStage` and `PlayerControls` all build on them, and the
+     listen room's visualiser taps `NativeAdapter.mediaElement` directly, so
+     step 4 rewrites the stage rather than deleting from it.
+5. **Then the rest of the web slimming**, strictly in the order in
    `docs/WEB_SLIMMING.md`: add `desktopCapture` → extension-preferred
    driving → install funnel → deletions → responsive pass → docs
    consolidation.
