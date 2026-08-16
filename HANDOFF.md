@@ -6,31 +6,25 @@ Pick this up in a fresh session. Read this file first, then
 
 ---
 
-## ⚠️ READ THIS FIRST: the tree is mid-edit and UNVERIFIED
+## Status: the room work is VERIFIED and on `main`
 
-Two agent waves were running when the session ended and **did not finish**.
-Their work is on disk but the final gate pass never ran.
+The previous session's tree was never actually broken — the build failure was
+`.next` contention, exactly as suspected. With the dev server stopped and
+`apps/web/.next` removed, everything passes:
 
-**Do not assume the repo compiles. Verify before doing anything else:**
+| Gate | Result |
+|---|---|
+| `pnpm build` | 8/8 |
+| `pnpm typecheck` | 13/13 |
+| `pnpm test` | 13/13 — **882 tests** |
+| `pnpm lint` | 9/9 |
 
-```bash
-pnpm build && pnpm typecheck && pnpm test && pnpm lint
-```
+`main` now carries all of it (the wave-1/2 checkpoint, plus B3). Always run
+`pnpm build` **first** — contracts/api-client are consumed via built `dist`.
 
-Last *known-green* state was the wave-1 checkpoint: turbo `test` 13/13
-(incl. 166 API tests), `typecheck` 13/13, `lint` 9/9. Everything after that
-is unverified.
-
-**All work is committed** to branch `wip/ux-overhaul-extension-first`
-(commit `43362ff`). `main` remains at the last known-green commit `7225159`,
-deliberately — the checkpoint is unverified, so it does not belong on main
-until gates pass. Merge it forward once they do.
-
-**Known build issue (likely benign):** `pnpm build` currently fails with
-`PageNotFoundError` on pages that plainly exist (`/join/[code]`,
-`/billing/success`, `/icon.svg`). That is `.next` contention — the dev server
-on :3000 holds the directory while the build reads it. Stop the dev server,
-`rm -rf apps/web/.next`, then rebuild before treating it as real breakage.
+**Stop the dev server before building.** A running :3000 holds `.next` and
+produces `PageNotFoundError` on pages that plainly exist (`/join/[code]`,
+`/icon.svg`). That is contention, not breakage.
 
 ### What finished vs what did not
 
@@ -39,15 +33,22 @@ on :3000 holds the directory while the build reads it. Stop the dev server,
 | Room overhaul | metadata resolver (server) | ✅ done |
 | Room overhaul | design tokens + primitives | ✅ done |
 | Room overhaul | call feed fix (B1) | ✅ done |
-| Room overhaul | **play-button fix (B2)** | ❌ never ran |
-| Room overhaul | **listen-room identity (B3)** + final gates | ❌ never ran |
+| Room overhaul | play-button fix (B2) | ✅ done — the old table was wrong |
+| Room overhaul | listen-room identity (B3) | ✅ done + browser-verified |
 | Extension overlay | **PlaybackDriver + elastic wiring** | ❌ incomplete |
 | Extension overlay | **overlay UI** | ❌ never ran |
 | Extension overlay | **hardening + gates** | ❌ never ran |
 
-Because B3 never ran, **nobody ran the full gate pass** for the room work.
-Because the overlay wave died in its first agent, `apps/extension/src/driver.ts`
-may be partial or absent — check before building on it.
+**B2 was already complete** despite being listed as "never ran": `StageShield`
+in `StagePane.tsx` implements the whole brief — one control surface over every
+full-sync provider, covering YouTube's centre overlay in *both* the unstarted
+and paused states, exactly one play affordance, the "Tap to start watching
+together" recovery for refused autoplay, and policy gating. All four adapters
+report ms correctly (SoundCloud's widget is natively ms; YouTube and Vimeo
+convert from seconds; `embed` is the documented approximate tier).
+
+`apps/extension/src/driver.ts` is present but partial — it carries a
+`pendingRealign` field that nothing reads, left by the agent that died.
 
 Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
 `CallStrip.tsx` were collapsed into a new `components/call/` directory.
@@ -100,13 +101,14 @@ Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
 
 ## Next actions, in order
 
-1. **Verify + commit** the current tree (see top of file).
-2. **Finish the room overhaul**: the play-button fix (B2) and listen-room
-   identity (B3) never ran. Briefs are in the workflow script at
-   `~/.claude/projects/-Users-mg-Desktop-playin/<session>/workflows/scripts/playin-overhaul-1-*.js`
-   — the B2/B3 agent prompts can be lifted verbatim.
+1. ~~Verify + commit the current tree.~~ Done — gates green, merged to `main`.
+2. ~~Finish the room overhaul (B2, B3).~~ Done — B2 was already complete; B3
+   was built and verified in a real browser.
 3. **Finish the extension overlay wave** (driver contract → overlay UI →
-   hardening). Script: `playin-overlay-wf_*.js`, same directory.
+   hardening). The script is
+   `~/.claude/projects/-Users-mg-Desktop-playin/2583c315-*/workflows/scripts/playin-elastic-extension-wf_2780b452-bb4.js`
+   — note there is **no** `playin-overlay-wf_*.js`; that filename in the old
+   handoff was wrong.
 4. **Then the web slimming**, strictly in the order in
    `docs/WEB_SLIMMING.md`: add `desktopCapture` → extension-preferred
    driving → install funnel → deletions → responsive pass → docs
@@ -131,6 +133,19 @@ audit against the ≤3-step budget, media-anchored chat's **server** half
   emits *before* the `@media(hover:hover)` block and loses to it. `QueuePane`
   carries both an unscoped and a media-scoped class on purpose — do not
   "simplify" the duplicate away.
+- **`cn()` is a plain joiner, not `tailwind-merge`.** It has no conflict
+  resolution, so passing both `relative` and `absolute` emits both and CSS
+  source order decides — Tailwind emits `.relative` *after* `.absolute`, so
+  `absolute` silently loses. Make conflicting utilities mutually exclusive
+  (ternary), never additive.
+- **`justify-center` on an `overflow-y-auto` box clips unreachably.** Once the
+  content is taller than the port, the overflow goes off the *top* and the
+  scrollbar cannot reach it. Split the scroll port from the centring: put
+  `overflow-y-auto` on the outer element and `min-h-full … justify-center` on
+  an inner column.
+- **The repo has no Prettier config** — Prettier is not its formatter. Running
+  `npx prettier --write` rewrites files to double quotes against house style.
+  Match surrounding style by hand.
 - **`exactOptionalPropertyTypes` is on.** Spreading `{ field: maybeUndefined }`
   writes explicit `undefined` over real values; use conditional spreads.
 - **Media service must run exactly one replica** — its ffmpeg queue is an
