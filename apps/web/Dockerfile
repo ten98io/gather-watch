@@ -39,7 +39,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # ARGs. Without this, every image bakes the localhost default from lib/api.ts.
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-RUN pnpm --filter ./apps/web... --fail-if-no-match run build
+RUN pnpm --filter '{./apps/web}...' --fail-if-no-match run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM base AS runner
@@ -52,6 +52,7 @@ RUN apk add --no-cache curl
 # Whole built workspace (simple-build tradeoff: bigger image, zero surprises
 # with pnpm's symlinked node_modules). node = the stock non-root user (uid 1000).
 COPY --from=builder --chown=node:node /app /app
+RUN chown node:node /app
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

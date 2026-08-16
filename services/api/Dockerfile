@@ -26,7 +26,7 @@ RUN --mount=type=cache,id=s/a802d13d-f16e-448e-8e08-bc974bd376e5-pnpm-store,targ
 # Build the API plus its workspace dependencies (contracts, sync-core, …).
 # --fail-if-no-match: fail the image build loudly if the service package does
 # not exist yet, instead of shipping a no-op container.
-RUN pnpm --filter ./services/api... --fail-if-no-match run build
+RUN pnpm --filter '{./services/api}...' --fail-if-no-match run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM base AS runner
@@ -35,6 +35,7 @@ ENV NODE_ENV=production \
     API_PORT=4000
 RUN apk add --no-cache curl
 COPY --from=builder --chown=node:node /app /app
+RUN chown node:node /app
 USER node
 EXPOSE 4000
 # Contract (see infra/README.md): the API serves GET /healthz → 200.

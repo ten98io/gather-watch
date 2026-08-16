@@ -28,7 +28,7 @@ RUN --mount=type=cache,id=s/ebb4dbbe-5d8e-4b25-9296-a754fc161d8e-pnpm-store,targ
 # Build the media service plus its workspace dependencies.
 # --fail-if-no-match: fail the image build loudly if the service package does
 # not exist yet, instead of shipping a no-op container.
-RUN pnpm --filter ./services/media... --fail-if-no-match run build
+RUN pnpm --filter '{./services/media}...' --fail-if-no-match run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM base AS runner
@@ -39,6 +39,7 @@ ENV NODE_ENV=production \
 # ffmpeg: the whole point of this image. curl: healthcheck probe.
 RUN apk add --no-cache ffmpeg curl
 COPY --from=builder --chown=node:node /app /app
+RUN chown node:node /app
 USER node
 EXPOSE 4500
 # Contract (see infra/README.md): the media worker serves a minimal
