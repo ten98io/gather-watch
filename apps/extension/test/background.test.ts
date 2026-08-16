@@ -270,6 +270,10 @@ const GUEST_WIRE = (): Record<string, unknown> => ({
 /** What the room's member list answers with. Empty = the API said nothing
  *  useful, which is the case every other test runs under. */
 let membersWire: Record<string, unknown> = {};
+/** What GET /rooms/:id answers: the room's policies and OUR member record.
+ *  Empty = the API said nothing useful — and unknown DENIES playback control,
+ *  which is what every other test runs under. */
+let roomWire: Record<string, unknown> = {};
 /** Every URL the worker fetched, so a test can say what it did NOT fetch. */
 let fetched: string[] = [];
 
@@ -279,12 +283,17 @@ let bg: typeof import('../src/background');
 beforeAll(async () => {
   fake = installChromeFake();
   globalThis.fetch = (async (url: string) => {
-    fetched.push(String(url));
-    const members = String(url).includes('/members');
+    const u = String(url);
+    fetched.push(u);
+    const body = u.includes('/members')
+      ? membersWire
+      : /\/rooms\/[^/]+$/.test(u)
+        ? roomWire
+        : GUEST_WIRE();
     return {
       ok: true,
       status: 200,
-      json: async () => (members ? membersWire : GUEST_WIRE()),
+      json: async () => body,
       text: async () => '',
     };
   }) as unknown as typeof fetch;
@@ -299,6 +308,7 @@ beforeEach(() => {
   fake.createdTabs.length = 0;
   room.reset();
   membersWire = {};
+  roomWire = {};
   fetched = [];
   fake.nextPick = { streamId: 'desktop-stream-1', canRequestAudioTrack: false };
   fake.nextTabStreamId = 'tab-stream-1';
@@ -892,6 +902,173 @@ describe('driving a tab', () => {
       { tab: { id: 7 }, frameId: 3 },
     );
     expect((await status()).telemetry?.positionMs).toBe(222);
+  });
+});
+
+/* ── the user's own hand on the driven site's player ── */
+
+/** GET /rooms/:id wire naming the room's playback policy and OUR role. */
+function accessWire(playbackControl: string, role: string): Record<string, unknown> {
+  return { room: { policies: { playbackControl } }, member: { role } };
+}
+
+describe("a user's gesture on the driven player becomes room intent", () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  /** A driven room: connected, access loaded, frame 3 elected, room playing. */
+  async function openDrivenRoom(access: Record<string, unknown> | null): Promise<void> {
+    if (access !== null) roomWire = access;
+    await connectRoom();
+    // loadRoomAccess is fire-and-forget; let it land before anything speaks.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    claimFrom(7, 3);
+    room.emit('sync.state', playbackAt(600_000));
+  }
+
+  function telemetryFrom(
+    frameId: number,
+    over: { positionMs: number; playing: boolean },
+  ): void {
+    notify(
+      {
+        kind: 'telemetry',
+        positionMs: over.positionMs,
+        durationMs: 5_400_000,
+        playing: over.playing,
+        rate: 1,
+      },
+      { tab: { id: 7 }, frameId },
+    );
+  }
+
+  function intentFrom(frameId: number, intent: unknown, positionMs: unknown): void {
+    notify({ kind: 'userIntent', intent, positionMs }, { tab: { id: 7 }, frameId });
+  }
+
+  const syncSent = (type: string): Array<{ type: string; payload: unknown }> =>
+    room.sent.filter((m) => m.type === type);
+
+  it('one user pause: one room intent, no correction fired against it', async () => {
+    await openDrivenRoom(accessWire('everyone', 'guest'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    // The user pauses the site's own player.
+    telemetryFrom(3, { positionMs: 600_400, playing: false });
+    intentFrom(3, 'pause', 600_400);
+
+    // Exactly the web transport's wire shape, exactly once.
+    expect(syncSent('sync.pause')).toEqual([
+      { type: 'sync.pause', payload: { positionMs: 600_400 } },
+    ]);
+
+    // The room still says "playing" — the echo is in flight. No un-pause.
+    fake.tabMessages.length = 0;
+    room.emit('sync.state', playbackAt(600_000));
+    expect(messagesOfKind('drive')).toEqual([]);
+
+    // The echo lands. Still nothing to correct — the user stays paused.
+    room.emit('sync.state', { ...playbackAt(600_400), playing: false });
+    expect(messagesOfKind('drive')).toEqual([]);
+    expect(syncSent('sync.pause')).toHaveLength(1);
+  });
+
+  it('forwards play and seek with the same wire shapes the web app uses', async () => {
+    await openDrivenRoom(accessWire('everyone', 'member'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    intentFrom(3, 'play', 600_000);
+    intentFrom(3, 'seek', 630_500);
+
+    expect(syncSent('sync.play')).toEqual([
+      { type: 'sync.play', payload: { positionMs: 600_000 } },
+    ]);
+    expect(syncSent('sync.seek')).toEqual([
+      { type: 'sync.seek', payload: { positionMs: 630_500 } },
+    ]);
+  });
+
+  it('sends nothing without permission, and the driver corrects as ever', async () => {
+    await openDrivenRoom(accessWire('host', 'member'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+    room.emit('sync.state', playbackAt(600_000));
+    fake.tabMessages.length = 0;
+
+    // The user pauses — but this room lets only the host drive playback.
+    telemetryFrom(3, { positionMs: 600_200, playing: false });
+    intentFrom(3, 'pause', 600_200);
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+
+    // Their local pause IS drift, by design: the next pass un-pauses them.
+    room.emit('sync.state', playbackAt(600_000));
+    const drives = messagesOfKind('drive');
+    expect(drives.length).toBeGreaterThan(0);
+    expect((drives.at(-1)?.msg['elastic'] as { transport?: string }).transport).toBe('play');
+  });
+
+  it('denies while the room record could not be read — unknown is not a licence', async () => {
+    await openDrivenRoom(null); // roomWire stays empty: no policy, no role
+    telemetryFrom(3, { positionMs: 600_000, playing: false });
+    intentFrom(3, 'pause', 600_000);
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+  });
+
+  it('takes intent only from the elected frame of the driven tab', async () => {
+    await openDrivenRoom(accessWire('everyone', 'guest'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    intentFrom(9, 'pause', 600_000); // an unelected frame of the driven tab
+    notify({ kind: 'userIntent', intent: 'pause', positionMs: 600_000 }, { tab: { id: 8 }, frameId: 3 });
+    notify({ kind: 'userIntent', intent: 'pause', positionMs: 600_000 }, {});
+
+    expect(syncSent('sync.pause')).toEqual([]);
+  });
+
+  it('drops malformed intent without throwing', async () => {
+    await openDrivenRoom(accessWire('everyone', 'guest'));
+    telemetryFrom(3, { positionMs: 600_000, playing: true });
+
+    expect(() => {
+      intentFrom(3, 'stop', 600_000);
+      intentFrom(3, 'pause', Number.NaN);
+      intentFrom(3, 'pause', '600000');
+      intentFrom(3, undefined, undefined);
+    }).not.toThrow();
+
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+  });
+
+  it('does not read a buffering pause as intent — the stall judgement decides', async () => {
+    const T = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T);
+    try {
+      await openDrivenRoom(accessWire('everyone', 'guest'));
+      telemetryFrom(3, { positionMs: 600_000, playing: true });
+      room.emit('sync.state', { ...playbackAt(600_000), serverTs: T });
+
+      // 600ms later the player has not advanced at all: it is buffering.
+      nowSpy.mockReturnValue(T + 600);
+      telemetryFrom(3, { positionMs: 600_000, playing: true });
+      room.emit('sync.state', { ...playbackAt(600_000), serverTs: T });
+
+      // Whatever pause-shaped state the site produces now is NOT the user.
+      intentFrom(3, 'pause', 600_000);
+      expect(syncSent('sync.pause')).toEqual([]);
+
+      // The same pause once the player advances again IS the user: the stall
+      // judgement, not the pause, is what gated it.
+      nowSpy.mockReturnValue(T + 1600);
+      telemetryFrom(3, { positionMs: 601_000, playing: true });
+      room.emit('sync.state', { ...playbackAt(600_000), serverTs: T });
+      telemetryFrom(3, { positionMs: 601_100, playing: false });
+      intentFrom(3, 'pause', 601_100);
+      expect(syncSent('sync.pause')).toEqual([
+        { type: 'sync.pause', payload: { positionMs: 601_100 } },
+      ]);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
 

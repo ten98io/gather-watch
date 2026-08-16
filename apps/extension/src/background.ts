@@ -23,7 +23,7 @@
  */
 import { RoomSocket } from '@playin/api-client';
 import { normalizeInviteCode } from '@playin/contracts';
-import type { PlaybackState, RestreamState } from '@playin/contracts';
+import type { MemberRole, PlaybackState, RestreamState, RoomPolicyLevel } from '@playin/contracts';
 
 import { API_URL, WEB_ORIGINS, WS_URL, originOfUrl } from './config';
 import { ElasticDriver, mediaKeyOf, profileForContent, voiceActiveFrom } from './driver';
@@ -87,6 +87,12 @@ interface Session {
   driverTarget: string | null;
   /** Who we are in this room; null when nothing told us (the handoff path). */
   userId: string | null;
+  /** The room's playbackControl policy and OUR role in the room, read from the
+   *  room's own record when the session opens (see {@link loadRoomAccess}).
+   *  null = not known, and unknown DENIES: a member we cannot place in the
+   *  permission model does not speak for the room. */
+  playbackPolicy: RoomPolicyLevel | null;
+  role: MemberRole | null;
   /** userId → display name, for the overlay. See {@link loadRoomNames}. */
   names: Map<string, string>;
   /** When that directory was last read, so a miss cannot become a fetch loop. */
@@ -671,6 +677,60 @@ function noteUnknownName(userId: string): void {
   void loadRoomNames();
 }
 
+/* ── The room's permission model, for intent this worker forwards ── */
+
+/** Mirrors apps/web/lib/permissions.ts (canAct) — keep the two in sync. */
+const ROLE_RANK: Record<MemberRole, number> = { guest: 0, member: 1, moderator: 2, host: 3 };
+const LEVEL_MIN_RANK: Record<RoomPolicyLevel, number> = { everyone: 0, mods: 2, host: 3 };
+
+/**
+ * May this member drive the room's playback? The same gate the web app puts
+ * in front of every transport send. Unknown policy or role denies — the
+ * intent is then simply not forwarded, and the driver corrects the local
+ * player exactly as it corrects any other viewer's.
+ */
+export function canControlPlayback(
+  level: RoomPolicyLevel | null,
+  role: MemberRole | null,
+): boolean {
+  if (level === null || role === null) return false;
+  return ROLE_RANK[role] >= LEVEL_MIN_RANK[level];
+}
+
+function parsePolicyLevel(value: unknown): RoomPolicyLevel | null {
+  return value === 'everyone' || value === 'mods' || value === 'host' ? value : null;
+}
+
+function parseMemberRole(value: unknown): MemberRole | null {
+  return value === 'guest' || value === 'member' || value === 'moderator' || value === 'host'
+    ? value
+    : null;
+}
+
+/**
+ * Read the room's playbackControl policy and our own membership from the
+ * room's record — the token names us, so this works on the handoff path too,
+ * where no page is allowed to tell this worker who the user is. Failing is
+ * survivable: both fields stay null, null denies, and every other part of the
+ * room still works.
+ */
+async function loadRoomAccess(): Promise<void> {
+  if (session === null) return;
+  const roomId = session.roomId;
+  const res = await fetch(`${API_URL}/rooms/${encodeURIComponent(roomId)}`, {
+    headers: { authorization: `Bearer ${session.accessToken}` },
+  }).catch(() => null);
+  if (res === null || !res.ok) return;
+  const body = (await res.json().catch(() => null)) as {
+    room?: { policies?: { playbackControl?: unknown } };
+    member?: { role?: unknown };
+  } | null;
+  // The user may have left, or moved rooms, while this was in flight.
+  if (session === null || session.roomId !== roomId) return;
+  session.playbackPolicy = parsePolicyLevel(body?.room?.policies?.playbackControl);
+  session.role = parseMemberRole(body?.member?.role);
+}
+
 /** Longest body the room accepts (contracts: ClientChatSend). */
 const MAX_CHAT_BODY = 8000;
 
@@ -758,6 +818,8 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     presence: new Map(),
     driverTarget: null,
     userId: input.userId,
+    playbackPolicy: null,
+    role: null,
     names: new Map(),
     namesAt: 0,
     chat: [],
@@ -812,6 +874,9 @@ async function openSession(input: OpenSessionInput): Promise<void> {
 
   // Who is in the room, by name (see loadRoomNames). Nothing waits on it.
   void loadRoomNames();
+  // Whether WE may drive playback (see loadRoomAccess). Until it lands, a
+  // user intent is dropped rather than guessed about.
+  void loadRoomAccess();
 
   await persistSession();
   broadcastStatus();
@@ -1597,6 +1662,43 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
         lastTelemetry = payload;
         ports.broadcast((v) => eventMessage('telemetry', payload, v));
       }
+      return false;
+    }
+    /**
+     * The user's own hand on the driven site's player (see content.ts). It
+     * becomes room intent on the SAME wire the web app's transport uses —
+     * sync.play / sync.pause / sync.seek with the local position — under the
+     * same policy gate the room applies to everyone else. Only the elected
+     * frame of the driven tab speaks; the election decides here exactly as it
+     * decides for telemetry.
+     */
+    case 'userIntent': {
+      const tabId = sender.tab?.id;
+      if (
+        session === null ||
+        session.playback === null ||
+        tabId === undefined ||
+        tabId !== session.drivenTabId ||
+        sender.frameId !== drivenFrameId(tabId)
+      ) {
+        return false;
+      }
+      const intent = msg['intent'];
+      if (intent !== 'play' && intent !== 'pause' && intent !== 'seek') return false;
+      const raw = msg['positionMs'];
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) return false;
+      const positionMs = Math.max(0, raw);
+      // Buffering looks like a pause and is not one. The driver already judges
+      // stall from this tab's telemetry — reuse that judgement, never a second.
+      if (intent === 'pause' && session.driver.state().stalled) return false;
+      // A member the room does not let drive playback is drift, by design:
+      // nothing is sent, and the driver corrects their player as it always did.
+      if (!canControlPlayback(session.playbackPolicy, session.role)) return false;
+      if (intent === 'play') session.socket.send('sync.play', { positionMs });
+      else if (intent === 'pause') session.socket.send('sync.pause', { positionMs });
+      else session.socket.send('sync.seek', { positionMs });
+      // The just-sent intent must not read as drift while the room echoes it.
+      session.driver.noteLocalIntent(intent, positionMs, Date.now());
       return false;
     }
     case 'provider': {

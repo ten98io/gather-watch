@@ -31,6 +31,8 @@
  *                                                     cast button
  *   → { kind: 'frameClaim', metrics, url }            election input
  *   → { kind: 'telemetry', positionMs, durationMs, playing, rate }
+ *   → { kind: 'userIntent', intent, positionMs }      the user's own hand on
+ *                                 the SITE's player (driver frame, driven only)
  *   → { kind: 'provider', provider }                  (top frame, on route)
  *   → { kind: 'overlay:state' } → the room for THIS tab, or null when it is
  *                                 not the tab in the room
@@ -40,7 +42,12 @@
 import { performNativeCast } from './cast';
 import type { CastResult, CastTarget } from './cast';
 import { WEB_ORIGINS } from './config';
-import { appliesVerbatim, elasticDecision, parseElasticDirective } from './driver';
+import {
+  UserIntentDetector,
+  appliesVerbatim,
+  elasticDecision,
+  parseElasticDirective,
+} from './driver';
 import type { ElasticDirective } from './driver';
 import {
   applyDecision,
@@ -106,6 +113,10 @@ let lastScanAt = 0;
 let lastClaimKey: string | null = null;
 let lastClaimAt = 0;
 
+/** Turns transport events on the driven element into user intent — and
+ *  swallows the ones our own applied commands cause. Pure; lives in driver.ts. */
+const userIntent = new UserIntentDetector();
+
 // ---------------------------------------------------------------------------
 // Detection
 // ---------------------------------------------------------------------------
@@ -148,7 +159,11 @@ function rescan(now: number): HTMLMediaElement | null {
   lastScanAt = now;
   scanDirty = false;
   const candidates = collectMedia().map((el) => ({ el, metrics: toMetrics(probe(el)) }));
-  cachedMedia = pickBestMedia(candidates)?.el ?? null;
+  const next = pickBestMedia(candidates)?.el ?? null;
+  // A swapped element (ad roll, SPA route) starts a fresh intent history: the
+  // old element's expectations and baseline describe a player that is gone.
+  if (next !== cachedMedia) userIntent.reset();
+  cachedMedia = next;
   return cachedMedia;
 }
 
@@ -244,23 +259,28 @@ function drive(): void {
 
   const directive = lastCommand.elastic;
   if (directive !== null && appliesVerbatim(directive)) {
-    applyDecision(media, elasticDecision(directive));
+    const decision = elasticDecision(directive);
+    // Marked BEFORE it is applied: the events a command causes fire after
+    // applyDecision returns, and they must read as ours, not as the user's.
+    userIntent.noteApplied(decision, Date.now());
+    applyDecision(media, decision);
     return;
   }
 
-  applyDecision(
-    media,
-    decideDrive(readTelemetry(media), lastCommand.positionMs, {
-      playing: lastCommand.playing,
-      rate: lastCommand.rate,
-    }),
-  );
+  const decision = decideDrive(readTelemetry(media), lastCommand.positionMs, {
+    playing: lastCommand.playing,
+    rate: lastCommand.rate,
+  });
+  userIntent.noteApplied(decision, Date.now());
+  applyDecision(media, decision);
 }
 
 function sendTelemetry(): void {
   const el = currentMedia();
   if (el === null) return;
   const t = readTelemetry(el as MediaElementLike);
+  // The same reading is the intent detector's baseline for "material seek".
+  userIntent.notePosition(t.positionMs);
   void chrome.runtime.sendMessage({ kind: 'telemetry', ...t }).catch(() => undefined);
 }
 
@@ -541,6 +561,38 @@ for (const type of ['loadedmetadata', 'durationchange', 'emptied', 'play', 'paus
     },
     true,
   );
+}
+
+/**
+ * A gesture on the SITE's own controls is room intent, not drift to correct
+ * away. Only the elected, driven frame may speak for the user, and only about
+ * the element it is driving — the same element identity the claim/election
+ * path keys on, so an ad roll swapping in a new element cannot fabricate a
+ * pause from that element's events. The detector swallows what our own
+ * commands caused; the worker applies the room's permission model (and its
+ * stall judgement) before anything reaches the room.
+ */
+function onTransportEvent(type: 'play' | 'pause' | 'seeked', ev: Event): void {
+  if (role !== 'driver' || !driven) return;
+  const el = cachedMedia;
+  if (el === null || !el.isConnected) return;
+  // composedPath, when the event crossed an open shadow root; target otherwise.
+  const path = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+  if ((path[0] ?? ev.target) !== el) return;
+  const found = userIntent.observe({
+    type,
+    positionMs: el.currentTime * 1000,
+    ended: el.ended,
+    atMs: Date.now(),
+  });
+  if (found === null) return;
+  void chrome.runtime
+    .sendMessage({ kind: 'userIntent', intent: found.intent, positionMs: found.positionMs })
+    .catch(() => undefined);
+}
+
+for (const type of ['play', 'pause', 'seeked'] as const) {
+  document.addEventListener(type, (ev) => onTransportEvent(type, ev), true);
 }
 
 window.addEventListener('pagehide', () => {

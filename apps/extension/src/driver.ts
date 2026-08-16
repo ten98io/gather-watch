@@ -3,7 +3,7 @@
  *  PlaybackDriver — the one contract — and the extension's elastic corrector
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Three things live here, and they are deliberately separate:
+ * Four things live here, and they are deliberately separate:
  *
  *  1. {@link PlaybackDriver}: the interface EVERY playback surface implements
  *     (docs/EXTENSION_FIRST.md, Part 2 "One contract, three implementations").
@@ -23,6 +23,14 @@
  *     ONCE, here; anything downstream that re-derives it from raw positions
  *     defeats the learned anchor, the seek rate-limiter and every deliberate
  *     non-correction ('stalled', 'seek-suppressed', 'rate-locked').
+ *
+ *  4. {@link UserIntentDetector}: the content-side judgement that a transport
+ *     event on the driven element was the USER's hand on the site's own
+ *     player — not an echo of a command we applied, not a commanded seek
+ *     landing, not arrival at the end. What it recognises becomes room intent
+ *     (background.ts forwards it under the room's permission model), and
+ *     {@link ElasticDriver.noteLocalIntent} keeps the corrector from fighting
+ *     it while the room echoes it back.
  *
  * ── Why a driver contract and not just an adapter ──────────────────────────
  * apps/web's `PlayerAdapter` OWNS its player: it created the <video> or the
@@ -296,6 +304,9 @@ export type DriveReason =
   | 'rate-locked'
   /** Undoing a leftover nudge once we are back inside the band. */
   | 'restore-rate'
+  /** The user's own gesture was forwarded to the room; not fought while the
+   *  room echoes it back (see {@link ElasticDriver.noteLocalIntent}). */
+  | 'user-intent'
   /** Nothing observed yet: fall back to plain follow-the-room. */
   | 'no-telemetry';
 
@@ -461,6 +472,14 @@ export const MIN_SEEK_INTERVAL_DRM_MS = 10_000;
 const SEEK_MISS_MS = 2000;
 /** Two ignored seeks in a row and we stop asking. */
 const MAX_SEEK_MISSES = 2;
+/**
+ * After a user's own transport/seek was forwarded to the room, how long the
+ * player is shielded from correction while the echo comes back. Comfortably
+ * above a socket round-trip plus broadcast, under three ticks — so an intent
+ * the room refused (or dropped) is corrected within ~2.5s, which is the
+ * room's refusal, honoured.
+ */
+export const INTENT_ECHO_WINDOW_MS = 2500;
 
 /** Project a telemetry reading forward to `nowMs` at the rate it was running. */
 export function projectedPositionMs(local: DriverTelemetry, nowMs: number): number {
@@ -498,6 +517,9 @@ export class ElasticDriver {
   private pendingSeek: { toMs: number; atMs: number } | null = null;
   private lastSeekAtMs: number | null = null;
   private seekMisses = 0;
+
+  /** A user intent this driver's owner forwarded to the room, awaiting echo. */
+  private localIntent: { kind: UserIntentKind; positionMs: number; atMs: number } | null = null;
 
   private voiceActive = false;
   private stalled = false;
@@ -554,6 +576,17 @@ export class ElasticDriver {
 
   noteHostSeek(): void {
     this.controller.noteHostSeek();
+  }
+
+  /**
+   * The user's own transport/seek on the driven player was forwarded to the
+   * room. Until the room echoes it back — or refuses it by staying silent past
+   * {@link INTENT_ECHO_WINDOW_MS} — the mismatch it causes is intent, not
+   * drift, and the tick sends the player nothing at all. Only the latest
+   * intent is held: a newer gesture supersedes the one before it.
+   */
+  noteLocalIntent(kind: UserIntentKind, positionMs: number, atMs: number): void {
+    this.localIntent = { kind, positionMs, atMs };
   }
 
   /** Live voice in the room — see {@link voiceActiveFrom}. */
@@ -662,6 +695,29 @@ export class ElasticDriver {
       });
     }
 
+    // The user's own gesture was forwarded to the room and is on its way back
+    // as room state. Correcting against it in that window is the feedback loop
+    // this driver must never close — the user pauses, we un-pause, the room
+    // pauses, we… — so the player is left alone until the room echoes the
+    // intent, or the window closes because the room did not take it (then
+    // correction resumes: the room decided).
+    const pending = this.localIntent;
+    if (pending !== null) {
+      if (nowMs - pending.atMs > INTENT_ECHO_WINDOW_MS || this.intentEchoed(pending, room, nowMs)) {
+        this.localIntent = null;
+      } else {
+        return this.finish({
+          transport: 'none',
+          seekToMs: null,
+          setRate: null,
+          wirePositionMs: projectedPositionMs(local, nowMs),
+          driftMs: this.driftMs,
+          anchorOffsetMs: anchor,
+          reason: 'user-intent',
+        });
+      }
+    }
+
     // Host intent (play/pause) is never subject to the comfort band.
     if (room.playing !== local.playing) {
       // Whatever lag accumulated across a transport gap is not drift.
@@ -767,6 +823,28 @@ export class ElasticDriver {
     this.pendingSeek = null;
     this.seekMisses = 0;
     this.lastSeekAtMs = null;
+    // An intent names a position on media that is gone; it cannot echo now.
+    this.localIntent = null;
+  }
+
+  /** Has the room state come to say what the forwarded intent asked? */
+  private intentEchoed(
+    pending: { kind: UserIntentKind; positionMs: number; atMs: number },
+    room: RoomFrame,
+    nowMs: number,
+  ): boolean {
+    switch (pending.kind) {
+      case 'play':
+        return room.playing;
+      case 'pause':
+        return !room.playing;
+      case 'seek': {
+        // Where the intent's position would be by now, had the room taken it.
+        const projected =
+          pending.positionMs + (room.playing ? (nowMs - pending.atMs) * room.rate : 0);
+        return Math.abs(room.expectedMs - projected) <= HOST_SEEK_EPSILON_MS;
+      }
+    }
   }
 
   private deadbandMs(): number {
@@ -875,6 +953,141 @@ export class ElasticDriver {
       ...cmd,
       idle: cmd.transport === 'none' && cmd.seekToMs === null && cmd.setRate === null,
     };
+  }
+}
+
+/* ═══════════ 4. user intent on the driven element (content side) ═════════ */
+
+/** A transport act a person can mean: their hand on the site's own player. */
+export type UserIntentKind = 'play' | 'pause' | 'seek';
+
+/** One transport event, as the content script saw it on the driven element. */
+export interface ObservedTransportEvent {
+  type: 'play' | 'pause' | 'seeked';
+  /** The element's position when the event was handled. */
+  positionMs: number;
+  /** HTMLMediaElement.ended — reaching the end fires a pause nobody meant. */
+  ended: boolean;
+  atMs: number;
+}
+
+/** The verdict: what the user meant, at the position their player is at. */
+export interface DetectedUserIntent {
+  intent: UserIntentKind;
+  positionMs: number;
+}
+
+/**
+ * A commanded play/pause fires its event within the tick that applied it on a
+ * healthy player; two ticks is the ceiling. Inside the window a genuine user
+ * gesture in the SAME direction is indistinguishable — and moot, because the
+ * element is already in that state, so its control fires no event — while the
+ * opposite direction uses the other expectation slot and passes through.
+ */
+export const SELF_TRANSPORT_WINDOW_MS = 2000;
+/**
+ * The mirror of {@link HOST_SEEK_EPSILON_MS}, and deliberately the same
+ * number: "is this jump the one that was commanded, or a new fact?" is the
+ * same question asked in the other direction. Under it, keyframe snapping and
+ * event timing dominate — a commanded seek lands on the nearest keyframe and
+ * plays on until 'seeked' fires. Over it, with an expectation armed by our
+ * own seekToMs, a human scrub is the only remaining explanation.
+ */
+export const SELF_SEEK_EPSILON_MS = HOST_SEEK_EPSILON_MS;
+/**
+ * How long a commanded seek may take to land — a DRM player renegotiates its
+ * licence and stalls for seconds. {@link MIN_SEEK_INTERVAL_MS} guarantees no
+ * second seek is prescribed inside this window, so an armed expectation can
+ * never be overwritten before the event it explains arrives.
+ */
+export const SELF_SEEK_WINDOW_MS = MIN_SEEK_INTERVAL_MS;
+/**
+ * A position change below this is not something a person meant: it is the
+ * size of jump the corrector itself files under housekeeping (LOCAL_JUMP_MS —
+ * kept equal on purpose), where keyframe snaps and the player's own
+ * adjustments live.
+ */
+export const USER_SEEK_MATERIAL_MS = LOCAL_JUMP_MS;
+
+/**
+ * Tells a user's hand on the site's own player apart from everything else
+ * that fires the same events: commands WE applied (the feedback loop —
+ * correction → "intent" → broadcast → correction), a commanded seek landing
+ * late or slightly off, and plain arrival at the end of the media. Pure: the
+ * content script feeds it events and applied decisions; it never touches the
+ * DOM or a clock.
+ *
+ * What it deliberately does NOT judge: buffering. The background's driver
+ * already judges stall from telemetry (see {@link ElasticDriver}), and a
+ * second, disagreeing judgement here would give one pause two answers — so a
+ * pause that may be buffering is reported, and dropped THERE.
+ */
+export class UserIntentDetector {
+  private expectPlayUntilMs = 0;
+  private expectPauseUntilMs = 0;
+  private expectedSeek: { toMs: number; untilMs: number } | null = null;
+  /** Baseline for the material-delta test. null = no baseline yet, and a seek
+   *  with no baseline is unattributable — never intent. */
+  private lastPositionMs: number | null = null;
+
+  /** Every command is marked BEFORE it is applied: the events it causes fire
+   *  after applyDecision returns, and must read as ours whenever they land. */
+  noteApplied(decision: DriveDecision, atMs: number): void {
+    if (decision.action === 'play') this.expectPlayUntilMs = atMs + SELF_TRANSPORT_WINDOW_MS;
+    else if (decision.action === 'pause') this.expectPauseUntilMs = atMs + SELF_TRANSPORT_WINDOW_MS;
+    if (decision.seekToMs !== null) {
+      this.expectedSeek = { toMs: decision.seekToMs, untilMs: atMs + SELF_SEEK_WINDOW_MS };
+    }
+  }
+
+  /** Telemetry heartbeat: the baseline a user seek is measured against. */
+  notePosition(positionMs: number): void {
+    this.lastPositionMs = positionMs;
+  }
+
+  /** A different element (ad roll, SPA swap): nothing observed still applies. */
+  reset(): void {
+    this.expectPlayUntilMs = 0;
+    this.expectPauseUntilMs = 0;
+    this.expectedSeek = null;
+    this.lastPositionMs = null;
+  }
+
+  /** The verdict for one event: the user's intent, or null for noise. */
+  observe(ev: ObservedTransportEvent): DetectedUserIntent | null {
+    const prev = this.lastPositionMs;
+    this.lastPositionMs = ev.positionMs;
+    switch (ev.type) {
+      case 'play':
+        if (ev.atMs <= this.expectPlayUntilMs) {
+          this.expectPlayUntilMs = 0; // one command explains one event
+          return null;
+        }
+        return { intent: 'play', positionMs: ev.positionMs };
+      case 'pause':
+        if (ev.ended) return null; // arrival, not intent
+        if (ev.atMs <= this.expectPauseUntilMs) {
+          this.expectPauseUntilMs = 0;
+          return null;
+        }
+        return { intent: 'pause', positionMs: ev.positionMs };
+      case 'seeked': {
+        // The armed expectation is kept when the event does NOT match it: the
+        // user may scrub in the gap between our command and its landing, and
+        // the position — not the order — is what attributes each event.
+        const expected = this.expectedSeek;
+        if (
+          expected !== null &&
+          ev.atMs <= expected.untilMs &&
+          Math.abs(ev.positionMs - expected.toMs) <= SELF_SEEK_EPSILON_MS
+        ) {
+          this.expectedSeek = null;
+          return null;
+        }
+        if (prev === null || Math.abs(ev.positionMs - prev) < USER_SEEK_MATERIAL_MS) return null;
+        return { intent: 'seek', positionMs: ev.positionMs };
+      }
+    }
   }
 }
 

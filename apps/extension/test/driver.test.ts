@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ElasticDriver,
+  INTENT_ECHO_WINDOW_MS,
   MIN_SEEK_INTERVAL_MS,
   OBSERVER_CAPABILITIES,
   SYNC_PRESETS,
@@ -358,6 +359,102 @@ describe('ElasticDriver — host intent', () => {
   });
 });
 
+describe("ElasticDriver — the user's own intent", () => {
+  const playingRoom = (expectedMs: number): RoomFrame => ({
+    expectedMs,
+    playing: true,
+    rate: 1,
+    mediaKey: 'yt:abc',
+  });
+  const sample = (positionMs: number, playing: boolean, atMs: number): DriverTelemetry => ({
+    positionMs,
+    durationMs: 5_400_000,
+    playing,
+    rate: 1,
+    atMs,
+  });
+
+  /** A driver one aligned, playing tick into a room. */
+  function settled(now: number): ElasticDriver {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    driver.tick(playingRoom(600_000), sample(600_000, true, now), now);
+    return driver;
+  }
+
+  it('does not fight a forwarded pause while the room echoes it back', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+
+    // The user paused the site's player at 600_400; the intent went to the
+    // room. The next tick still sees the ROOM playing — the echo is in flight.
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+    const cmd = driver.tick(playingRoom(601_000), sample(600_400, false, now + 1000), now + 1000);
+
+    expect(cmd.transport).toBe('none');
+    expect(cmd.idle).toBe(true);
+    expect(cmd.reason).toBe('user-intent');
+  });
+
+  it('resumes correcting when the room never echoed — the room said no', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+
+    const at = now + 400 + INTENT_ECHO_WINDOW_MS + 100;
+    const cmd = driver.tick(playingRoom(601_000), sample(600_400, false, at), at);
+
+    expect(cmd.transport).toBe('play');
+    expect(cmd.reason).toBe('transport');
+  });
+
+  it('stands down once the echo arrives, and the shield does not linger', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+
+    // The echo: the room is paused where the user paused. Nothing to fight.
+    const echoed = driver.tick(
+      { expectedMs: 600_400, playing: false, rate: 1, mediaKey: 'yt:abc' },
+      sample(600_400, false, now + 1000),
+      now + 1000,
+    );
+    expect(echoed.reason).not.toBe('user-intent');
+    expect(echoed.transport).toBe('none');
+
+    // The shield is spent: a later mismatch is ordinary drift again.
+    const later = driver.tick(playingRoom(602_000), sample(600_400, false, now + 2000), now + 2000);
+    expect(later.transport).toBe('play');
+  });
+
+  it('shields a forwarded seek from being yanked back, then adopts the echo', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+
+    // The user scrubbed five minutes ahead; a seek back would be the yank.
+    driver.noteLocalIntent('seek', 900_000, now + 500);
+    const shielded = driver.tick(playingRoom(601_000), sample(900_500, true, now + 1000), now + 1000);
+    expect(shielded.seekToMs).toBeNull();
+    expect(shielded.reason).toBe('user-intent');
+
+    // The echo lands: the room's timeline is now the user's. No correction.
+    const echoed = driver.tick(playingRoom(901_500), sample(901_500, true, now + 2000), now + 2000);
+    expect(echoed.reason).not.toBe('user-intent');
+    expect(echoed.seekToMs).toBeNull();
+    expect(echoed.transport).toBe('none');
+  });
+
+  it('a newer gesture supersedes the pending one', () => {
+    const now = START_NOW;
+    const driver = settled(now);
+    driver.noteLocalIntent('pause', 600_400, now + 400);
+    // The user changed their mind and pressed play again; the room echoes a
+    // playing state — which must satisfy the CURRENT intent, not the old one.
+    driver.noteLocalIntent('play', 600_400, now + 800);
+    const cmd = driver.tick(playingRoom(601_000), sample(600_500, true, now + 1000), now + 1000);
+    expect(cmd.reason).not.toBe('user-intent');
+  });
+});
+
 describe('ElasticDriver — honest stops', () => {
   it('never corrects into a stall', () => {
     const driver = new ElasticDriver({ profile: 'watch' });
@@ -590,6 +687,7 @@ describe('the elastic block, as it crosses to the content script', () => {
       'stalled',
       'rate-locked',
       'restore-rate',
+      'user-intent',
     ];
     for (const reason of owned) expect(appliesVerbatim(directive(reason))).toBe(true);
     expect(appliesVerbatim(directive(''))).toBe(true);
