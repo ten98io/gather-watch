@@ -90,11 +90,18 @@ describe('decideDrive with explicit bands', () => {
     expect(decideDrive(el, 10_600, room)).toEqual(decideDrive(el, 10_600, room, LEGACY_BANDS));
   });
 
-  it('leaves a viewer alone inside an elastic band that the legacy one would seek', () => {
+  it('widens the local fallback to the room band instead of frame-lock', () => {
     const watch = { deadbandMs: 2000, seekThresholdMs: 12_000 };
-    expect(decideDrive(el, 18_000, room, watch).seekToMs).toBeNull(); // 8 s — elastic
-    expect(decideDrive(el, 18_000, room).seekToMs).toBe(18_000); // …frame-lock
-    expect(decideDrive(el, 23_000, room, watch).seekToMs).toBe(23_000); // 13 s — lost
+    expect(decideDrive(el, 11_500, room, watch).seekToMs).toBeNull(); // 1.5 s — ignored
+    expect(decideDrive(el, 11_500, room).seekToMs).toBe(11_500); // …frame-lock seeks
+    expect(decideDrive(el, 18_000, room, watch).seekToMs).toBe(18_000); // 8 s — corrected
+  });
+
+  it('applies only the hard threshold across a play/pause transition', () => {
+    const watch = { deadbandMs: 2000, seekThresholdMs: 12_000 };
+    const paused = { ...el, playing: false };
+    expect(decideDrive(paused, 18_000, room, watch).seekToMs).toBeNull(); // resume, 8 s
+    expect(decideDrive(paused, 25_000, room, watch).seekToMs).toBe(25_000); // genuinely lost
   });
 });
 

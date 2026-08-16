@@ -21,10 +21,16 @@ Last *known-green* state was the wave-1 checkpoint: turbo `test` 13/13
 (incl. 166 API tests), `typecheck` 13/13, `lint` 9/9. Everything after that
 is unverified.
 
-There are **97 uncommitted files** (57 modified, 38 new, 2 deleted). Nothing
-in this program has been committed. **Committing a checkpoint should be your
-first action once gates pass** — this is many hours of agent work with no
-restore point.
+**All work is committed** to branch `wip/ux-overhaul-extension-first`
+(commit `43362ff`). `main` remains at the last known-green commit `7225159`,
+deliberately — the checkpoint is unverified, so it does not belong on main
+until gates pass. Merge it forward once they do.
+
+**Known build issue (likely benign):** `pnpm build` currently fails with
+`PageNotFoundError` on pages that plainly exist (`/join/[code]`,
+`/billing/success`, `/icon.svg`). That is `.next` contention — the dev server
+on :3000 holds the directory while the build reads it. Stop the dev server,
+`rm -rf apps/web/.next`, then rebuild before treating it as real breakage.
 
 ### What finished vs what did not
 
