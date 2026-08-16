@@ -29,6 +29,10 @@ export interface NowPlayingProps {
   durationMs?: number | null;
   /** Default 'compact'. */
   variant?: NowPlayingVariant;
+  /** Default true. Set false when a real transport below owns progress and
+   *  seeking — two progress bars for one track is the same duplicate-control
+   *  mistake as two play buttons. */
+  showProgress?: boolean;
   /** Transport controls, like/queue buttons — rendered next to the text. */
   actions?: ReactNode;
   className?: string;
@@ -92,6 +96,7 @@ export function NowPlaying({
   positionMs = null,
   durationMs = null,
   variant = 'compact',
+  showProgress = true,
   actions,
   className,
 }: NowPlayingProps) {
@@ -116,7 +121,7 @@ export function NowPlaying({
           <h2 className="line-clamp-2 text-title text-hi">{title}</h2>
           {metaLine !== null && <p className="truncate text-label text-low">{metaLine}</p>}
         </div>
-        <Progress positionMs={position} durationMs={duration} showTimes />
+        {showProgress && <Progress positionMs={position} durationMs={duration} showTimes />}
         {actions !== undefined && (
           <div className="flex items-center justify-center gap-2">{actions}</div>
         )}
@@ -130,7 +135,9 @@ export function NowPlaying({
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <p className="truncate text-body text-hi">{title}</p>
         {metaLine !== null && <p className="truncate text-label text-low">{metaLine}</p>}
-        <Progress positionMs={position} durationMs={duration} showTimes={false} />
+        {showProgress && (
+          <Progress positionMs={position} durationMs={duration} showTimes={false} />
+        )}
       </div>
       {actions !== undefined && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
     </section>

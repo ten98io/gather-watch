@@ -156,7 +156,15 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /** Theater layout: rail hidden by default, opens as a glass overlay. */
   const [railOpen, setRailOpen] = useState(false);
-  const canToggleTheater = member.role === 'host' || member.role === 'moderator';
+  const canManage = member.role === 'host' || member.role === 'moderator';
+  /**
+   * Theater is a video-stage concept: it collapses the rail so the picture can
+   * fill the room. A listen room's stage is an artwork hero, so the control is
+   * absent rather than present-and-pointless — and a `theater` flag left over
+   * from a room that changed kind must not collapse the rail either.
+   */
+  const theaterActive = room.theater && room.kind === 'watch';
+  const canToggleTheater = canManage && room.kind === 'watch';
 
   const toggleTheater = (): void => {
     void apiFetch(`/rooms/${roomId}/theater`, {
@@ -190,7 +198,7 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
   useKeyboardShortcuts(shortcuts);
 
   /** Theater collapses the rail; the call tiles float over the stage instead. */
-  const railCollapsed = room.theater && !railOpen;
+  const railCollapsed = theaterActive && !railOpen;
 
   return (
     <CallSessionProvider>
@@ -212,13 +220,13 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
           </Badge>
           <ExpiryChip room={room} />
           {member.role !== 'member' && <Badge variant="default">{ROLE_LABEL[member.role]}</Badge>}
-          <RoomMenu room={room} canManage={canToggleTheater} />
+          <RoomMenu room={room} canManage={canManage} />
           {canToggleTheater && (
             <Button
-              variant={room.theater ? 'secondary' : 'ghost'}
+              variant={theaterActive ? 'secondary' : 'ghost'}
               size="sm"
-              aria-pressed={room.theater}
-              aria-label={room.theater ? 'Turn theater mode off' : 'Turn theater mode on'}
+              aria-pressed={theaterActive}
+              aria-label={theaterActive ? 'Turn theater mode off' : 'Turn theater mode on'}
               onClick={toggleTheater}
             >
               <TheaterIcon size={16} aria-hidden />
@@ -248,7 +256,7 @@ function RoomLayout({ roomId }: { roomId: RoomId }) {
                   hidden for the session. */}
               {railCollapsed && <CallOverlay roomId={roomId} />}
             </main>
-            {room.theater ? (
+            {theaterActive ? (
               <>
                 <Button
                   variant="secondary"

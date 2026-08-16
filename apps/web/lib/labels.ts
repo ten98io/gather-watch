@@ -7,7 +7,8 @@
  * The relay label is load-bearing copy: the privacy policy promises the room
  * badge always says which mode you are in, and app/billing/success quotes it.
  */
-import type { MemberRole, RelayMode, UplinkQuality } from '@playin/contracts';
+import type { MediaRef, MemberRole, RelayMode, UplinkQuality } from '@playin/contracts';
+import { providerById } from '@/lib/providers';
 
 export const ROLE_LABEL: Record<MemberRole, string> = {
   host: 'Host',
@@ -29,6 +30,24 @@ export const RELAY_SHORT_LABEL: Record<RelayMode, string> = {
   livekit: 'Relayed',
   'cf-sfu': 'Relayed',
 };
+
+/** Human display name for a media source — never render MediaRef.kind raw. */
+export function providerLabel(mediaRef: MediaRef): string {
+  switch (mediaRef.kind) {
+    case 'youtube':
+      return 'YouTube';
+    case 'soundcloud':
+      return 'SoundCloud';
+    case 'vimeo':
+      return 'Vimeo';
+    case 'hls':
+      return 'Library';
+    case 'url':
+      return 'Direct link';
+    case 'embed':
+      return providerById(mediaRef.provider)?.name ?? 'Embed';
+  }
+}
 
 /** Screen-share quality, in words rather than the raw enum. */
 export const UPLINK_LABEL: Record<UplinkQuality, string> = {
