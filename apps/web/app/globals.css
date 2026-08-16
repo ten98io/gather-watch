@@ -1,70 +1,22 @@
+/* ────────────────────────────────────────────────────────────────────────────
+   Playin design tokens — DESIGN.md §2 (BINDING).
+
+   The palette is NOT written here any more. `--bg-void`, the surface ladder,
+   the text steps, the aurora hues and `--accent` are emitted from
+   packages/design (the executable source of truth) into tokens.generated.css;
+   test/design-tokens.test.ts fails the build when that file goes stale, and
+   `pnpm --filter @playin/web tokens:generate` refreshes it.
+
+   Everything after the import is hand-written CSS that is NOT a token — it
+   only ever references the custom properties, never a colour literal. Keep it
+   that way: a hex or an oklch value below this line is drift starting over,
+   and test/design-tokens.test.ts rejects both.
+   ──────────────────────────────────────────────────────────────────────────── */
+@import './tokens.generated.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* ────────────────────────────────────────────────────────────────────────────
-   Playin design tokens — DESIGN.md §2 (BINDING).
-   OKLCH custom properties; dark is the primary theme, light ("Daylight") a
-   first-class variant. Components reference these vars via tailwind.config.ts.
-   ──────────────────────────────────────────────────────────────────────────── */
-
-:root[data-theme='dark'] {
-  --bg-void:        oklch(0.13 0.02 285);   /* near-black indigo */
-  --bg-deep:        oklch(0.17 0.03 290);
-  --surface-glass:  color-mix(in oklch, white 5%, transparent);  /* + blur(20px) */
-  --surface-raised: color-mix(in oklch, white 8%, transparent);
-  --border-glass:   color-mix(in oklch, white 9%, transparent);
-  /* Elevation ladder (DESIGN.md §4): solid steps, NOT glass. Surfaces are
-     separated by background step; a hairline is allowed only where two
-     same-step surfaces meet. */
-  --surface-0:      var(--bg-void);         /* page ground             */
-  --surface-1:      oklch(0.19 0.025 290);  /* rail, cards             */
-  --surface-2:      oklch(0.23 0.028 290);  /* hover, raised card      */
-  --surface-3:      oklch(0.27 0.030 290);  /* active / selected row   */
-  --hairline:       color-mix(in oklch, white 6%, transparent);
-  --text-hi:        oklch(0.97 0.005 285);
-  --text-mid:       oklch(0.78 0.015 285);
-  /* 0.58 fell to 3.5:1 on --surface-3; 0.65 holds ≥4.6:1 across the ladder. */
-  --text-low:       oklch(0.65 0.02 285);
-  --aurora-1:       oklch(0.62 0.23 295);   /* electric violet  */
-  --aurora-2:       oklch(0.66 0.26 340);   /* fuchsia          */
-  --aurora-3:       oklch(0.80 0.16 75);    /* solar amber      */
-  --accent:         var(--aurora-1);
-  --accent-ink:     oklch(0.98 0.01 295);
-  --success:        oklch(0.75 0.17 160);
-  --danger:         oklch(0.68 0.21 25);
-  --warn:           oklch(0.82 0.16 85);
-  --focus-ring:     oklch(0.72 0.20 295);
-}
-
-:root[data-theme='light'] {
-  --bg-void:        oklch(0.97 0.006 290);
-  --bg-deep:        oklch(0.94 0.01 290);
-  --surface-glass:  color-mix(in oklch, white 65%, transparent);
-  --surface-raised: color-mix(in oklch, white 80%, transparent);
-  --border-glass:   color-mix(in oklch, oklch(0.30 0.03 285) 14%, transparent);
-  /* Ladder mirrored: the ground is tinted paper, elevation moves toward white
-     for cards and back down for hover/active — the inverse of the dark steps. */
-  --surface-0:      var(--bg-void);         /* page ground             */
-  --surface-1:      oklch(0.995 0.003 290); /* rail, cards             */
-  --surface-2:      oklch(0.955 0.008 290); /* hover, raised card      */
-  --surface-3:      oklch(0.920 0.012 290); /* active / selected row   */
-  --hairline:       color-mix(in oklch, oklch(0.30 0.03 285) 12%, transparent);
-  --text-hi:        oklch(0.22 0.02 285);
-  --text-mid:       oklch(0.42 0.02 285);
-  /* 0.55 fell to 3.8:1 on --surface-3; 0.50 holds ≥4.7:1 across the ladder. */
-  --text-low:       oklch(0.50 0.02 285);
-  /* Aurora hues persist — chroma dialed down ~15% for WCAG AA on light. */
-  --aurora-1:       oklch(0.55 0.20 295);
-  --aurora-2:       oklch(0.58 0.22 340);
-  --aurora-3:       oklch(0.70 0.14 75);
-  --accent:         var(--aurora-1);
-  --accent-ink:     oklch(0.98 0.01 295);
-  --success:        oklch(0.55 0.15 160);
-  --danger:         oklch(0.55 0.19 25);
-  --warn:           oklch(0.62 0.14 85);
-  --focus-ring:     oklch(0.58 0.18 295);
-}
 
 @layer base {
   html {

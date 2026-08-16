@@ -204,7 +204,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   addButtonText: { ...typeScale.bodyStrong, color: palette.accentInk },
-  error: { ...typeScale.caption, color: palette.warn, paddingHorizontal: spacing.md },
+  error: { ...typeScale.label, color: palette.warn, paddingHorizontal: spacing.md },
   list: { padding: spacing.sm },
   empty: {
     ...typeScale.body,
@@ -226,7 +226,7 @@ const styles = StyleSheet.create({
   rowCurrent: { borderColor: palette.aurora1, backgroundColor: 'rgba(149,91,254,0.12)' },
   rowMain: { flex: 1 },
   title: { ...typeScale.bodyStrong, color: palette.textHi },
-  meta: { ...typeScale.caption, color: palette.textLow, marginTop: 2 },
+  meta: { ...typeScale.label, color: palette.textLow, marginTop: 2 },
   rowActions: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap', maxWidth: 170 },
   action: {
     minHeight: 36,
@@ -237,7 +237,7 @@ const styles = StyleSheet.create({
     backgroundColor: palette.surfaceRaised,
     paddingHorizontal: spacing.sm,
   },
-  actionText: { ...typeScale.caption, color: palette.textHi },
+  actionText: { ...typeScale.label, color: palette.textHi },
   voted: { borderWidth: 1, borderColor: palette.aurora3 },
   dim: { opacity: 0.35 },
 });

@@ -177,7 +177,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: palette.bgVoid },
   container: { padding: spacing.lg, paddingTop: spacing.xxl * 2 },
-  logo: { ...typeScale.displayL, color: palette.textHi, textAlign: 'center' },
+  logo: { ...typeScale.hero, color: palette.textHi, textAlign: 'center' },
   tagline: {
     ...typeScale.body,
     color: palette.textMid,
@@ -224,7 +224,7 @@ const styles = StyleSheet.create({
   },
   secondaryText: { ...typeScale.bodyStrong, color: palette.textHi },
   dimmed: { opacity: 0.45 },
-  note: { ...typeScale.caption, color: palette.textMid },
+  note: { ...typeScale.label, color: palette.textMid },
   devLink: { ...typeScale.mono, fontSize: 12, color: palette.aurora3 },
-  error: { ...typeScale.caption, color: palette.danger, textAlign: 'center' },
+  error: { ...typeScale.label, color: palette.danger, textAlign: 'center' },
 });

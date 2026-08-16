@@ -371,7 +371,7 @@ const styles = StyleSheet.create({
   bubbleMine: { backgroundColor: 'rgba(149,91,254,0.16)' },
   bubbleTheirs: { backgroundColor: palette.surfaceGlass },
   bubbleTombstone: { backgroundColor: 'transparent', borderStyle: 'dashed' },
-  tombstoneText: { ...typeScale.caption, color: palette.textLow, fontStyle: 'italic' },
+  tombstoneText: { ...typeScale.label, color: palette.textLow, fontStyle: 'italic' },
   authorEdge: { borderLeftWidth: 2, borderLeftColor: palette.aurora1 },
   bubbleText: { ...typeScale.body, color: palette.textHi },
   bubbleTextMine: { color: palette.textHi },
@@ -383,7 +383,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   link: { color: palette.focusRing, textDecorationLine: 'underline' },
-  edited: { ...typeScale.caption, color: palette.textLow, marginTop: 2 },
+  edited: { ...typeScale.label, color: palette.textLow, marginTop: 2 },
   quote: {
     borderLeftWidth: 2,
     borderLeftColor: palette.aurora2,
@@ -391,7 +391,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
     opacity: 0.8,
   },
-  quoteText: { ...typeScale.caption, color: palette.textMid },
+  quoteText: { ...typeScale.label, color: palette.textMid },
   reactionsRow: { flexDirection: 'row', gap: spacing.xs, marginTop: spacing.xs },
   reactionsRowMine: { justifyContent: 'flex-end' },
   reactionChip: {
@@ -403,7 +403,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   reactionChipActive: { borderColor: palette.aurora1, backgroundColor: 'rgba(149,91,254,0.2)' },
-  reactionText: { ...typeScale.caption, color: palette.textHi },
+  reactionText: { ...typeScale.label, color: palette.textHi },
   actionBar: {
     flexDirection: 'row',
     gap: spacing.xs,
@@ -420,7 +420,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   actionEmoji: { fontSize: 18 },
-  actionLabel: { ...typeScale.caption, color: palette.textHi },
+  actionLabel: { ...typeScale.label, color: palette.textHi },
   typingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -428,7 +428,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.xs,
   },
-  typingText: { ...typeScale.caption, color: palette.textLow },
+  typingText: { ...typeScale.label, color: palette.textLow },
   dots: { flexDirection: 'row', gap: 3 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: palette.textLow, opacity: 0.4 },
   dotActive: { opacity: 1, backgroundColor: palette.aurora1 },
@@ -442,7 +442,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: palette.borderGlass,
   },
-  replyBarText: { ...typeScale.caption, color: palette.textMid, flex: 1 },
+  replyBarText: { ...typeScale.label, color: palette.textMid, flex: 1 },
   replyBarCancel: { color: palette.textLow, fontSize: 16, padding: spacing.xs },
   composer: {
     flexDirection: 'row',
@@ -466,8 +466,8 @@ const styles = StyleSheet.create({
     maxHeight: 120,
   },
   sendButton: {
-    width: layout.minHit,
-    height: layout.minHit,
+    width: layout.tap,
+    height: layout.tap,
     borderRadius: radii.pill,
     backgroundColor: palette.aurora1,
     alignItems: 'center',
@@ -476,7 +476,7 @@ const styles = StyleSheet.create({
   sendDisabled: { opacity: 0.35 },
   sendGlyph: { color: palette.accentInk, fontSize: 20, fontWeight: '700' },
   seen: {
-    ...typeScale.caption,
+    ...typeScale.label,
     color: palette.textLow,
     textAlign: 'right',
     paddingRight: spacing.md,

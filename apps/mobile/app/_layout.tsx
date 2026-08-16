@@ -68,6 +68,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  gateTitle: { ...typeScale.displayM, color: palette.textHi },
-  gateSub: { ...typeScale.caption, color: palette.textLow, marginTop: 8 },
+  gateTitle: { ...typeScale.display, color: palette.textHi },
+  gateSub: { ...typeScale.label, color: palette.textLow, marginTop: 8 },
 });

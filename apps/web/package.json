@@ -9,11 +9,13 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tokens:generate": "UPDATE_TOKENS=1 vitest run test/design-tokens.test.ts"
   },
   "dependencies": {
     "@playin/api-client": "workspace:*",
     "@playin/contracts": "workspace:*",
+    "@playin/design": "workspace:*",
     "@playin/p2p": "workspace:*",
     "@playin/sync-core": "workspace:*",
     "@tanstack/react-query": "^5.62.0",

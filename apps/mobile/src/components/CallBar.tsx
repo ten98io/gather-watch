@@ -111,7 +111,7 @@ const styles = StyleSheet.create({
   },
   left: { flex: 1 },
   title: { ...typeScale.bodyStrong, color: palette.textHi },
-  sub: { ...typeScale.caption, color: palette.textMid },
+  sub: { ...typeScale.label, color: palette.textMid },
   joinButton: {
     minHeight: 36,
     justifyContent: 'center',
@@ -124,5 +124,5 @@ const styles = StyleSheet.create({
   errorButton: { borderColor: palette.danger, backgroundColor: 'rgba(255,82,81,0.12)' },
   joinText: { ...typeScale.bodyStrong, color: palette.textHi },
   detailBox: { flexBasis: '100%', paddingTop: spacing.xs },
-  detailText: { ...typeScale.caption, color: palette.textMid },
+  detailText: { ...typeScale.label, color: palette.textMid },
 });

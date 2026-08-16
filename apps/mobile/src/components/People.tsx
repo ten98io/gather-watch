@@ -141,7 +141,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.md,
     paddingVertical: spacing.sm,
-    minHeight: layout.minHit,
+    minHeight: layout.tap,
   },
   orb: {
     width: 44,
@@ -165,5 +165,5 @@ const styles = StyleSheet.create({
     borderColor: palette.aurora2,
   },
   name: { ...typeScale.bodyStrong, color: palette.textHi, flexShrink: 1 },
-  role: { ...typeScale.caption, color: palette.textLow },
+  role: { ...typeScale.label, color: palette.textLow },
 });
