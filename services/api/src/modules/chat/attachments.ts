@@ -115,6 +115,17 @@ export function presignPutUrl(
   expiresSec = 900,
   now: Date = new Date(),
 ): string {
+  return presignObjectUrl(s3, key, 'PUT', expiresSec, now);
+}
+
+/** The same SigV4 query-presign for any method; GET is the read path. */
+export function presignObjectUrl(
+  s3: S3Settings,
+  key: string,
+  method: 'GET' | 'PUT',
+  expiresSec: number,
+  now: Date = new Date(),
+): string {
   const origin = s3Origin(s3);
   const host = new URL(origin).host;
   const region = s3Region(s3);
@@ -133,7 +144,7 @@ export function presignPutUrl(
   ].join('&');
 
   const canonicalRequest = [
-    'PUT',
+    method,
     canonicalUri,
     canonicalQuery,
     `host:${host}`,
@@ -363,6 +374,12 @@ export async function completeAttachment(
     }
     asset = updated;
   }
-  const url = `${deps.config.s3.publicBaseUrl}/${asset.storageKey ?? ''}`;
+  // A STABLE capability URL, not a bucket URL. The bucket is private (a
+  // Railway bucket has no anonymous read), and a presigned GET expires while a
+  // chat message lives forever — so messages store the api's own content
+  // route, which redirects to a fresh short-lived presign per view. The asset
+  // id is unguessable, which is the same access model as Discord/Slack
+  // attachment links; possession of the link is possession of the file.
+  const url = `${deps.config.apiUrl}/assets/${asset.id}/content`;
   return { asset: serializeAsset(asset), url };
 }

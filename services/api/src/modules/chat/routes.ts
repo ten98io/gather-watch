@@ -24,7 +24,7 @@ import { parseWith } from '../../plugins/error-mapper';
 import { memberDocId } from '../../adapters/ports';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 import type { AuthContext } from '../types';
-import { completeAttachment, createAttachmentTicket } from './attachments';
+import { completeAttachment, createAttachmentTicket, presignObjectUrl } from './attachments';
 import { searchGifs } from './gifs';
 import { createUnfurler } from './unfurl';
 import { serviceFor } from './index';
@@ -128,6 +128,24 @@ export const chatRoutes: FastifyPluginAsync = async (app) => {
     }
     const body = parseWith(CreateUploadBody, request.body);
     return createAttachmentTicket(app.deps, roomId, auth.userId, body);
+  });
+
+  /**
+   * The stable URL chat messages store. Deliberately UNAUTHENTICATED: an
+   * <img src> carries no bearer token, so the access model is the capability
+   * URL itself — the asset id is unguessable, exactly how Discord/Slack
+   * attachment links work. The bucket stays private; each view gets a fresh
+   * 60-second presigned GET, so nothing that can rot or leak is ever stored.
+   */
+  app.get<{ Params: { assetId: string } }>('/assets/:assetId/content', async (request, reply) => {
+    const doc = await app.deps.store.assets.findById(request.params.assetId);
+    if (doc === null || doc.status !== 'ready' || doc.storageKey == null) {
+      throw new AppError('NOT_FOUND', 'attachment not found');
+    }
+    // no-store: the redirect target expires in 60s; a cached redirect is a
+    // broken image later.
+    void reply.header('cache-control', 'no-store');
+    return reply.redirect(presignObjectUrl(app.deps.config.s3, doc.storageKey, 'GET', 60), 302);
   });
 
   app.post<{ Params: { roomId: string } }>(
