@@ -276,6 +276,57 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     return mediaKey(mediaRef, undefined);
   }, [mediaRef]);
 
+  // These two run FIRST on purpose: the subscribe/load pair below fires real
+  // adapter events during the same commit, and a reset scheduled after them
+  // would wipe the state those events just reported. A fresh player starts
+  // un-ready ('ready' fires once per YouTube player, not once per video), and
+  // every new track starts from "nothing is running here".
+  useEffect(() => {
+    setLocalReady(false);
+    setLocalBuffering(false);
+  }, [adapter]);
+  useEffect(() => {
+    setLocalPlaying(false);
+    setPlayRefused(false);
+    setStartStalled(false);
+  }, [adapter, mediaIdentity]);
+
+  // Subscribed BEFORE the load below, or the adapters' first buffering edge
+  // fires into an empty room and the server's wait-for-all never hears it.
+  // Buffering reports drive that coordination; the same subscription tracks
+  // what this device's player is really doing.
+  useEffect(() => {
+    if (adapter === null) return;
+    const offs = [
+      adapter.on('buffering', () => {
+        setLocalBuffering(true);
+        connection.syncBuffering(true);
+      }),
+      adapter.on('buffered', () => {
+        setLocalBuffering(false);
+        connection.syncBuffering(false);
+      }),
+      adapter.on('playing', () => {
+        setLocalPlaying(true);
+        setLocalBuffering(false);
+        setPlayRefused(false);
+      }),
+      adapter.on('paused', () => setLocalPlaying(false)),
+      adapter.on('ended', () => setLocalPlaying(false)),
+      adapter.on('blocked', () => setPlayRefused(true)),
+      adapter.on('ready', () => {
+        setLocalReady(true);
+        if (adapter.kind === 'native') {
+          const el = (adapter as NativeAdapter).mediaElement;
+          setCaptionsAvailable(el.textTracks.length > 0);
+        }
+      }),
+    ];
+    return () => {
+      for (const off of offs) off();
+    };
+  }, [adapter, connection]);
+
   useEffect(() => {
     if (adapter === null || mediaRef === null) return;
     adapter.load(mediaRef);
@@ -287,14 +338,6 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     clock: connection.clock,
     onDriftSample: debug ? setDriftMs : undefined,
   });
-
-  // A new track starts from "nothing is running here" again.
-  useEffect(() => {
-    setLocalPlaying(false);
-    setLocalReady(false);
-    setPlayRefused(false);
-    setStartStalled(false);
-  }, [adapter, mediaIdentity]);
 
   const wantsPlay = playback?.playing === true;
   /** Transport exists for this media at all (approximate-tier embeds have no
@@ -359,40 +402,6 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     if (playback.playing) connection.syncPause(adapter.positionMs());
     else connection.syncPlay(adapter.positionMs());
   }, [adapter, playback, gate, controlEnabled, connection]);
-
-  // Buffering reports drive the server's wait-for-all coordination; the same
-  // subscription tracks what this device's player is really doing.
-  useEffect(() => {
-    if (adapter === null) return;
-    const offs = [
-      adapter.on('buffering', () => {
-        setLocalBuffering(true);
-        connection.syncBuffering(true);
-      }),
-      adapter.on('buffered', () => {
-        setLocalBuffering(false);
-        connection.syncBuffering(false);
-      }),
-      adapter.on('playing', () => {
-        setLocalPlaying(true);
-        setLocalBuffering(false);
-        setPlayRefused(false);
-      }),
-      adapter.on('paused', () => setLocalPlaying(false)),
-      adapter.on('ended', () => setLocalPlaying(false)),
-      adapter.on('blocked', () => setPlayRefused(true)),
-      adapter.on('ready', () => {
-        setLocalReady(true);
-        if (adapter.kind === 'native') {
-          const el = (adapter as NativeAdapter).mediaElement;
-          setCaptionsAvailable(el.textTracks.length > 0);
-        }
-      }),
-    ];
-    return () => {
-      for (const off of offs) off();
-    };
-  }, [adapter, connection]);
 
   // Captions: HLS text tracks rendered by the element itself (§9).
   useEffect(() => {

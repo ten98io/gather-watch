@@ -398,6 +398,8 @@ export class ElasticDriver {
   private voiceActive = false;
   private stalled = false;
   private driftMs = 0;
+  /** A host intent (seek / track change) is waiting to be applied verbatim. */
+  private pendingRealign = false;
 
   constructor(opts?: ElasticDriverOptions) {
     this.profileName = opts?.profile ?? 'watch';
