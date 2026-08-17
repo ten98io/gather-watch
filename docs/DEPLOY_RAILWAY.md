@@ -1,26 +1,33 @@
-# Deploying Gather on Railway — step-by-step runbook
+# Deploying Gather on Railway — runbook
 
-Project: **Gather-App** (already created and linked via `railway link`).
-Data plane: **MongoDB Atlas** (external, existing) + **Railway Redis** (already
-provisioned). **Do not add Railway's Mongo template** — Mongo lives in Atlas.
+Project: **Gather** (linked via `railway link` — note: linking writes to the
+home-directory config, not the repo; verify what's linked before `railway up`).
+Data plane: **MongoDB Atlas** (external) + **Railway Redis**. **Do not add
+Railway's Mongo template** — Mongo lives in Atlas.
 
-## Current state (as of 2026-08-16)
+## Current state (as of 2026-08-17): DEPLOYED and serving at gather.watch
 
-| Resource | State | Action |
-|---|---|---|
-| `web` / `api` / `media` services | created, never deployed | configure + deploy below |
-| Redis | **online**, with volume | keep — wire `REDIS_URL` into `api` |
-| `mongodb-volume`, `mongodb-volume-yuCl` | **detached leftovers** (0.8 GB + 0 GB) | **delete both** (dashboard → volume → ⋯ → Delete). Detached volumes still bill per GB. |
-| LiveKit / TURN | not created | optional Phase 3 — calls work P2P without it |
+| Resource | State |
+|---|---|
+| `api` + `web` services | **deployed**, zero-downtime deploys gated on `/readyz`, config-as-code (`services/api/railway.json`, `apps/web/railway.json`) |
+| Redis | online, wired into `api` by reference variable |
+| `attachments` Railway Bucket (`ams`) | **live** — chat attachments; wired into `api` by reference variables |
+| `media` service | **DELETED** — users never upload streams; the upload→HLS pipeline is not deployed |
+| Email | Cloudflare Email Service, sender domain `email.gather.watch` |
+| Custom domains | `gather.watch` (web) + api domain, live |
+| LiveKit | never used (its token route 404'd until 2026-08-16 and was never exercised); deleted from the repo |
+| `mongodb-volume`, `mongodb-volume-yuCl` | detached leftovers — **delete if still present** (dashboard → volume → ⋯ → Delete); detached volumes still bill per GB |
 
-The rollout is deliberately phased so each step is verifiable before the next:
+Phase status:
 
-- **Phase 1 — core app**: `api` + `web`. Rooms, chat, sync, YouTube/SoundCloud/
-  Vimeo playback, calls (P2P mesh) all work.
-- **Phase 2 — media pipeline**: Railway Bucket + `media` service. Enables
-  uploads → HLS library.
-- **Phase 3 — premium relay (optional)**: LiveKit/TURN on a UDP-capable box or
-  LiveKit Cloud. Only needed for Theater-mode relayed calls.
+- **Phase 1 — core app (`api` + `web`): DONE.** Kept below as the runbook for
+  redeploying from scratch.
+- **Phase 2 — media pipeline: SUPERSEDED.** The media service is deleted; the
+  only storage is the `attachments` bucket (done). Original instructions
+  removed — they can no longer be followed.
+- **Phase 3 — LiveKit relay: REPLACED.** Theater relay is Cloudflare
+  Realtime (`relayMode: 'cf-sfu'`); what remains is setting the Cloudflare
+  TURN/SFU keys on `api` (see Phase 3 below).
 
 ---
 
@@ -42,16 +49,14 @@ npx web-push generate-vapid-keys   # VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY
 
 Rules the code enforces: in `NODE_ENV=production` the api **refuses to boot**
 unless `JWT_SECRET` and `JWT_REFRESH_SECRET` are set and ≥32 chars.
-`JWT_SECRET` must be **byte-identical** on `api` and `media` (media validates
-tokens the api mints).
 
 ### 0.2 Prepare Atlas
 
 1. Atlas → Database Access: create/confirm the app user (username + password —
    these are what's in your local `atlas-credentials.env`).
 2. Atlas → Network Access: Railway containers have no fixed egress IP by
-   default. Either enable Railway **static outbound IPs** on the `api` and
-   `media` services (service → Settings → Networking) and allowlist those, or
+   default. Either enable Railway **static outbound IPs** on the `api`
+   service (service → Settings → Networking) and allowlist those, or
    allowlist `0.0.0.0/0` and rely on TLS + a strong password (common for
    Atlas + PaaS; rotate the password if you choose this).
 3. Copy the **connection string** (Drivers → Node.js), and put the database
@@ -64,22 +69,22 @@ tokens the api mints).
 > and silently loses everything on each restart — the `/readyz` healthcheck
 > (now the deploy healthcheck) only protects you once the variable exists.
 
-### 0.3 Connect the repo to Railway (recommended: GitHub auto-deploys)
+### 0.3 Connect the repo to Railway (DONE; recommended: GitHub auto-deploys)
 
-For **each** of the three services (`web`, `api`, `media`):
+For **each** of the two services (`web`, `api`):
 
-1. Service → Settings → **Source**: connect your GitHub repo, branch `main`.
+1. Service → Settings → **Source**: connect your GitHub repo
+   (`mustafagandhi/gather-watch`), branch `main`.
 2. Settings → **Root Directory**: leave as `/` (repo root). The Dockerfiles
    copy the whole pnpm workspace; a subdirectory root breaks the build.
 3. Settings → **Config-as-code** → path:
    - `web` → `apps/web/railway.json`
    - `api` → `services/api/railway.json`
-   - `media` → `services/media/railway.json`
-   Each file pins the right Dockerfile, healthcheck and restart policy.
+   Each file pins the right Dockerfile, healthcheck and restart policy —
+   this is what makes deploys zero-downtime, gated on `/readyz`.
 4. (Optional, avoids rebuild storms) Settings → **Watch paths**:
    - `web`: `apps/web/**`, `packages/**`
    - `api`: `services/api/**`, `packages/**`
-   - `media`: `services/media/**`, `packages/**`
 
 CLI alternative (no GitHub): from the repo root,
 `railway up --service api` builds from your local directory. The repo's
@@ -88,7 +93,7 @@ bake credentials into image layers — still, prefer repo-connected deploys.
 
 ---
 
-## Phase 1 — api + web
+## Phase 1 — api + web (DONE — kept as the from-scratch runbook)
 
 ### 1.1 Configure `api` variables
 
@@ -118,7 +123,7 @@ private networking is free and faster; the public proxy URL also works.
 Leave `APP_URL` for step 1.4 (needs the web domain). Do **not** set
 `PORT` — Railway injects it and the api reads it first.
 
-Optional but recommended now:
+Email + GIFs (configured in production — kept for recreation):
 
 ```env
 # Transactional email — Cloudflare Email Service, over its REST API.
@@ -196,10 +201,10 @@ preflight. Redeploy `api` (variable changes prompt a redeploy automatically).
 
 1. Open `https://<web-domain>` → sign up with your email.
    - No SMTP yet? `railway logs --service api` and open the printed link.
-2. Create a watch room → paste a YouTube URL into the queue → it plays.
+2. Create a room → paste a YouTube URL into the queue → it plays.
 3. Open the room in a second browser/incognito via the invite code — playback
    position and play/pause must stay in sync; chat works; a 2-person call
-   works (P2P mesh, no LiveKit needed).
+   works (P2P mesh, no relay needed).
 4. `https://<web-domain>/admin` should show the ops console (your email is in
    `ADMIN_EMAILS`).
 
@@ -207,74 +212,39 @@ preflight. Redeploy `api` (variable changes prompt a redeploy automatically).
 
 ---
 
-## Phase 2 — uploads/HLS (Railway Bucket + media service)
+## Phase 2 — attachments bucket (DONE; media pipeline superseded)
 
-Skip this phase entirely if you don't need file uploads yet; everything else
-works without it (upload/library UI reports itself unavailable).
+The original Phase 2 (Railway Bucket + `media` service for uploads → HLS) is
+gone: the media service is deleted and users never upload streams. What
+exists instead, already configured:
 
-### 2.1 Create a Railway Bucket
-
-Project canvas → Create → **Bucket** (native S3-compatible storage; S3 API
-ops and egress are free, storage billed per GB). Open the bucket's
-**Connect** tab — it shows endpoint, access key, secret key, bucket name.
-
-### 2.2 Configure `media` variables
-
-```env
-NODE_ENV=production
-JWT_SECRET=<SAME value as api>
-MONGO_URL=<SAME Atlas string as api>
-ENABLE_MEDIA_PIPELINE=true
-S3_ENDPOINT=<bucket endpoint>
-S3_ACCESS_KEY=<bucket access key>
-S3_SECRET_KEY=<bucket secret key>
-S3_BUCKET=<bucket name>
-S3_PUBLIC_BASE_URL=<bucket public base URL (Connect tab)>
-APP_URL=https://<web-domain>
-```
-
-Settings → Networking → Generate Domain (port 4500). Deploy, then:
-
-```bash
-curl https://<media-domain>/readyz
-```
-
-> ⚠️ `media` must run **exactly one replica** (its ffmpeg job queue is
-> in-process and serial — replicas would double-process jobs). Don't scale it
-> horizontally; give it more CPU/RAM instead.
-
-### 2.3 Flip the api's media flags
-
-On `api` → Variables, add the same `S3_*` block **plus**:
-
-```env
-ENABLE_MEDIA_PIPELINE=true
-STORAGE_QUOTA_GB=10
-```
-
-Redeploy `api`. Upload a small mp4 in a room → it should appear in the
-library and play as HLS.
+- The **`attachments` Railway Bucket** (region `ams`), wired into `api` via
+  reference variables. Chat attachments are read through stable capability
+  URLs (`/assets/:id/content` → 60s presigned GET).
+- To recreate: project canvas → Create → **Bucket**, then add its connection
+  values to `api` by reference (Variables → New Variable → Add Reference).
 
 ---
 
-## Phase 3 (optional) — LiveKit relay for Theater mode
+## Phase 3 — Cloudflare Realtime relay for Theater mode (keys pending)
 
-Railway has no public UDP, so the SFU is the one piece that prefers another
-home. Options, in order of effort:
+LiveKit is gone — no room ever successfully used it (its token route 404'd
+until 2026-08-16 and was never exercised), and it is deleted from the
+repo. Theater-mode relay is **Cloudflare Realtime** (`relayMode: 'cf-sfu'`;
+mesh is the default). The one deploy step: set the Cloudflare TURN/SFU keys
+on `api` (names from `services/api/src/config.ts`):
 
-1. **LiveKit Cloud** (fastest): create a project, set on `api`:
-   `LIVEKIT_URL=wss://<project>.livekit.cloud`,
-   `LIVEKIT_INTERNAL_URL=https://<project>.livekit.cloud`,
-   `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` from the dashboard.
-2. **Any small UDP-capable VPS** running `livekit-server` with
-   `infra/livekit.yaml` (+ coturn with `infra/coturn/turnserver.conf` and
-   `TURN_STATIC_AUTH_SECRET` set on both the box and the api).
-3. **LiveKit on Railway over ICE-TCP** (works, higher latency): deploy the
-   `livekit/livekit-server` image as a new service, TCP proxy on 7881, set
-   `LIVEKIT_EXTERNAL_HOST` to the proxy host:port.
+```env
+CF_TURN_KEY_ID=…
+CF_TURN_API_TOKEN=…
+CF_SFU_APP_ID=…
+CF_SFU_API_TOKEN=…
+ENABLE_SFU=true
+FREE_TURN_CAP_GB_PER_MONTH=20   # optional; default 20
+```
 
-Without Phase 3, calls run pure P2P mesh (fine to ~4-6 people) and the
-premium Theater relay toggle reports itself unavailable — nothing else breaks.
+Until the TURN keys are set, voice dropouts persist for peers that need a
+relay. Rates and the cost model: `docs/COST_MODEL.md`.
 
 ### Stripe (only when selling Premium)
 
@@ -298,16 +268,15 @@ GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build
 Load `apps/extension/dist` via chrome://extensions → Load unpacked (or zip it
 for the Web Store). Omitting `GATHER_API_URL` keeps the localhost dev default.
 
-## Custom domains (when ready)
+## Custom domains (DONE — `gather.watch` is live)
 
-1. `web` → Settings → Networking → Custom Domain (e.g. `gather.watch`), add the
+1. `web` → Settings → Networking → Custom Domain (`gather.watch`), add the
    CNAME Railway shows at your DNS.
-2. Same for `api` (e.g. `api.gather.watch`).
+2. Same for `api`.
 3. Update `NEXT_PUBLIC_API_URL` (web, triggers rebuild), `APP_URL` + `API_URL`
    (api), and redeploy both.
 4. Optional edge caching: proxy the domains through Cloudflare and cache
-   `/_next/static/*` and HLS segments (immutable). WS and API pass through
-   uncached.
+   `/_next/static/*` (immutable). WS and API pass through uncached.
 
 ---
 
@@ -321,17 +290,16 @@ for the Web Store). Omitting `GATHER_API_URL` keeps the localhost dev default.
 | Site tries to call `http://localhost:4000` | `NEXT_PUBLIC_API_URL` wasn't set at build time → set it, redeploy `web`. |
 | Sign-in email never arrives | SMTP vars unset/wrong → magic link is in `railway logs --service api`. |
 | Data vanished after a redeploy | `MONGO_URL`/`REDIS_URL` empty at boot → api ran on in-memory adapters. Set them; check `/readyz`. |
-| Uploads say unavailable | `ENABLE_MEDIA_PIPELINE` must be `true` on **both** api and media, S3 vars on both. |
-| Browser extension can't connect | It was built without `GATHER_API_URL` and is pointing at localhost — rebuild it (see below). |
+| Browser extension can't connect | It was built without `GATHER_API_URL` and is pointing at localhost — rebuild it (see above). |
 
 ## Architecture notes (unchanged decisions)
 
-- **Modular monolith + sidecars**: one `api` deployable holds every domain
-  module; `web`, `media` are separate only because their runtime profiles
-  differ. `api` is stateless — Redis pub/sub fans WS events across replicas,
-  so horizontal scaling is a slider, not a rewrite. `media` is the one
-  single-replica service.
+- **Modular monolith**: one `api` deployable holds every domain module; `web`
+  is separate only because its runtime profile differs. `api` is stateless —
+  Redis pub/sub fans WS events across replicas, so horizontal scaling is a
+  slider, not a rewrite.
 - **Mongo stays on Atlas** (owner decision 2026-08-16): no Railway Mongo
   template; the two detached `mongodb-volume*` leftovers should be deleted.
-- **Cloudflare cannot replace this stack** (no UDP/ffmpeg/long-lived sockets
-  at the edge); it remains useful strictly as a CDN in front of Railway.
+- **Cloudflare cannot replace this stack** (no UDP or long-lived sockets at
+  the edge); it serves as CDN in front of Railway plus the Realtime TURN/SFU
+  and Email services.

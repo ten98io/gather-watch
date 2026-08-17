@@ -100,8 +100,6 @@ import {
   AddToRoomQueueBody,
   ReplayEventsQuery,
   ReplayEventsResponse,
-  LivekitTokenBody,
-  LivekitTokenResponse,
   TurnCredentialsResponse,
   CreateCheckoutSessionBody,
   CreateCheckoutSessionResponse,
@@ -361,8 +359,10 @@ describe('entities', () => {
 
   it("Room rejects relayMode 'p2p-magic'", () => {
     expect(Room.safeParse({ ...room, relayMode: 'p2p-magic' }).success).toBe(false);
-    expect(RelayMode.safeParse('cf-sfu').success).toBe(true);
-    expect(RelayMode.safeParse('livekit').success).toBe(true);
+    // Exactly the two shipped topologies — the deleted self-host third relay
+    // must not creep back in (no stored doc ever carried it: rooms are
+    // created 'mesh', the theater toggle writes 'cf-sfu').
+    expect(RelayMode.options).toEqual(['mesh', 'cf-sfu']);
   });
 
   it("Room rejects kind 'party'", () => {
@@ -1372,22 +1372,6 @@ describe('rest.events', () => {
       events: [{ type: 'made.up', roomId: 'room_1', seq: 12, ts: TS, payload: {} }],
     };
     expect(ReplayEventsResponse.safeParse(res).success).toBe(false);
-  });
-});
-
-describe('rest.livekit', () => {
-  it('LivekitTokenBody roundtrips', () => {
-    const body = { roomId: 'room_1' };
-    expect(LivekitTokenBody.parse(body)).toEqual(body);
-  });
-
-  it('LivekitTokenResponse roundtrips', () => {
-    const res = { url: 'wss://livekit.example.com', token: 'jwt.token.here' };
-    expect(LivekitTokenResponse.parse(res)).toEqual(res);
-  });
-
-  it('LivekitTokenResponse rejects a bad url', () => {
-    expect(LivekitTokenResponse.safeParse({ url: 'not-a-url', token: 'tok' }).success).toBe(false);
   });
 });
 

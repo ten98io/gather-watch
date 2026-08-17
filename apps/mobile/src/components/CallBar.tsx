@@ -1,15 +1,15 @@
 /**
  * CallBar — in-room call strip. HONEST BOUNDARY: this build does not bundle
- * @livekit/react-native + react-native-webrtc (native config-plugin weight,
+ * a WebRTC native module (config-plugin weight,
  * no toolchains in CI). What is REAL here:
- *  - the LiveKit token round-trip (POST /rtc/livekit-token via RestClient);
+ *  - presence of call participants (from the room stream);
  *  - presence of call participants (from the room stream) rendered as orbs.
  * What is a documented stub: actually joining the SFU session. Pressing Join
  * mints a token, then shows the boundary panel instead of pretending to be
  * in a call — presence is NOT set to in-call (that would fake state other
  * clients render).
  *
- * Integration point (native milestone): add @livekit/react-native +
+ * Integration point (native milestone): add the Cloudflare Realtime native
  * react-native-webrtc config plugins, then connect with the minted
  * { url, token } and publish mic. Mode B hosting from mobile additionally
  * requires the iOS ReplayKit broadcast extension (BUILD_PROMPT marks it a
@@ -19,14 +19,13 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useStore } from 'zustand';
 import type { RoomId } from '@gather/contracts';
-import { api } from '../api';
 import type { RoomConnection } from '../room-connection';
 import { palette, radii, spacing, type as typeScale } from '../theme';
 
 type CallPhase = 'idle' | 'requesting' | 'boundary' | 'error';
 
-export function CallBar(props: { conn: RoomConnection; roomId: RoomId }) {
-  const { conn, roomId } = props;
+export function CallBar(props: { conn: RoomConnection; roomId?: RoomId }) {
+  const { conn } = props;
   const presence = useStore(conn.store, (s) => s.presence);
   const [phase, setPhase] = useState<CallPhase>('idle');
   const [detail, setDetail] = useState<string | null>(null);
@@ -37,10 +36,10 @@ export function CallBar(props: { conn: RoomConnection; roomId: RoomId }) {
     setPhase('requesting');
     setDetail(null);
     try {
-      const { url } = await api.livekit.token({ roomId });
-      // Token minted successfully — the SFU session itself needs the native
-      // module, so we surface the boundary instead of faking a connection.
-      setDetail(`Token minted for ${url}. Native call module is not bundled in this build.`);
+      // Relayed calls ride Cloudflare Realtime; the native module for the
+      // session is not bundled in this build, so the honest state is the
+      // boundary panel — there is no token to mint and nothing to pretend at.
+      setDetail('Calls need the native module, which is not bundled in this build.');
       setPhase('boundary');
     } catch (err) {
       setDetail(err instanceof Error ? err.message : 'token request failed');
@@ -87,7 +86,7 @@ export function CallBar(props: { conn: RoomConnection; roomId: RoomId }) {
           </Text>
           {phase === 'boundary' && (
             <Text style={styles.detailText}>
-              Calls arrive with @livekit/react-native (native milestone) — see
+              Calls arrive with the native call module (native milestone) — see
               apps/mobile/README.md.
             </Text>
           )}

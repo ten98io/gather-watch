@@ -1,3 +1,8 @@
+> **HISTORICAL (moved 2026-08-17).** The original concept and feasibility
+> matrix. The two-mode insight survives, but the plan around it was superseded:
+> no watch/listen room split (rooms adapt per item), no LiveKit, extension-first
+> playback. Kept for the record; current docs live in `README.md` and `docs/`.
+
 # Gather — a shared living-room for the internet
 
 One room where a group can watch, listen, talk, and text together — with the media, the

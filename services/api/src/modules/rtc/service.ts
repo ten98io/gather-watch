@@ -1,27 +1,19 @@
 /**
- * RTC domain logic: LiveKit access-token minting for room members and
- * short-lived TURN credentials with a strategy chain — Cloudflare TURN-keys
- * API when configured, coturn REST (HMAC-SHA1) credentials when a static auth
- * secret is set, and a STUN-only fallback — plus the free-plan fair-use cap
- * on TURN relay traffic. Pure logic over Deps (global fetch injectable via
- * tests stubbing it); no Fastify types here.
+ * RTC domain logic: short-lived TURN credentials with a strategy chain —
+ * Cloudflare TURN-keys API when configured, coturn REST (HMAC-SHA1)
+ * credentials when a static auth secret is set, and a STUN-only fallback —
+ * plus the free-plan fair-use cap on TURN relay traffic. Pure logic over Deps
+ * (global fetch injectable via tests stubbing it); no Fastify types here.
  *
- * Contract conformance notes:
- * - LivekitTokenResponse is exactly { url, token } — the room's relayMode has
- *   no field in the contract, so it is NOT carried (deviation from the early
- *   draft; relayMode is already visible on the Room entity).
- * - The fair-use "capped" signal is `fairUseRemainingGb: 0` — the contract
- *   has no separate boolean.
+ * Contract conformance note: the fair-use "capped" signal is
+ * `fairUseRemainingGb: 0` — the contract has no separate boolean.
  */
 import { createHmac } from 'node:crypto';
-import { AccessToken } from 'livekit-server-sdk';
-import type { LivekitTokenResponse, TurnCredentialsResponse } from '@gather/contracts';
-import { AppError } from '../../lib/errors';
-import { memberDocId } from '../../adapters/ports';
+import type { TurnCredentialsResponse } from '@gather/contracts';
 import { getEntitlementsPort } from '../rooms/deps';
 import type { AuthContext, Deps } from '../types';
 
-/** LiveKit grant + coturn/Cloudflare credential lifetime: 6 hours. */
+/** coturn/Cloudflare credential lifetime: 6 hours. */
 export const TOKEN_TTL_SECONDS = 6 * 60 * 60;
 
 const CF_TURN_ENDPOINT = 'https://rtc.live.cloudflare.com/v1/turn/keys';
@@ -45,43 +37,6 @@ export class RtcService {
 
   private now(): number {
     return Date.now();
-  }
-
-  /**
-   * Mint a LiveKit access token for a room member. Guests are confined to
-   * their invite room. Subscribe is always granted; publish is granted to
-   * every (non-banned) member — `maxPublishers` is enforced by LiveKit/the
-   * client, not by the token grant.
-   */
-  async mintLivekitToken(auth: AuthContext, roomId: string): Promise<LivekitTokenResponse> {
-    if (auth.guestRoomId !== null && auth.guestRoomId !== roomId) {
-      throw new AppError('FORBIDDEN', 'guest token is room-scoped');
-    }
-    const room = await this.deps.store.rooms.findById(roomId);
-    if (room === null) {
-      throw new AppError('NOT_FOUND', 'room not found');
-    }
-    const member = await this.deps.store.members.findById(memberDocId(roomId, auth.userId));
-    if (member === null) {
-      throw new AppError('FORBIDDEN', 'not a member');
-    }
-    if (member.banned) {
-      throw new AppError('FORBIDDEN', 'banned');
-    }
-
-    const { apiKey, apiSecret, url } = this.deps.config.livekit;
-    const token = new AccessToken(apiKey, apiSecret, {
-      identity: auth.userId,
-      ttl: TOKEN_TTL_SECONDS,
-    });
-    token.addGrant({
-      roomJoin: true,
-      room: room.id,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true,
-    });
-    return { url, token: await token.toJwt() };
   }
 
   /**

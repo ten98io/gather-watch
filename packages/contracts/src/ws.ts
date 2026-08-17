@@ -374,8 +374,8 @@ export const ServerWebrtcIce = serverEvent(
 export type ServerWebrtcIce = z.infer<typeof ServerWebrtcIce>;
 
 /** Authoritative Mode B state: who is sharing, viewer count, uplink health.
- *  Clients switch between mediaRef playback and the LiveKit screen-share
- *  track based on `payload.active`. */
+ *  Clients switch between mediaRef playback and the host's shared
+ *  screen/tab track based on `payload.active`. */
 export const ServerRestreamState = serverEvent('restream.state', RestreamState);
 export type ServerRestreamState = z.infer<typeof ServerRestreamState>;
 

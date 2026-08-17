@@ -1,17 +1,15 @@
 /**
- * RTC module tests: LiveKit token minting (happy path + grants/TTL decode,
- * guest scoping, 403/404) and the TURN credentials strategy chain
+ * RTC module tests: the TURN credentials strategy chain
  * (Cloudflare → coturn HMAC → STUN-only) with the free-plan fair-use cap.
  * All on memory adapters; global fetch is stubbed — no network.
  */
 import { createHmac } from 'node:crypto';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TokenVerifier } from 'livekit-server-sdk';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { TurnCredentialsResponse } from '@gather/contracts';
 import type { AppConfig } from '../../config';
 import { newId } from '../../lib/tokens';
 import type { TestApp } from '../../../test/helpers';
-import { makeApp, seedRoom, signupUser, testConfig } from '../../../test/helpers';
+import { makeApp, signupUser, testConfig } from '../../../test/helpers';
 import { TOKEN_TTL_SECONDS } from './service';
 
 const TURN_SECRET = 'test-turn-static-secret';
@@ -30,127 +28,12 @@ function bearer(accessToken: string): { authorization: string } {
   return { authorization: `Bearer ${accessToken}` };
 }
 
-/** Sign up a user and create a room they host (full HTTP path). */
-async function makeRoom(
-  app: TestApp,
-  email: string,
-): Promise<{ accessToken: string; userId: string; roomId: string }> {
-  const account = await signupUser(app.app, email);
-  const res = await app.app.inject({
-    method: 'POST',
-    url: '/rooms',
-    headers: bearer(account.accessToken),
-    payload: { kind: 'watch', name: 'RTC Test Room' },
-  });
-  expect(res.statusCode).toBe(200);
-  const body = res.json() as { room: { id: string } };
-  return { accessToken: account.accessToken, userId: account.user.id, roomId: body.room.id };
-}
-
 describe('rtc module', () => {
   let app: TestApp;
 
   afterEach(async () => {
     vi.unstubAllGlobals();
     await app.app.close();
-  });
-
-  describe('POST /rtc/livekit-token', () => {
-    beforeEach(async () => {
-      app = await makeApp();
-    });
-
-    it('mints a token with the right room, identity, grants and 6h TTL', async () => {
-      const { accessToken, userId, roomId } = await makeRoom(app, 'host@example.com');
-
-      const res = await app.app.inject({
-        method: 'POST',
-        url: '/rtc/livekit-token',
-        headers: bearer(accessToken),
-        payload: { roomId },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = res.json() as { url: string; token: string };
-      expect(body.url).toBe(app.deps.config.livekit.url);
-
-      const verifier = new TokenVerifier(
-        app.deps.config.livekit.apiKey,
-        app.deps.config.livekit.apiSecret,
-      );
-      const claims = await verifier.verify(body.token);
-      expect(claims.sub).toBe(userId);
-      expect(claims.video?.room).toBe(roomId);
-      expect(claims.video?.roomJoin).toBe(true);
-      expect(claims.video?.canPublish).toBe(true);
-      expect(claims.video?.canSubscribe).toBe(true);
-      const nowSec = Math.floor(Date.now() / 1000);
-      expect(claims.exp ?? 0).toBeGreaterThanOrEqual(nowSec + TOKEN_TTL_SECONDS - 30);
-      expect(claims.exp ?? 0).toBeLessThanOrEqual(nowSec + TOKEN_TTL_SECONDS + 30);
-    });
-
-    it('rejects a non-member with 403', async () => {
-      const { roomId } = await makeRoom(app, 'host@example.com');
-      const outsider = await signupUser(app.app, 'outsider@example.com');
-
-      const res = await app.app.inject({
-        method: 'POST',
-        url: '/rtc/livekit-token',
-        headers: bearer(outsider.accessToken),
-        payload: { roomId },
-      });
-      expect(res.statusCode).toBe(403);
-      expect((res.json() as { code: string }).code).toBe('FORBIDDEN');
-    });
-
-    it('rejects an unknown room with 404', async () => {
-      const account = await signupUser(app.app, 'someone@example.com');
-
-      const res = await app.app.inject({
-        method: 'POST',
-        url: '/rtc/livekit-token',
-        headers: bearer(account.accessToken),
-        payload: { roomId: newId() },
-      });
-      expect(res.statusCode).toBe(404);
-      expect((res.json() as { code: string }).code).toBe('NOT_FOUND');
-    });
-
-    it('allows a guest in their own room but not another room', async () => {
-      const seeded = await seedRoom(app.store);
-      const other = await seedRoom(app.store);
-      const guestRes = await app.app.inject({
-        method: 'POST',
-        url: '/auth/guest',
-        payload: { inviteCode: seeded.inviteCode, displayName: 'Guest' },
-      });
-      expect(guestRes.statusCode).toBe(200);
-      const guest = guestRes.json() as { accessToken: string };
-
-      const own = await app.app.inject({
-        method: 'POST',
-        url: '/rtc/livekit-token',
-        headers: bearer(guest.accessToken),
-        payload: { roomId: seeded.roomId },
-      });
-      expect(own.statusCode).toBe(200);
-
-      const foreign = await app.app.inject({
-        method: 'POST',
-        url: '/rtc/livekit-token',
-        headers: bearer(guest.accessToken),
-        payload: { roomId: other.roomId },
-      });
-      expect(foreign.statusCode).toBe(403);
-    });
-
-    it('requires authentication', async () => {
-      const res = await app.app.inject({
-        method: 'POST',
-        url: '/rtc/livekit-token',
-        payload: { roomId: newId() },
-      });
-      expect(res.statusCode).toBe(401);
-    });
   });
 
   describe('GET /rtc/turn-credentials', () => {

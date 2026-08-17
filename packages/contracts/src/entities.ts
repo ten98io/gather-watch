@@ -76,8 +76,11 @@ export type RoomPolicies = z.infer<typeof RoomPolicies>;
 export const RoomKind = z.enum(['watch', 'listen']);
 export type RoomKind = z.infer<typeof RoomKind>;
 
-/** Media relay topology for the room's WebRTC calls. */
-export const RelayMode = z.enum(['mesh', 'cf-sfu', 'livekit']);
+/** Media relay topology for the room's WebRTC calls: free p2p mesh (default)
+ *  or Cloudflare Realtime SFU (premium Theater mode). Stored docs only ever
+ *  carry these two values — rooms are created 'mesh' and the theater toggle
+ *  writes 'cf-sfu'. */
+export const RelayMode = z.enum(['mesh', 'cf-sfu']);
 export type RelayMode = z.infer<typeof RelayMode>;
 
 export const Room = z.object({
@@ -290,8 +293,9 @@ export type UplinkQuality = z.infer<typeof UplinkQuality>;
 
 /**
  * Room-level Mode B (re-stream) state. When `active`, clients render the
- * host's LiveKit screen-share track instead of Mode A mediaRef playback;
- * when inactive they fall back to the current PlaybackState.
+ * host's shared screen/tab track (over the room's relay — mesh or cf-sfu)
+ * instead of Mode A mediaRef playback; when inactive they fall back to the
+ * current PlaybackState.
  */
 export const RestreamState = z.object({
   active: z.boolean(),

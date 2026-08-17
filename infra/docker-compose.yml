@@ -74,9 +74,6 @@ services:
       MONGO_URL: mongodb://mongo:27017/gather
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
-      # Server-side LiveKit admin/token calls go over the docker network.
-      # The PUBLIC client URL (wss://…) stays in .env as LIVEKIT_URL — see README.
-      LIVEKIT_INTERNAL_URL: http://livekit:7880
     expose:
       - "4000" # fronted by caddy; not published on the host
     healthcheck:
@@ -95,8 +92,6 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-      livekit:
-        condition: service_started
 
   # ── Media pipeline worker (ffmpeg → HLS → MinIO) ──────────────────────────
   media:
@@ -148,49 +143,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
-
-  # ── LiveKit SFU (calls + Mode B re-stream) ─────────────────────────────────
-  livekit:
-    image: livekit/livekit-server:v1
-    restart: unless-stopped
-    command: ["--config", "/etc/livekit.yaml"]
-    volumes:
-      - ./livekit.yaml:/etc/livekit.yaml:ro
-    environment:
-      # Takes precedence over the dev placeholder keys in livekit.yaml, so
-      # production keys live only in the root .env. Format: "key: secret".
-      # :? = REQUIRED — a missing/empty var fails the deploy instead of
-      # silently booting an internet-reachable SFU on publicly-known dev keys.
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}"
-    ports:
-      - "7880:7880"                     # WS/HTTP signalling (proxy or open — see README)
-      - "7881:7881"                     # ICE/TCP fallback
-      - "50000-50200:50000-50200/udp"   # WebRTC media — MUST match rtc.port_range_* in livekit.yaml
-
-  # ── coturn (TURN relay for clients behind hostile NATs) ───────────────────
-  coturn:
-    image: instrumentisto/coturn:latest
-    restart: unless-stopped
-    volumes:
-      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
-    # turnserver.conf cannot read env vars, so the shared secret is injected as
-    # a CLI flag (CLI overrides the config file). Set TURN_STATIC_AUTH_SECRET
-    # in the root .env — see infra/README.md. :? = REQUIRED: a missing secret
-    # fails the deploy; it must never fall back to a value printed in a public
-    # repo (anyone could mint valid TURN credentials and relay through you).
-    command:
-      - -c
-      - /etc/coturn/turnserver.conf
-      - --static-auth-secret=${TURN_STATIC_AUTH_SECRET:?set TURN_STATIC_AUTH_SECRET in .env}
-    # Alternative (Linux hosts only, better for large relay ranges): comment the
-    # `ports:` block out and use host networking instead:
-    #   network_mode: host
-    ports:
-      - "3478:3478"
-      - "3478:3478/udp"
-      - "5349:5349"
-      - "5349:5349/udp"
-      - "49160-49200:49160-49200/udp"   # relay range — MUST match min-port/max-port in coturn/turnserver.conf
 
   # ── MinIO object storage (S3 API) ──────────────────────────────────────────
   minio:

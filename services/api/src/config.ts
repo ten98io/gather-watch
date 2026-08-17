@@ -32,14 +32,6 @@ export const configSchema = z.object({
   // null ⇒ the in-memory adapters are used (see adapters/index.ts).
   mongoUrl: z.string().min(1).nullable().default(null),
   redisUrl: z.string().min(1).nullable().default(null),
-  livekit: z
-    .object({
-      url: z.string().min(1).default('ws://localhost:7880'),
-      internalUrl: z.string().min(1).default('http://localhost:7880'),
-      apiKey: z.string().min(1).default('devkey'),
-      apiSecret: z.string().min(1).default('devsecret-at-least-32-characters-long'),
-    })
-    .default({}),
   turnStaticAuthSecret: z.string().min(1).nullable().default(null),
   s3: z
     .object({
@@ -75,7 +67,6 @@ export const configSchema = z.object({
     })
     .default({}),
   enableMediaPipeline: z.boolean().default(false),
-  enableSfu: z.boolean().default(false),
   tenorApiKey: z.string().min(1).nullable().default(null),
   vapid: z
     .object({
@@ -141,12 +132,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     mongoUrl: envStr(env, 'MONGO_URL'),
     redisUrl: envStr(env, 'REDIS_URL'),
-    livekit: {
-      url: envStr(env, 'LIVEKIT_URL'),
-      internalUrl: envStr(env, 'LIVEKIT_INTERNAL_URL'),
-      apiKey: envStr(env, 'LIVEKIT_API_KEY'),
-      apiSecret: envStr(env, 'LIVEKIT_API_SECRET'),
-    },
     turnStaticAuthSecret: envStr(env, 'TURN_STATIC_AUTH_SECRET'),
     s3: {
       endpoint: envStr(env, 'S3_ENDPOINT'),
@@ -173,7 +158,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       pricePremiumMonthly: envStr(env, 'STRIPE_PRICE_PREMIUM_MONTHLY'),
     },
     enableMediaPipeline: envBool(env, 'ENABLE_MEDIA_PIPELINE'),
-    enableSfu: envBool(env, 'ENABLE_SFU'),
     tenorApiKey: envStr(env, 'TENOR_API_KEY'),
     vapid: {
       publicKey: envStr(env, 'VAPID_PUBLIC_KEY'),

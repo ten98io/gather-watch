@@ -23,8 +23,6 @@
  * return to idle is a bug.
  *
  * Viewer: renders the host's mesh 'share' track when restream.state is active.
- * LiveKit relay stays a documented boundary (p2p LivekitProvider is
- * NOT_ENABLED until ENABLE_SFU) — nothing here is simulated.
  */
 import { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';

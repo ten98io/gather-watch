@@ -135,9 +135,8 @@ So the product ships one line of copy at the right moment, and that is the
 entire client-side AirPlay feature:
 
 - **Where it lives:** rows inside the always-visible cast control popover
-  (the control the live-triage wave is making honest in
-  `apps/web/components/stage/PlayerControls.tsx`), shown only while a Mode B
-  share is on stage, keyed by platform.
+  (shipped 2026-08-17 in `apps/web/components/stage/PlayerControls.tsx`),
+  shown only while a Mode B share is on stage, keyed by platform.
 - **macOS copy:** *"To put this on your TV: menu bar → Control Center →
   Screen Mirroring."*
 - **iPhone/iPad copy:** *"To put this on your TV: Control Center (swipe down
@@ -251,8 +250,7 @@ does later.
    session helpers in `apps/web/lib/cast.ts` — the on-demand `cast_sender.js`
    loader already exists there; add our receiver app ID beside
    `DEFAULT_MEDIA_RECEIVER_APP_ID`, which library items keep using unchanged.
-5. **Player-bar cast UI — lands AFTER the live-triage wave** currently
-   editing `PlayerControls.tsx`/`ModeBStage.tsx`. That wave is already making
+5. **Player-bar cast UI.** The live-triage wave (shipped 2026-08-17) made
    the cast control always-visible with honest states; this slice **extends
    that control, it does not duplicate it**: a "Watch on Chromecast" action
    that launches the CAF session when a share is live, the two AirPlay

@@ -432,17 +432,6 @@ export type ReplayEventsQuery = z.infer<typeof ReplayEventsQuery>;
 export const ReplayEventsResponse = z.object({ events: z.array(ServerEvent) });
 export type ReplayEventsResponse = z.infer<typeof ReplayEventsResponse>;
 
-// ---------- livekit ----------
-
-export const LivekitTokenBody = z.object({ roomId: RoomId });
-export type LivekitTokenBody = z.infer<typeof LivekitTokenBody>;
-
-export const LivekitTokenResponse = z.object({
-  url: z.string().url(),
-  token: z.string().min(1),
-});
-export type LivekitTokenResponse = z.infer<typeof LivekitTokenResponse>;
-
 // ---------- rtc ----------
 
 /** Short-lived TURN credentials; `fairUseRemainingGb` is null when unmetered. */
@@ -595,7 +584,6 @@ export const AdminOverviewResponse = z.object({
   }),
   features: z.object({
     mediaPipeline: z.boolean(),
-    sfu: z.boolean(),
     gifs: z.boolean(),
     stripe: z.boolean(),
     push: z.boolean(),
@@ -775,9 +763,6 @@ export const rest = {
   },
   events: {
     replayEvents: { query: ReplayEventsQuery, response: ReplayEventsResponse },
-  },
-  livekit: {
-    livekitToken: { body: LivekitTokenBody, response: LivekitTokenResponse },
   },
   rtc: {
     turnCredentials: { response: TurnCredentialsResponse },

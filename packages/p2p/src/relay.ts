@@ -1,9 +1,8 @@
 /**
- * Relay provider abstraction: one uniform media-plane interface over the three
- * supported topologies — p2p mesh (default), Cloudflare Realtime SFU (premium
- * Theater mode), and LiveKit (self-host, gated behind ENABLE_SFU). Providers
- * are switchable per room mid-session; sync beacons ride DataChannels in every
- * topology.
+ * Relay provider abstraction: one uniform media-plane interface over the two
+ * supported topologies — p2p mesh (default) and Cloudflare Realtime SFU
+ * (premium Theater mode). Providers are switchable per room mid-session; sync
+ * beacons ride DataChannels in every topology.
  */
 
 import type { RelayMode, RoomId } from '@gather/contracts';
@@ -27,10 +26,10 @@ export type RelayKind = RelayMode;
 
 /** Error raised by relay providers; `code` classifies the failure. */
 export class RelayError extends Error {
-  readonly code: 'NOT_ENABLED' | 'HTTP' | 'STATE';
+  readonly code: 'HTTP' | 'STATE';
   readonly status: number | null;
 
-  constructor(code: 'NOT_ENABLED' | 'HTTP' | 'STATE', message: string, status?: number) {
+  constructor(code: 'HTTP' | 'STATE', message: string, status?: number) {
     super(message);
     this.name = 'RelayError';
     this.code = code;
@@ -40,7 +39,7 @@ export class RelayError extends Error {
 
 /** Per-connect authentication for a relay provider. */
 export interface RelayAuth {
-  /** Bearer token (Cloudflare app token / LiveKit JWT); null for mesh. */
+  /** Bearer token (Cloudflare app token); null for mesh. */
   token: string | null;
   /** Cloudflare Realtime appId (cf-sfu only). */
   appId?: string;
@@ -48,9 +47,9 @@ export interface RelayAuth {
   baseUrl?: string;
 }
 
-/** Uniform media-plane interface: mesh (default), Cloudflare Realtime SFU
- *  (premium Theater mode), LiveKit (self-host, ENABLE_SFU). Switchable per room
- *  mid-session; sync beacons ride DataChannels in every topology. */
+/** Uniform media-plane interface: mesh (default) or Cloudflare Realtime SFU
+ *  (premium Theater mode). Switchable per room mid-session; sync beacons ride
+ *  DataChannels in every topology. */
 export interface RelayProvider {
   readonly kind: RelayKind;
   connect(roomId: RoomId, auth: RelayAuth): Promise<void>;
@@ -317,36 +316,5 @@ export class CfSfuProvider implements RelayProvider {
       throw new RelayError('HTTP', `cf-sfu ${method} ${path} failed with status ${res.status}`, res.status);
     }
     return res.json();
-  }
-}
-
-/** Self-host LiveKit tier — typed but intentionally disabled until ENABLE_SFU
- *  lands (WF5); every method throws RelayError('NOT_ENABLED'). */
-export class LivekitProvider implements RelayProvider {
-  readonly kind = 'livekit';
-
-  /** Always rejects: LiveKit is not enabled in this build. */
-  connect(): Promise<void> {
-    return Promise.reject(new RelayError('NOT_ENABLED', 'LiveKit relay is not enabled in this build'));
-  }
-
-  /** Always rejects: LiveKit is not enabled in this build. */
-  publishTracks(): Promise<void> {
-    return Promise.reject(new RelayError('NOT_ENABLED', 'LiveKit relay is not enabled in this build'));
-  }
-
-  /** Always throws: LiveKit is not enabled in this build. */
-  subscribe(): () => void {
-    throw new RelayError('NOT_ENABLED', 'LiveKit relay is not enabled in this build');
-  }
-
-  /** Always throws: LiveKit is not enabled in this build. */
-  dataChannel(): DataChannelLike | null {
-    throw new RelayError('NOT_ENABLED', 'LiveKit relay is not enabled in this build');
-  }
-
-  /** Resolves fine — closing a never-opened provider is a no-op. */
-  close(): Promise<void> {
-    return Promise.resolve();
   }
 }

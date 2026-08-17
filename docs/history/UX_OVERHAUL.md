@@ -1,3 +1,9 @@
+> **HISTORICAL (moved 2026-08-17).** This overhaul is executed. Its surviving
+> decisions — the locked-decision table and the ≤3-step budget — now live in
+> `DESIGN.md` §11–12, which is the binding copy. Note D3 evolved: the listen
+> composition is now driven per playing item (`mediaKindFor`), not by a room
+> kind, which no longer exists as a user choice.
+
 # UX overhaul spec (supersedes the raw feedback list)
 
 This is the executable version of the owner's 2026-08-16 feedback. It exists

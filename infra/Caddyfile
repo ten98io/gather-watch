@@ -32,13 +32,6 @@ gather.example.com {
 	}
 }
 
-# ── Optional: LiveKit signalling behind TLS on a subdomain ───────────────────
-# Uncomment (and add DNS) to serve wss://livekit.gather.example.com instead of
-# exposing ws://host:7880 directly; then set LIVEKIT_URL accordingly in .env.
-# livekit.gather.example.com {
-# 	reverse_proxy livekit:7880
-# }
-
 # ── Local development block (plain HTTP, no certs) ───────────────────────────
 # Reachable at http://localhost:8080 (compose publishes 8080). The explicit
 # http:// prefix stops Caddy from minting an internal TLS cert for localhost.

@@ -1,15 +1,17 @@
 # Gather — infra
 
 One `docker compose` file = the full self-hosted production stack: Caddy (TLS
-edge), Next.js web, Fastify API, media worker, MongoDB, Redis, LiveKit SFU,
-coturn, MinIO.
+edge), Next.js web, Fastify API, media worker, MongoDB, Redis, MinIO.
+
+The media plane needs no self-hosted service: calls run p2p mesh (default) or
+Cloudflare Realtime SFU (premium Theater mode), with Cloudflare TURN as the
+relay for clients behind hostile NATs — all reached directly by clients, with
+the API minting short-lived credentials.
 
 ```
 infra/
   docker-compose.yml       # the whole stack
   Caddyfile                # TLS edge + reverse proxy (prod domain + localhost:8080 dev block)
-  livekit.yaml             # LiveKit SFU config (rtc ports, room defaults, TURN integration)
-  coturn/turnserver.conf   # TURN relay config (secret injected via CLI from .env)
   README.md
 ```
 
@@ -25,43 +27,35 @@ documented in each Dockerfile).
 | caddy      | 80, 443, 443/udp, 8080       | 80, 443, 443/udp, 127.0.0.1:8080 | TLS termination + reverse proxy; 8080 = plain-HTTP dev block (loopback only) |
 | web        | 3000                         | — (via caddy)           | Next.js PWA                                                |
 | api        | 4000                         | — (via caddy)           | Fastify REST + room WebSocket (`/api/*`, `/ws`)            |
-| media      | 4500                         | —                       | health endpoint only; BullMQ/ffmpeg worker                 |
+| media      | 4500                         | —                       | health endpoint only; ffmpeg worker (in-process queue — run ONE replica) |
 | mongo      | 27017                        | —                       | MongoDB 7 (volume `mongo_data`)                            |
-| redis      | 6379                         | —                       | Redis 7 (pubsub + queues; volume `redis_data`)             |
-| livekit    | 7880, 7881, 50000–50200/udp  | same                    | 7880 WS signalling, 7881 ICE/TCP fallback, UDP media range |
-| coturn     | 3478 tcp+udp, 5349 tcp+udp, 49160–49200/udp | same     | STUN/TURN; 49160–49200 = relay range                       |
+| redis      | 6379                         | —                       | Redis 7 (pubsub; volume `redis_data`)                      |
 | minio      | 9000, 9001                   | 9000, 127.0.0.1:9001    | S3 API (public; presigned PUTs hit it directly) / admin console (loopback only) |
 
-Cross-file invariants (change one → change all):
-
-- LiveKit UDP range `50000–50200`: compose `livekit.ports` ⟷ `livekit.yaml`
-  `rtc.port_range_start/end`.
-- coturn relay range `49160–49200`: compose `coturn.ports` ⟷
-  `turnserver.conf` `min-port`/`max-port`.
-- Health endpoints are a contract with the app code: API serves
-  `GET /healthz` → 200 on `:4000`; media worker serves `GET /healthz` → 200 on
-  `:4500` (`MEDIA_PORT`). Compose gating and Docker HEALTHCHECKs both probe
-  these.
+Cross-file invariant (change one → change all): health endpoints are a
+contract with the app code — the API serves `GET /healthz` → 200 on `:4000`;
+the media worker serves `GET /healthz` → 200 on `:4500` (`MEDIA_PORT`).
+Compose gating and Docker HEALTHCHECKs both probe these.
 
 ## First boot
 
 1. **Env.** At the repo root: `cp .env.example .env`, then set real values for
-   `JWT_SECRET`, `JWT_REFRESH_SECRET`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`,
-   `S3_ACCESS_KEY`, `S3_SECRET_KEY`, and `TURN_STATIC_AUTH_SECRET` (long random
-   string). Compose uses required-variable interpolation (`${VAR:?}`) for every
+   `JWT_SECRET`, `JWT_REFRESH_SECRET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY`.
+   Compose uses required-variable interpolation (`${VAR:?}`) for every
    credential, so a missing or empty value fails the deploy loudly instead of
    booting on the dev placeholders printed in this public repo.
+
+   For TURN relay in production, set `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN`
+   (Cloudflare TURN keys). Without them the API falls back to
+   `TURN_STATIC_AUTH_SECRET` (an EXTERNAL coturn you run yourself — none ships
+   in this compose file) and finally to STUN-only.
 
    Leave `MONGO_URL`/`REDIS_URL` alone — compose pins the in-network
    `mongodb://mongo:27017/gather` and `redis://redis:6379` per service, so the
    empty dev defaults (in-memory adapters) can never leak into prod containers.
 2. **Domain.** In `infra/Caddyfile`, replace `gather.example.com` with your
-   domain (both the main block and, if used, the LiveKit subdomain block).
-   Point DNS A/AAAA at the host. Update `APP_URL`, `S3_PUBLIC_BASE_URL`
-   (`https://your.domain/media/gather-media`) and `LIVEKIT_URL` in `.env`.
-   If you enable the (commented-out, opt-in) `rtc.turn_servers` block in
-   `infra/livekit.yaml`, replace its `gather.example.com` host too — the
-   Caddyfile step does not cover that file.
+   domain. Point DNS A/AAAA at the host. Update `APP_URL` and
+   `S3_PUBLIC_BASE_URL` (`https://your.domain/media/gather-media`) in `.env`.
 3. **Launch** from the repo root (the `--env-file` flag is required — compose
    interpolation otherwise looks for `infra/.env`):
 
@@ -77,12 +71,6 @@ Cross-file invariants (change one → change all):
    ```sh
    docker compose -f infra/docker-compose.yml --env-file .env ps        # all Up/healthy
    curl -fsS http://localhost:8080/api/healthz                          # via caddy dev block
-   ```
-5. **Seed (optional).** Run the repo's seed script inside the api container:
-
-   ```sh
-   docker compose -f infra/docker-compose.yml --env-file .env exec api \
-     pnpm --filter ./services/api run seed
    ```
 
 A repo-root `.dockerignore` is committed (the compose build context is the
@@ -102,46 +90,29 @@ as a belt-and-braces guard.
   the site block: `tls { ca https://acme-staging-v02.api.letsencrypt.org/directory }`.
 - The `http://localhost:8080` dev block is deliberately plain HTTP (no
   self-signed cert noise). Firewall 8080 in production.
-- **coturn TLS (5349)** does not use Caddy's certs automatically. Plain
-  3478/udp TURN works without it. To enable turns:, mount a cert/key pair into
-  the coturn container and uncomment `cert=`/`pkey=` in `turnserver.conf`.
 - getUserMedia/getDisplayMedia require a secure context — everything
   user-facing must be behind https in production (localhost is exempt in dev).
 
-## LiveKit / TURN firewall notes
+## TURN notes
 
-Open on the host firewall (inbound):
+Only 80/443 (tcp, +443/udp for HTTP/3) need to be open inbound — the media
+plane (mesh WebRTC, Cloudflare SFU, Cloudflare TURN) never terminates on this
+host.
 
-| Port(s)             | Proto   | Why                                                        |
-| ------------------- | ------- | ---------------------------------------------------------- |
-| 80, 443             | tcp (+443/udp) | Caddy: ACME + HTTPS/H3 for web, `/api`, `/ws`, `/media` |
-| 7880                | tcp     | LiveKit WS signalling — only if NOT proxying via Caddy (see below) |
-| 7881                | tcp     | LiveKit ICE/TCP fallback (clients on UDP-blocked networks)  |
-| 50000–50200         | udp     | LiveKit WebRTC media                                        |
-| 3478                | udp+tcp | coturn STUN/TURN                                            |
-| 5349                | tcp     | coturn TURN over TLS (once certs are mounted)               |
-| 49160–49200         | udp     | coturn relay range                                          |
+The API hands clients ICE servers from `GET /rtc/turn-credentials` with a
+strategy chain:
 
-- **Signalling TLS:** browsers on an https page need `wss://`. Either
-  uncomment the `livekit.gather.example.com` block in the Caddyfile (then
-  `LIVEKIT_URL=wss://livekit.gather.example.com`, and 7880 can stay closed to
-  the internet), or terminate TLS on 7880 some other way. Raw `ws://host:7880`
-  only works for plain-HTTP dev.
-- **TURN credentials:** coturn runs `use-auth-secret` (time-limited HMAC creds
-  derived from `TURN_STATIC_AUTH_SECRET`, injected by compose as a CLI flag —
-  coturn configs can't read env vars; compose refuses to start without the
-  secret). The API is expected to mint `timestamp:user` / HMAC pairs from the
-  same secret when handing RTCConfiguration to clients. `livekit.yaml`'s
-  static `turn_servers` handout is commented out by default (it cannot
-  authenticate against `use-auth-secret`) — see the comment there before
-  enabling it.
-- **NAT:** `rtc.use_external_ip: true` in `livekit.yaml` makes LiveKit
-  advertise the host's public IP from behind docker bridge networking. If the
-  host itself is behind another NAT (home lab), forward the LiveKit+coturn
-  ports on the outer router too.
-- coturn can run with `network_mode: host` (Linux only) instead of explicit
-  port mappings — preferable for large relay ranges, since docker
-  userland-proxies every mapped port; swap the commented block in compose.
+1. **Cloudflare TURN** (`CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN` set): the API
+   mints short-lived credentials via Cloudflare's TURN-keys API, tagged per
+   user for usage attribution.
+2. **External coturn** (`TURN_STATIC_AUTH_SECRET` set): time-limited
+   `timestamp:user` / HMAC-SHA1 credential pairs in the coturn REST
+   convention — for a coturn instance you operate outside this compose stack.
+3. **STUN-only** fallback (no relay; direct/NAT-traversable paths only).
+
+Free-plan TURN relay is fair-use capped per account
+(`FREE_TURN_CAP_GB_PER_MONTH`); over the cap the API strips `turn:`/`turns:`
+URLs and keeps STUN.
 
 ## Scaling notes
 
@@ -158,15 +129,14 @@ Open on the host firewall (inbound):
   (`dynamic a { name api port 4000 }`) so it re-resolves. No sticky sessions
   needed: a reconnecting WS client replays missed events via
   `GET /rooms/{id}/events?since=seq` regardless of which replica it lands on.
-- **media** workers scale the same way (`--scale media=N`) — BullMQ
-  coordinates job ownership through Redis.
+- **media must run exactly ONE replica.** Its job queue is an in-process
+  promise chain — there is no BullMQ (and it never reads `REDIS_URL`), so
+  nothing coordinates job ownership across replicas; a second replica would
+  double-process uploads. Scale it vertically, or build real queue
+  coordination first.
 - **web** (Next.js) is stateless; scale like api if it's ever the bottleneck
   (it usually isn't — Caddy gzips and the heavy traffic is media).
 - **mongo/redis/minio** are single-node here by design (one-box self-host).
   Growing beyond one box means: Mongo replica set, Redis with a real password
   + persistence policy, MinIO distributed mode — at which point split this
   compose file rather than bending it.
-- **livekit** vertical-scales a long way on one node (it's the SFU doing the
-  heavy lifting; the 12-publisher room cap is app policy). Multi-node LiveKit
-  requires its Redis-based routing config — out of scope for the one-box
-  stack.

@@ -45,15 +45,18 @@ drift = (expectedMs − anchorOffsetMs) − actualMs
 
 ### Retuned bands
 
-| Setting | Watch | Listen | Why |
+Bands follow the **playing item's media kind** (video vs music — rooms are
+adaptive; there is no watch/listen room split):
+
+| Setting | Video | Music | Why |
 |---|---|---|---|
 | deadband | 2000ms | 1500ms | below this, do nothing at all |
 | seek threshold | 12000ms | 8000ms | seek only when genuinely lost |
 | rate clamp | 0.97–1.03 | 0.99–1.01 | see below |
 
 **Rate-nudging is much more audible in music than video.** A 5% rate change
-shifts pitch by nearly a semitone — unacceptable in a listening room, barely
-noticed in dialogue. Listen rooms therefore converge more slowly and rely
+shifts pitch by nearly a semitone — unacceptable while music plays, barely
+noticed in dialogue. Music items therefore converge more slowly and rely
 more on the anchor. Where the player rejects `playbackRate` (common on DRM
 players — the extension's `mediaDriver` already try/catches it), the anchor
 absorbs the difference and no correction is attempted at all.
@@ -144,7 +147,8 @@ Define `PlaybackDriver` once (in `packages/contracts` or a new
 
 1. **Web adapters** (existing YouTube/HLS/SoundCloud/Vimeo/native) — for
    content the web can play directly. Keeps a room link working instantly
-   with no install.
+   with no install. (Slated for deletion once the extension is verified as
+   the driver in a real room — `docs/WEB_SLIMMING.md` steps 4–5.)
 2. **Extension content script** — generalised `findMainMedia` for arbitrary
    sites, plus per-site adapters where the generic path is insufficient.
 3. **Mobile native** — AVPlayer / ExoPlayer / WebView behind the same
@@ -154,28 +158,28 @@ Then "which surface drives playback" is a runtime decision per item, not an
 architectural fork. Web-minimal becomes a *default*, not a rewrite, and the
 first-run funnel survives.
 
-### Extension gaps that block this today
+### Extension gaps (historical — RESOLVED except the last)
 
-Found by inspection this session — all must be fixed before the extension can
-be the primary driver:
+Found by inspection 2026-08-16; kept as the record of what had to be true
+before the extension could be the primary driver. All verified fixed in the
+tree (2026-08-17) except item 6:
 
-1. **`all_frames: false`** (`manifest.json:14`) — players inside iframes are
-   invisible to the content script. This alone blocks a large share of sites.
-2. **No web↔extension channel.** `externally_connectable` is declared but
-   there is **no `onMessageExternal`/`onConnectExternal` listener anywhere**,
-   and the web app contains no `chrome.runtime` code. The extension currently
-   reaches rooms only by independently guest-joining. A real handoff (web
-   hands the room + token to the extension, extension reports capability and
-   telemetry back) is the missing keystone.
-3. **Reconnect leaks** — `background.ts` calls `setInterval(driveTab, 1000)`
-   per connect and never clears it; reconnects stack intervals.
-4. **MV3 service-worker death** — session state is in-memory only; needs
-   `chrome.storage.session` + alarms to survive worker termination.
-5. **No Shadow DOM traversal, no SPA-navigation handling** (YouTube never
-   reloads), no MSE/HLS-level detection.
-6. Two divergent provider registries (web `capability` tiers vs extension
-   `api|drm|generic` tiers) plus the contracts embed enum — adding a service
-   means editing three places. Unify.
+1. ~~`all_frames: false`~~ — now `true`, with frame election
+   (`frameElection.ts`).
+2. ~~No web↔extension channel~~ — `background.ts` handles
+   `onMessageExternal`/`onConnectExternal` (`external.ts` protocol), with a
+   documented threat model; the content script announces the extension id on
+   Gather origins so the web needs no configuration.
+3. ~~Reconnect leaks~~ — the drive timer is a single tracked handle, cleared
+   before re-arm.
+4. ~~MV3 service-worker death~~ — session state mirrors into
+   `chrome.storage.session`; alarms keep-alive re-arms the drive timer.
+5. ~~No Shadow DOM traversal / SPA handling~~ — shadow-root traversal in
+   `content.ts`, SPA navigation watch in `spaWatch.ts`.
+6. **Still open:** divergent provider registries (web `capability` tiers vs
+   extension `api|drm|generic` tiers) plus the contracts embed enum — adding
+   a service still means editing more than one place. Unification is
+   `docs/WEB_SLIMMING.md` step 5, gated with the deletions.
 
 ---
 
@@ -206,7 +210,7 @@ So the honest philosophy is: **any input, any output — through the platform's
 own sanctioned path.** Gather orchestrates; it never re-encodes or proxies
 protected media.
 
-Interim UI fix (independent of the pivot): show the cast control always, with
-a plain-language reason when it cannot act ("YouTube casts from its own
+UI fix (shipped 2026-08-17): the cast control is always visible, with a
+plain-language reason when it cannot act ("YouTube casts from its own
 player", "Protected content can't be cast from here"), instead of silently
-disappearing.
+disappearing. The share-on-TV design lives in `docs/CAST_RELAY.md`.

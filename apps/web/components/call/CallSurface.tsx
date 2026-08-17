@@ -27,7 +27,7 @@
  * call is a room full of people rather than an empty rectangle.
  *
  * Honesty notes:
- *   • relayMode 'livekit' / 'cf-sfu' still mint a real token and then say, in
+ *   • relayMode 'cf-sfu' surfaces the honest boundary panel and says, in
  *     plain words, that relayed calls are not enabled — presence is NOT set to
  *     in-call, because other clients render that.
  *   • The speaking ring is measured from the actual audio (WebAudio peak on
@@ -353,20 +353,18 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
   }, [connection, me]);
 
-  const joinSfu = useCallback(async (): Promise<void> => {
+  const joinSfu = useCallback((): void => {
+    // The relayed call rides Cloudflare Realtime; until its join path is
+    // wired the honest state is the boundary panel, immediately — there is
+    // no token to mint and nothing to pretend at.
     setPhase('joining');
-    try {
-      await api.livekit.token({ roomId });
-      setBoundaryDetail(RELAY_NOT_ENABLED);
-    } catch (err) {
-      setBoundaryDetail(describeError(err, RELAY_NOT_ENABLED));
-    }
+    setBoundaryDetail(RELAY_NOT_ENABLED);
     setPhase('boundary');
-  }, [roomId]);
+  }, []);
 
   const join = useCallback((): void => {
     if (room.relayMode === 'mesh') void joinMesh();
-    else void joinSfu();
+    else joinSfu();
   }, [room.relayMode, joinMesh, joinSfu]);
 
   const toggleMic = useCallback((): void => {

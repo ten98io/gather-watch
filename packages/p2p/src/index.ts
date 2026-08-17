@@ -72,5 +72,5 @@ export type {
 export { applyMaxBitrate, BitrateGovernor, clearMaxBitrate, LinkAdaptor } from './adaptation';
 export type { BitrateGovernorOptions, LinkAdaptorOptions, LinkSample } from './adaptation';
 
-export { CfSfuProvider, LivekitProvider, MeshProvider, RelayError } from './relay';
+export { CfSfuProvider, MeshProvider, RelayError } from './relay';
 export type { CfSfuProviderOptions, RelayAuth, RelayKind, RelayProvider } from './relay';

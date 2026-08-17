@@ -1,256 +1,138 @@
-# Session handoff — Gather, 2026-08-16
+# Session handoff — Gather
 
-Pick this up in a fresh session. Read this file first, then
-`docs/WEB_SLIMMING.md` (the active migration) and `docs/EXTENSION_FIRST.md`
-(the architecture it serves).
+Read this first, then `docs/WEB_SLIMMING.md` (the one active migration) and
+`docs/EXTENSION_FIRST.md` (the architecture it serves).
 
----
+## Live state
 
-## ⚡ LIVE: gather.watch is deployed and serving (2026-08-17)
+**gather.watch is deployed and serving.** Railway project Gather: `api` + `web`
++ Redis, zero-downtime deploys (api gated on `/readyz`, web on `/`), config-as-code on both
+services. The Railway media service is deleted — users never upload streams;
+chat attachments use the `attachments` Railway Bucket (`ams`) via reference
+variables, read through stable capability URLs (`/assets/:id/content` → 60s
+presigned GET). Email: Cloudflare Email Service, sender `email.gather.watch`.
+Mongo on Atlas. Repo `mustafagandhi/gather-watch`; brand **Gather**; packages
+`@gather/*`. Stored rooms carry `relayMode` `'mesh'` (default) and `'cf-sfu'`
+(theater); no room ever successfully used LiveKit — it is deleted from the
+codebase (mesh + Cloudflare Realtime SFU + Cloudflare TURN are the topology).
 
-Railway project **Gather**: `api` + `web` + `Redis` (media service DELETED —
-users never upload streams; chat attachments use the `attachments` Railway
-Bucket in `ams` via reference variables). Email: Cloudflare Email Service,
-sender `email.gather.watch`. Repo: `mustafagandhi/gather-watch`. The brand is
-**Gather**; `@playin/*` became `@gather/*` (boundary-aware rename — `playing`
-untouched).
+## Shipped (verified)
 
-Shipped since the last handoff revision, all verified: extension-preferred
-driving (step 2), the free-tier TURN relay cap, local intent capture (your
-hand on the site's player speaks for you), one design system in
-`packages/design` (WCAG guards incl. ink-on-fill), the injected overlay on
-shared tokens, attachments read via stable capability URLs
-(`/assets/:id/content` → 60s presigned GET), and **adaptive rooms** — the
-watch/listen choice is gone; `mediaKindFor(ref)` routes the stage per playing
-item (`room.kind` is vestigial on the wire, drives nothing).
+- **Adaptive rooms** — the watch/listen choice is gone; `mediaKindFor(ref)`
+  routes the stage composition per playing item (`room.kind` vestigial).
+- **Extension-preferred driving** with local intent capture (your hand on the
+  site's player speaks for you); web defers when the extension is present.
+- **Mode B fully working** — the restream server module exists (the wire
+  contract existed on both sides with no registered handler; now it has one),
+  share feedback contract (one-sentence failures, 8s ack watchdog, capture
+  torn down when the room ends the share), free-tier relay cap 400kbps.
+- **One design system** in `packages/design` — WCAG guards incl. ink-on-fill
+  (light-gradient exception recorded).
+- **Cast, honestly**: always-visible control with honest states; Chromecast
+  TV-participant designed in `docs/CAST_RELAY.md` (hardware spike pending);
+  AirPlay = OS-mirroring guidance; server relay deferred. Client-side-first
+  doctrine is binding.
+- Elastic sync (`packages/sync-core`), web↔extension handoff channel with
+  threat model, server-side metadata resolver, live member/room context (role
+  changes flip gates without rejoin).
 
-Live-triage batch (2026-08-17, deployed): the restream server module — Mode
-B's server half was never written; the wire contract existed on both sides
-and no handler was registered — plus the share feedback contract (every
-failure is one sentence, 8s ack watchdog, capture torn down when the room
-ends the share), always-discoverable cast control with three honest states,
-and live member/room context (role changes flip every gate without rejoin).
+Costs: `docs/COST_MODEL.md` (verified rates; two lines cannot be closed).
 
-Config-as-code is DONE (both services) — deploys are now zero-downtime,
-gated on /readyz.
+## Open items
 
-Still open: TURN keys (user; voice dropouts persist until set), the $5 Cast
-receiver hardware spike (gates the Chromecast TV-participant feature,
-docs/CAST_RELAY.md), LiveKit deletion (approved, post-launch),
-relay-guard residuals (task chip), web-slimming deletions (still gated),
-mobile RN type defects (hero size, unbundled mono font). `docs/COST_MODEL.md`
-holds verified rates and the two unclosable lines.
-
-## Status: the room work is VERIFIED and on `main`
-
-The previous session's tree was never actually broken — the build failure was
-`.next` contention, exactly as suspected. With the dev server stopped and
-`apps/web/.next` removed, everything passes:
-
-| Gate | Result |
-|---|---|
-| `pnpm build` | 8/8 |
-| `pnpm typecheck` | 13/13 |
-| `pnpm test` | 13/13 — **882 tests** |
-| `pnpm lint` | 9/9 |
-
-`main` now carries all of it (the wave-1/2 checkpoint, plus B3). Always run
-`pnpm build` **first** — contracts/api-client are consumed via built `dist`.
-
-**Stop the dev server before building.** A running :3000 holds `.next` and
-produces `PageNotFoundError` on pages that plainly exist (`/join/[code]`,
-`/icon.svg`). That is contention, not breakage.
-
-### What finished vs what did not
-
-| Wave | Agent | State |
-|---|---|---|
-| Room overhaul | metadata resolver (server) | ✅ done |
-| Room overhaul | design tokens + primitives | ✅ done |
-| Room overhaul | call feed fix (B1) | ✅ done |
-| Room overhaul | play-button fix (B2) | ✅ done — the old table was wrong |
-| Room overhaul | listen-room identity (B3) | ✅ done + browser-verified |
-| Extension overlay | **PlaybackDriver + elastic wiring** | ❌ incomplete |
-| Extension overlay | **overlay UI** | ❌ never ran |
-| Extension overlay | **hardening + gates** | ❌ never ran |
-
-**B2 was already complete** despite being listed as "never ran": `StageShield`
-in `StagePane.tsx` implements the whole brief — one control surface over every
-full-sync provider, covering YouTube's centre overlay in *both* the unstarted
-and paused states, exactly one play affordance, the "Tap to start watching
-together" recovery for refused autoplay, and policy gating. All four adapters
-report ms correctly (SoundCloud's widget is natively ms; YouTube and Vimeo
-convert from seconds; `embed` is the documented approximate tier).
-
-`apps/extension/src/driver.ts` is present but partial — it carries a
-`pendingRealign` field that nothing reads, left by the agent that died.
-
-Deleted-and-replaced (intentional): `components/call/CallGrid.tsx` and
-`CallStrip.tsx` were collapsed into a new `components/call/` directory.
-
----
-
-## Where the work stands
-
-### Shipped and green (wave 1, verified)
-- Chat composer rebuilt as a standard messaging bar (emoji popover, send/mic
-  swap, real SVG icons).
-- Queue rows: artwork, real titles, hover grabber with HTML5 drag-and-drop
-  plus a touch fallback, hover delete.
-- Player bar: one row, tooltips on every control, proper slider styling.
-- ~30 jargon leaks removed; `lib/describe-error.ts` + `lib/labels.ts` now
-  gate all user-facing error and enum copy.
-- Extension: build-time `GATHER_API_URL`, elastic sync controller in
-  `packages/sync-core`, `all_frames` + frame election, SPA/shadow-DOM
-  detection, MV3 session persistence + alarms keepalive, site-native cast
-  clicking, and the **web↔extension handoff channel** with a documented
-  threat model (11 attack classes).
-
-### On disk but unverified
-- Server-side metadata resolver (`services/api/src/modules/metadata/`,
-  `src/lib/safe-fetch.ts`) — oEmbed + OpenGraph behind the DNS-pinned SSRF
-  guard, patching queue items and re-broadcasting.
-- `PAYMENT_REQUIRED`/402 error code so the premium upsell is reachable.
-- Design primitives: `Artwork`, `MediaRow`, `NowPlaying`, `ArtworkBackdrop`,
-  `EmptyState`, `lib/artwork-color.ts`, surface-ladder tokens.
-- Unified call surface (rail tiles + camera prompt).
-
----
-
-## Locked decisions (do not relitigate)
-
-| # | Decision | Source |
-|---|---|---|
-| D1 | Call tiles live in the **right rail above chat**, never over the stage; theater collapses to a hideable overlay | `docs/UX_OVERHAUL.md` |
-| D2 | Camera **off** by default, with a prominent "Turn on camera" affordance on your own tile | same |
-| D3 | Listen rooms get a **distinct layout**: centred artwork, dominant visualiser, track-list up-next, artwork-derived accent | same |
-| D4 | Full depth: design-system pass **and** visual redesign **and** bug/flow fixes; Spotify-class, artwork-forward | same |
-| — | Sync is **elastic**: learn a per-viewer offset, don't fight it; tighten only when voice is live | `docs/EXTENSION_FIRST.md` |
-| — | Chat is **media-time anchored** (spoiler-proof); live voice stays real-time | same |
-| — | Extension is the playback driver; overlay UI injects onto content sites (Teleparty model) | same |
-| — | Web playback adapters + web screen-share **will be deleted**, gated on the ordering rule | `docs/WEB_SLIMMING.md` |
-| — | Mongo stays on **Atlas**; Redis on Railway | `docs/DEPLOY_RAILWAY.md` |
-| — | ≤3 steps for any flow, with a named exception list | `docs/UX_OVERHAUL.md` §3 |
-
----
-
-## Installing the extension (it now actually runs)
-
-```bash
-pnpm --filter @gather/extension build
-```
-
-Then in Chrome: `chrome://extensions` → turn on **Developer mode** → **Load
-unpacked** → pick `apps/extension/dist`.
-
-There is no automated path for your everyday browser and that is deliberate on
-Chrome's part: **Chrome 137+ ignores `--load-extension` outright** (verified —
-a probe extension left no trace in the profile). The CDP
-`Extensions.loadUnpacked` method still works, but only against a Chrome started
-with `--remote-debugging-port` and `--enable-unsafe-extension-debugging`, which
-is fine for a throwaway verification profile and not something to do to your
-real browser.
-
-The web app finds the extension **without any configuration**: the content
-script announces its id on Gather origins. `NEXT_PUBLIC_GATHER_EXTENSION_ID`
-only pins it (build-time id wins over the announcement).
-
-Verified end-to-end in a real Chrome, not just in tests:
-
-| Check | Result |
-|---|---|
-| service worker starts | no exceptions, no console errors |
-| content script announces its id | id matches the loaded extension |
-| `hello` over the external channel | `ok`, protocol v1 |
-| advertised capabilities | includes the new `modeB.desktop` |
-
-**Not yet verified:** an actual screen/window capture reaching a room. That
-needs a real display and a second peer; a headless profile has no picker. It is
-the remaining gate on WEB_SLIMMING step 1.
-
-## Next actions, in order
-
-1. ~~Verify + commit the current tree.~~ Done — gates green, merged to `main`.
-2. ~~Finish the room overhaul (B2, B3).~~ Done — B2 was already complete; B3
-   was built and verified in a real browser.
-3. **Finish the extension overlay wave** (driver contract → overlay UI →
-   hardening). The script is
-   `~/.claude/projects/-Users-mg-Desktop-gather/2583c315-*/workflows/scripts/gather-elastic-extension-wf_2780b452-bb4.js`
-   — note there is **no** `gather-overlay-wf_*.js`; that filename in the old
-   handoff was wrong.
-4. **Web slimming is PART DONE.** Step 1 (`desktopCapture`) and step 3 (the
-   install funnel component + the `useExtensionDriver` hook) are built,
-   adversarially reviewed, and their defects fixed. What remains:
-   - **Step 2 is not wired.** Nothing in the running app mounts `ExtensionGate`
-     or calls `useExtensionDriver` — `StagePane.tsx` has no reference to
-     either. The pieces exist; the integration does not.
-   - **Steps 4-5 (the deletions) are BLOCKED by the ordering rule**, and the
-     block is real, not caution. The rule gates deletion on "a room with the
-     extension installed drives playback correctly", and the extension is not
-     yet a verified playback driver — the overlay wave (item 3 above) never
-     finished. Deleting `lib/player/*` today would leave the product unable to
-     play anything.
-   - Note the blast radius when it is time: the adapters are not leaf files.
-     `StagePane`, `ListenStage` and `PlayerControls` all build on them, and the
-     listen room's visualiser taps `NativeAdapter.mediaElement` directly, so
-     step 4 rewrites the stage rather than deleting from it.
-5. **Then the rest of the web slimming**, strictly in the order in
-   `docs/WEB_SLIMMING.md`: add `desktopCapture` → extension-preferred
-   driving → install funnel → deletions → responsive pass → docs
-   consolidation.
-
-Open backlog beyond that: watch history, account linking + playlist import,
-any-site extraction (the metadata resolver is its server half), the flow
-audit against the ≤3-step budget, media-anchored chat's **server** half
-(a `mediaPositionMs` field on chat messages).
-
----
+1. **TURN keys** (user action) — voice dropouts persist until set.
+2. **$5 Cast spike** (user action) — Google Cast dev console registration
+   gates the Chromecast TV-participant slice 1 (`docs/CAST_RELAY.md` §7).
+3. **Relay-guard residuals** — task chip outstanding.
+4. **Web-slimming steps 4–5** (delete web player adapters + web
+   `getDisplayMedia`) — still gated on a real-room verification that the
+   extension drives playback correctly. See `docs/WEB_SLIMMING.md` header.
+5. **Mobile RN type defects** — hero regressed 34→28px; JetBrains Mono is
+   unbundled so numeric readouts jitter.
 
 ## Traps discovered the hard way
 
+- **`.next` contention.** A running dev server on :3000 holds `apps/web/.next`
+  and `pnpm build` fails with `PageNotFoundError` on pages that plainly exist.
+  Stop the dev server and remove `.next` before building. Contention, not
+  breakage.
 - **`pnpm build` before typechecking downstream.** `packages/contracts` and
   `api-client` are consumed via built `dist`; editing them without rebuilding
-  makes web/api typecheck against stale `.d.ts`.
-- **Concurrent agents on one file.** Two agents editing `apps/extension`
-  nearly lost each other's work. Give each agent a disjoint file scope, or
-  sequence them. Verify merges with targeted greps afterwards.
-- **Tailwind hover-reveal ordering.** The unscoped `group-focus-within:` rule
-  emits *before* the `@media(hover:hover)` block and loses to it. `QueuePane`
-  carries both an unscoped and a media-scoped class on purpose — do not
-  "simplify" the duplicate away.
-- **`cn()` is a plain joiner, not `tailwind-merge`.** It has no conflict
-  resolution, so passing both `relative` and `absolute` emits both and CSS
-  source order decides — Tailwind emits `.relative` *after* `.absolute`, so
-  `absolute` silently loses. Make conflicting utilities mutually exclusive
-  (ternary), never additive.
-- **`justify-center` on an `overflow-y-auto` box clips unreachably.** Once the
-  content is taller than the port, the overflow goes off the *top* and the
-  scrollbar cannot reach it. Split the scroll port from the centring: put
-  `overflow-y-auto` on the outer element and `min-h-full … justify-center` on
-  an inner column.
-- **The repo has no Prettier config** — Prettier is not its formatter. Running
-  `npx prettier --write` rewrites files to double quotes against house style.
-  Match surrounding style by hand.
+  typechecks web/api against stale `.d.ts`.
+- **`cn()` is a plain joiner, not `tailwind-merge`.** No conflict resolution:
+  passing both `relative` and `absolute` emits both and CSS source order
+  decides (`absolute` silently loses). Make conflicting utilities mutually
+  exclusive (ternary), never additive.
 - **`exactOptionalPropertyTypes` is on.** Spreading `{ field: maybeUndefined }`
   writes explicit `undefined` over real values; use conditional spreads.
-- **Media service must run exactly one replica** — its ffmpeg queue is an
-  in-process promise chain. (`infra/README.md`'s BullMQ claim is wrong and is
-  slated for correction.)
-- **The premium gate threw `FORBIDDEN`/403**, so the 402 upgrade branch was
-  unreachable. Fixed on disk; verify the test passes.
+- **No Prettier.** The repo has no Prettier config; `npx prettier --write`
+  rewrites to double quotes against house style. Match surrounding style by
+  hand.
+- **`playin` is a prefix of `playing`.** Any rename/grep for the old brand
+  must be boundary-aware or it corrupts `playing`/`isPlaying` identifiers.
+- **No `git add -A` during agent waves.** Concurrent agents share the working
+  tree; stage only your own scoped paths.
+- **Vitest `include` history is `.ts`-only.** Adding `.tsx` tests silently
+  runs zero of them unless the glob covers `.tsx`.
+- **Railway cache-mount ids** must be unique per service or Docker builds
+  poison each other's pnpm store cache.
+- **`railway link` writes to `~`** — linking runs against the home-directory
+  config, not the repo; re-check which project/service is linked before `up`.
+- **`pnpm --filter {dir}...` braces**: the `{dir}` + `...` filter syntax is
+  load-bearing — `./apps/web` alone skips workspace dependents/dependencies.
+- **Tailwind hover-reveal ordering.** The unscoped `group-focus-within:` rule
+  emits before the `@media(hover:hover)` block and loses to it; the duplicated
+  class pair in `HOVER_REVEAL` is deliberate — do not "simplify" it away.
 - **Empty `MONGO_URL`/`REDIS_URL` silently boot in-memory adapters** — the
   deploy looks healthy and loses all data on restart. `/readyz` is the probe
-  that actually reflects the store; the api railway.json now uses it.
-
----
+  that reflects the real store; the api's railway.json healthcheck uses it
+  (web's gates on `/`).
 
 ## Environment notes
 
-- All three services run locally: web :3000, api :4000, media :4500.
-- Railway project **Gather-App** (workspace Ten98) is linked; services
-  web/api/media exist, Redis online, never deployed. Two detached
-  `mongodb-volume*` leftovers should be deleted (they still bill).
-- Atlas Network Access still needs a decision: static outbound IPs on
-  api/media, or `0.0.0.0/0` with a strong password.
-- Extension prod build:
-  `GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build`.
+- Local dev: web :3000, api :4000 (`pnpm dev` also boots the legacy media
+  service on :4500 — it is not deployed). `pnpm build` first (contracts/
+  api-client ship via `dist`), then test/typecheck.
+- Extension prod build (MV3 inlines the origin at build time):
+  `GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build`,
+  then chrome://extensions → Load unpacked → `apps/extension/dist`. Chrome
+  137+ ignores `--load-extension`; there is no automated install path for a
+  real profile, by Chrome's design.
+- The web app finds the extension without configuration (content script
+  announces its id on Gather origins); `NEXT_PUBLIC_GATHER_EXTENSION_ID` only
+  pins it.
+
+## Next session — starting prompt
+
+```
+Continue Gather (~/Desktop/playin, live at gather.watch). Read HANDOFF.md
+first — live state, open items, and the traps list.
+
+Everything is on main, deployed, gates green (build/typecheck/test/lint).
+No branches, no in-flight agent work.
+
+Pick up in this order:
+1. If the TURN keys and/or the $5 Cast registration landed since last
+   session, wire them: TURN needs only a redeploy to heal voice dropouts;
+   Cast unlocks slice 1 of docs/CAST_RELAY.md (the hardware spike that
+   go/no-goes the Chromecast TV-participant feature; slices 2+ follow).
+2. Relay-guard residuals (the outstanding task chip): premium plan on the
+   extension share path, two test-discrimination gaps, late-plan cap
+   stickiness, unknown-link cap hole, copy location.
+3. Web-slimming steps 4–5 (delete web player adapters + web
+   getDisplayMedia): STILL GATED on verifying the extension drives a real
+   room correctly end-to-end. Do that verification first — a real room, a
+   real site, the installed extension — then the deletions per
+   docs/WEB_SLIMMING.md. Note the blast radius recorded there: the
+   adapters are not leaf files.
+4. Mobile RN type defects: hero 34→28px regression and unbundled
+   JetBrains Mono (numeric readouts jitter).
+
+Backlog after those: voice in the extension overlay (offscreen getUserMedia,
+reuses the Mode B plumbing), watch history, account linking + playlist
+import, media-anchored chat's server half (mediaPositionMs on messages),
+the ≤3-step flow audit.
+
+Use Workflow agents with disjoint file scopes; prove fixes by mutation
+(break → RED → restore); never git add -A while agents are in flight.
+```

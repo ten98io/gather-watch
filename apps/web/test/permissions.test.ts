@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canAct, formatMs, mediaRefFromUrl } from '@/lib/permissions';
+import { canAct, formatMs } from '@/lib/permissions';
 
 describe('canAct', () => {
   it('ranks host > moderator > member > guest against policy levels', () => {
@@ -10,47 +10,6 @@ describe('canAct', () => {
     expect(canAct('mods', 'host')).toBe(true);
     expect(canAct('host', 'moderator')).toBe(false);
     expect(canAct('host', 'host')).toBe(true);
-  });
-});
-
-describe('mediaRefFromUrl', () => {
-  it('parses YouTube watch/shorts/youtu.be links', () => {
-    expect(mediaRefFromUrl('https://www.youtube.com/watch?v=abc123XYZ')).toEqual({
-      kind: 'youtube',
-      videoId: 'abc123XYZ',
-    });
-    expect(mediaRefFromUrl('https://youtube.com/shorts/abc123XYZ')).toEqual({
-      kind: 'youtube',
-      videoId: 'abc123XYZ',
-    });
-    expect(mediaRefFromUrl('https://youtu.be/abc123XYZ')).toEqual({
-      kind: 'youtube',
-      videoId: 'abc123XYZ',
-    });
-  });
-
-  it('infers mime from direct media URLs', () => {
-    expect(mediaRefFromUrl('https://cdn.example.com/song.mp3')).toEqual({
-      kind: 'url',
-      url: 'https://cdn.example.com/song.mp3',
-      mime: 'audio/mpeg',
-    });
-    expect(mediaRefFromUrl('https://cdn.example.com/stream.m3u8?tok=1')).toEqual({
-      kind: 'url',
-      url: 'https://cdn.example.com/stream.m3u8?tok=1',
-      mime: 'application/x-mpegURL',
-    });
-    expect(mediaRefFromUrl('https://cdn.example.com/clip.webm')).toEqual({
-      kind: 'url',
-      url: 'https://cdn.example.com/clip.webm',
-      mime: 'video/webm',
-    });
-  });
-
-  it('rejects non-URLs', () => {
-    expect(mediaRefFromUrl('not a url')).toBeNull();
-    expect(mediaRefFromUrl('')).toBeNull();
-    expect(mediaRefFromUrl('ftp://old.example/x.mp4')).toBeNull();
   });
 });
 

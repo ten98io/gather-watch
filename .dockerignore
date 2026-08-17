@@ -1,7 +1,7 @@
 # Repo-root build context for all three Dockerfiles (apps/web, services/api,
 # services/media — see infra/docker-compose.yml `context: ..`). Keeps secrets
 # and host junk OUT of every image layer: without this, `COPY . .` bakes the
-# populated root .env (JWT/LiveKit/S3/TURN secrets), .git history and
+# populated root .env (JWT/S3/TURN secrets), .git history and
 # host-platform node_modules into builder AND runtime stages.
 .git
 node_modules

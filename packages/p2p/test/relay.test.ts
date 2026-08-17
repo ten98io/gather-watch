@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { UserId } from '@gather/contracts';
 import type { MeshManager } from '../src/mesh';
-import { CfSfuProvider, LivekitProvider, MeshProvider, RelayError } from '../src/relay';
+import { CfSfuProvider, MeshProvider, RelayError } from '../src/relay';
 import type { RelayProvider } from '../src/relay';
 import type {
   FetchInitLike,
@@ -211,46 +211,5 @@ describe('CfSfuProvider', () => {
     expect(err).toBeInstanceOf(RelayError);
     expect((err as RelayError).code).toBe('HTTP');
     expect((err as RelayError).status).toBe(403);
-  });
-});
-
-describe('LivekitProvider', () => {
-  it('disabled: every method reports NOT_ENABLED except close', async () => {
-    const provider: RelayProvider = new LivekitProvider();
-    expect(provider.kind).toBe('livekit');
-
-    let err: unknown = null;
-    await provider.connect(rid('r1'), { token: null }).catch((e) => {
-      err = e;
-    });
-    expect(err).toBeInstanceOf(RelayError);
-    expect((err as RelayError).code).toBe('NOT_ENABLED');
-
-    err = null;
-    await provider.publishTracks([]).catch((e) => {
-      err = e;
-    });
-    expect(err).toBeInstanceOf(RelayError);
-    expect((err as RelayError).code).toBe('NOT_ENABLED');
-
-    err = null;
-    try {
-      provider.subscribe(() => {});
-    } catch (e) {
-      err = e;
-    }
-    expect(err).toBeInstanceOf(RelayError);
-    expect((err as RelayError).code).toBe('NOT_ENABLED');
-
-    err = null;
-    try {
-      provider.dataChannel('sync');
-    } catch (e) {
-      err = e;
-    }
-    expect(err).toBeInstanceOf(RelayError);
-    expect((err as RelayError).code).toBe('NOT_ENABLED');
-
-    await provider.close();
   });
 });

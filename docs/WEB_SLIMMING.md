@@ -1,5 +1,17 @@
 # Web slimming: migrating playback out of the web app
 
+> **STATUS (2026-08-17): steps 1–3 done, steps 4–5 NOT executed.** The
+> extension has `desktopCapture`, extension-preferred driving is wired, and
+> the install funnel exists. What remains is the deletions themselves (web
+> player adapters + web `getDisplayMedia`, then dead-code/registry dedupe),
+> and they are **gated, not merely unfinished**: the ordering rule requires a
+> real room with the extension installed to drive playback correctly,
+> verified end-to-end, before any web playback path is removed. That
+> verification has not happened. Blast radius when it does: the adapters are
+> not leaf files — `StagePane`, the listen composition and `PlayerControls`
+> build on them, so step 4 rewrites the stage rather than deleting from it.
+> This doc is deleted when steps 4–5 land.
+
 Owner decision, 2026-08-16: execute removal options 1, 2 **and** 3 — delete the
 web player adapters and the web screen-share path, so all playback and capture
 runs through the extension (desktop) or the native app (mobile).
@@ -69,36 +81,38 @@ one. Required before step 4 lands:
    without a reload, so the room comes alive the moment the extension is
    added.
 
-## Docs consolidation (owner: option 1)
+## Docs consolidation (owner: option 1) — DONE 2026-08-17, except ARCHITECTURE.md
 
-Target structure:
+Executed structure:
 
 - `README.md` — entry point: what Gather is, quick start, repo map, where to
-  go next. No architecture detail.
+  go next. No architecture detail. **Done.**
 - `docs/ARCHITECTURE.md` — **the technical spine**: the room model, the two
   playback modes, the `PlaybackDriver` contract and its three
   implementations, sync (elastic), the data plane, the security boundaries.
+  **Not yet written** — `docs/EXTENSION_FIRST.md` carries the spine for now.
 - `docs/EXTENSION_FIRST.md` — the extension architecture, protocol, threat
-  model and casting reality. (Keep; it is current.)
-- `docs/CONTENT_MATCHING.md` — cross-region/DRM content resolution. (Keep.)
-- `docs/DEPLOY_RAILWAY.md` — the deploy runbook. (Keep.)
+  model and casting reality. (Kept; current.)
+- `docs/CONTENT_MATCHING.md` — cross-region/DRM content resolution. (Kept.)
+- `docs/DEPLOY_RAILWAY.md` — the deploy runbook. (Kept; done-phases marked.)
 - `docs/WEB_SLIMMING.md` — this migration. Delete once complete.
-- `DESIGN.md` — the design system; absorbs `docs/UX_OVERHAUL.md`'s decisions
-  and the visual direction, keeping the flow/step-budget table.
-- `docs/history/` — `BUILD_PROMPT.md` and `CONCEPT.md` move here, clearly
-  marked historical. They describe an earlier plan and are actively
-  misleading as current documentation.
+- `DESIGN.md` — the design system; absorbed the UX overhaul's locked
+  decisions and step budget as §11–12. **Done.**
+- `docs/history/` — `BUILD_PROMPT.md`, `CONCEPT.md` and `UX_OVERHAUL.md`
+  moved here, marked historical. They describe superseded plans. **Done.**
 
-**Known stale claims to fix while consolidating** (verified this session):
+**Known stale claims still to fix** (re-verified 2026-08-17; these files are
+outside the docs consolidation's scope and still say it):
 - `infra/README.md:28,161` claims the media service uses **BullMQ**. It does
   not — there is no BullMQ dependency and it never reads `REDIS_URL`; the
   queue is an in-process promise chain, which is exactly why it must run one
-  replica.
+  replica. (Moot in production — the Railway media service is deleted — but
+  the self-host doc still misleads.)
 - `infra/README.md:85` references `pnpm --filter ./services/api run seed` and
   `.env.example:74` references `pnpm --filter api generate:vapid`. **Neither
   script exists** (services/api has only build/dev/start/test/typecheck/lint).
-- `apps/extension/public/manifest.json` will need `desktopCapture` added to
-  `permissions` in step 1.
+- ~~`apps/extension/public/manifest.json` will need `desktopCapture`~~ —
+  done in step 1 (`manifest.json` `permissions` carries it).
 
 ## Inline documentation pass
 

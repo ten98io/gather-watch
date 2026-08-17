@@ -9,7 +9,7 @@
  *    in sync only via play/pause/seek commands being issued at roughly the
  *    same server time. A native YT bridge is a follow-up milestone.
  *  - Mode B (restream.state active) → honest boundary panel (native viewing
- *    needs the LiveKit call module; see CallBar.tsx).
+ *    needs the the relay call module; see CallBar.tsx).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';

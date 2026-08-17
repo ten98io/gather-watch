@@ -1,3 +1,9 @@
+> **HISTORICAL (moved 2026-08-17).** This is the original build spec. Its plan
+> has been superseded — the watch/listen room split is gone (rooms are adaptive,
+> composed per playing item), LiveKit was never used and is being removed, and
+> the extension is now the primary playback driver. Kept for the record; do not
+> build from it. Current docs: `README.md`, `docs/EXTENSION_FIRST.md`.
+
 # Gather — Build Spec v3 (FULL SCOPE)
 
 > The build bible. Worker briefs are cut from this document. No MVP trimming — every

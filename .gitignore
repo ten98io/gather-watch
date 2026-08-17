@@ -16,3 +16,4 @@ uploads-tmp/
 playwright-report/
 test-results/
 atlas-credentials.env
+tsconfig.tsbuildinfo

@@ -67,8 +67,8 @@ src/
                      limitation note), Chat.tsx (list + composer + reactions +
                      replies — markdown-lite, typing indicator), Queue.tsx,
                      People.tsx (presence list w/ speaking ring), CallBar.tsx
-                     (join/leave call scaffold via LiveKit — if
-                     @livekit/react-native adds too much install weight, stub
+                     (join/leave call scaffold via Cloudflare Realtime — if
+                     the WebRTC native module adds too much install weight, stub
                      the UI with a clear "native call module" boundary and
                      document; do NOT fake functionality)
   sync/ useSyncEngine.ts — wire sync-core's ClockEstimator + drift correction

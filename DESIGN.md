@@ -59,9 +59,10 @@ moved to 0.65 (dark) / 0.50 (light), which holds ≥4.6:1 on every step of the l
 
 The aurora gradient is reserved for **three** things: the primary action button, the
 brand mark, and the active/playing indicator. Selected/active states are
-`--surface-3` plus a 3px `--accent` left edge — never a glow. Listen rooms rebind
-`--accent` to the artwork's dominant colour (see §5.1); anything that should retint
-with the music uses `bg-accent`, not `aurora-1`.
+`--surface-3` plus a 3px `--accent` left edge — never a glow. The listen composition
+(shown whenever the playing item is music — see §11 D3) rebinds `--accent` to the
+artwork's dominant colour (see §5.1); anything that should retint with the music
+uses `bg-accent`, not `aurora-1`.
 
 Tailwind bindings: `bg-surface-0/1/2/3`, `border-hairline`, plus the `.surface-1`,
 `.surface-2`, `.surface-3` component classes.
@@ -121,8 +122,9 @@ scale too: `row` 56px (media row height), `tap` 44px (minimum touch target), `ra
    16×16 canvas downscale → modal bucket → clamped into the OKLCH band
    L 0.55–0.72 / C 0.06–0.18 so the result stays AA as a fill on both themes.
    Remote artwork usually taints the canvas; that path returns the aurora accent
-   silently — a tainted canvas is the expected case, not an error. Listen rooms
-   bind the result to `--accent`; `<ArtworkBackdrop>` does the blurred backdrop.
+   silently — a tainted canvas is the expected case, not an error. The listen
+   composition binds the result to `--accent`; `<ArtworkBackdrop>` does the
+   blurred backdrop.
 2. **Presence orbs** — participants are floating avatar orbs beneath/beside the Stage
    with a 2px speaking-ring that pulses with voice activity; orbs drift ±4px on a slow
    sine (paused on reduced-motion).
@@ -148,9 +150,10 @@ ambient/parallax/drift, keep opacity fades ≤ 150 ms.
   the rail. Player chrome auto-hides after 3 s of stillness (cursor or focus wakes it).
 - **Mobile (web + native)**: Stage on top (safe-area aware), bottom sheet with the
   same three tabs, swipe between; mini-player pill when scrolled away. Controls ≥44px.
-- **Listen rooms**: Stage becomes oversized artwork + progress; queue is promoted
-  next to it as a track list; `<ArtworkBackdrop>` behind the page and an
-  artwork-derived `--accent` are what make it read as a different product.
+- **Listen composition** (per playing item, not per room — §11 D3): Stage becomes
+  oversized artwork + progress; queue is promoted next to it as a track list;
+  `<ArtworkBackdrop>` behind the page and an artwork-derived `--accent` are what
+  make it read as a different product.
 
 ## 8. Components (shadcn/ui base, reskinned via tokens)
 
@@ -211,3 +214,55 @@ And, since the redesign: glass on anything that isn't floating over moving video
 borders where a background step would do; blank grey artwork boxes; `text-mid` for
 list metadata; two primary (aurora) actions in one screen region; hover-only
 controls that vanish on touch.
+
+## 11. Locked decisions (owner, 2026-08-16 — do not relitigate)
+
+Absorbed from the UX overhaul spec (now `docs/history/UX_OVERHAUL.md`); this is
+the binding copy.
+
+- **D1 — Call layout:** video tiles live in the **right rail above chat**; the
+  content stage is never covered. Theater mode collapses the rail; tiles become
+  a small overlay the user can hide and restore.
+- **D2 — Camera default:** mic on, camera off, with a prominent "Turn on
+  camera" affordance on your own tile. No pre-join device dialog. Never render
+  a silent empty call region — everyone in the call gets a tile.
+- **D3 — Listen composition, now per item:** centred large artwork, dominant
+  visualiser, up-next as a track list, artwork-derived `--accent`, none of the
+  video-stage furniture. **Superseding note (2026-08-17):** this composition is
+  no longer bound to a "listen room". Rooms are adaptive — `mediaKindFor(ref)`
+  routes the stage per **playing item**, so the same room renders the listen
+  composition for a track and the video composition for a video. `room.kind`
+  is vestigial on the wire and drives nothing.
+- **D4 — Refresh depth: all three levels.** Design-system pass **and** full
+  visual redesign **and** bug/flow fixes. Reference points are best-in-class
+  consumer apps (Spotify for listening, modern video apps for watching):
+  artwork, posters, thumbnails and real titles everywhere content appears.
+
+## 12. The ≤3-step budget (binding on every flow)
+
+"Step" = one user-initiated interaction (click, tap, keypress-to-submit) from
+the **room screen** (in-room features) or the **home screen** (account-level
+features). Typing into an already-focused field does not count; opening a
+dialog does. Measure by walking the running app — never guess the count.
+
+| Flow | Budget |
+|---|---|
+| Create a room | 3 |
+| Join by code | 2 |
+| Invite someone | 2 |
+| Add content to queue | 2 |
+| Play a queued item | 1 |
+| Reorder / remove a queue item | 1 |
+| Join the call | 1 |
+| Turn camera/mic on | 1 |
+| Share your screen | 2 |
+| Cast to a TV | 2 |
+| Send a message / emoji / GIF | 1–2 |
+| Open watch history and replay | 2 |
+| Link a music/video account | 3 |
+| Delete / rename a room | 2 |
+| Upgrade to Premium | 3 |
+
+**Sanctioned exceptions** (never counted against the budget): third-party OAuth
+consent, browser/OS pickers (screen share, cast), Stripe checkout, and
+destructive-action confirmations.

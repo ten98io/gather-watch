@@ -20,14 +20,12 @@ export const ROLE_LABEL: Record<MemberRole, string> = {
 /** How the room's media travels — the stage badge (StagePane). */
 export const RELAY_LABEL: Record<RelayMode, string> = {
   mesh: 'Private · device-to-device',
-  livekit: 'Relayed',
   'cf-sfu': 'Relayed · Theater',
 };
 
 /** Same idea, one word, for tight chrome like the call dock's status line. */
 export const RELAY_SHORT_LABEL: Record<RelayMode, string> = {
   mesh: 'Private',
-  livekit: 'Relayed',
   'cf-sfu': 'Relayed',
 };
 

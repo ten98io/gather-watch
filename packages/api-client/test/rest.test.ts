@@ -131,15 +131,6 @@ describe('RestClient', () => {
     );
   });
 
-  it('posts livekit.token to the route the API registers', async () => {
-    const fetch = new FetchMock();
-    fetch.handlers.push(() => jsonResponse(200, { url: 'wss://lk.test', token: 'jwt' }));
-    const client = new RestClient('http://api.test', { fetchImpl: fetch.impl });
-    const res = await client.livekit.token({ roomId: rid('r1') });
-    expect(res.token).toBe('jwt');
-    expect(fetch.calls[0]!.url).toBe('http://api.test/rtc/livekit-token');
-    expect(fetch.calls[0]!.init?.method).toBe('POST');
-  });
 });
 
 describe('RestClient session + rtc endpoints', () => {

@@ -34,8 +34,8 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 
 ## Boundaries (documented, not faked)
 
-- **Calls (CallBar.tsx)**: the LiveKit token round-trip is real; the SFU
-  session needs `@livekit/react-native` + `react-native-webrtc` config
+- **Calls (CallBar.tsx)**: The relayed-call join is a documented boundary (Cloudflare Realtime, native milestone).
+  session needs a WebRTC native module + its config
   plugins (native milestone, install weight + no CI toolchains). Join mints
   a token and shows the boundary panel; presence is never spoofed.
 - **Mode B viewing**: requires the same call module — Stage shows an honest
@@ -72,7 +72,7 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 | @tanstack/react-query | REST screen state (parity with web stack) |
 | zod | contracts peer |
 
-NOT added (deferred native milestones): @livekit/react-native,
+NOT added (deferred native milestones): the WebRTC native call module,
 react-native-webrtc, reanimated, gesture-handler, expo-notifications.
 
 ## Tests

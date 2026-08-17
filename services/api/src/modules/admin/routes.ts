@@ -66,7 +66,6 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       },
       features: {
         mediaPipeline: deps.config.enableMediaPipeline,
-        sfu: deps.config.enableSfu,
         gifs: deps.config.tenorApiKey !== null,
         stripe: deps.config.stripe.secretKey !== null,
         push: deps.config.vapid.publicKey !== null,

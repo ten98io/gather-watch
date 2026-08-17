@@ -31,8 +31,6 @@ import {
   ListMyRoomsResponse,
   ListPlaylistsResponse,
   ListSessionsResponse,
-  LivekitTokenBody,
-  LivekitTokenResponse,
   LogoutResponse,
   MeResponse,
   PinMessageBody,
@@ -172,10 +170,6 @@ export class RestClient {
   /** Event replay endpoint (used to backfill after socket gaps). */
   readonly events: {
     replay(roomId: RoomId, sinceSeq: number): Promise<ReplayEventsResponse>;
-  };
-  /** LiveKit token endpoint. */
-  readonly livekit: {
-    token(body: LivekitTokenBody): Promise<LivekitTokenResponse>;
   };
   /** WebRTC mesh support endpoints (TURN credentials etc.). */
   readonly rtc: {
@@ -517,17 +511,6 @@ export class RestClient {
           path: `/rooms/${encodeURIComponent(roomId)}/events`,
           schema: ReplayEventsResponse,
           query: { since: sinceSeq },
-        }),
-    };
-
-    this.livekit = {
-      token: (body) =>
-        this.request({
-          label: 'livekit.token',
-          method: 'POST',
-          path: '/rtc/livekit-token',
-          schema: LivekitTokenResponse,
-          body,
         }),
     };
 
