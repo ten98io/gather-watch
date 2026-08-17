@@ -10,11 +10,24 @@
  * out per-viewer over the E2E mesh (CallMesh 'share' track, default cap 8
  * viewers — host uplink is the physics ceiling and the UI says so).
  *
+ * The host session lives at MODULE level, not in component state: StagePane
+ * mounts one ModeBStage inside the share dialog and a SECOND one on the stage
+ * once restream.state flips, and the capture must survive that handoff.
+ * Component-held state died with whichever instance unmounted first — closing
+ * the dialog killed the share while the room still said it was live, and the
+ * stage-mounted instance could never see the dialog instance's stream.
+ *
+ * Feedback contract: every way the chain can fail — picker dismissed or
+ * permission denied, room never acknowledging restream.start — surfaces one
+ * plain sentence, and the controls return to a clickable idle. A silent
+ * return to idle is a bug.
+ *
  * Viewer: renders the host's mesh 'share' track when restream.state is active.
  * LiveKit relay stays a documented boundary (p2p LivekitProvider is
  * NOT_ENABLED until ENABLE_SFU) — nothing here is simulated.
  */
 import { useEffect, useRef, useState } from 'react';
+import { create } from 'zustand';
 import type { RestreamState, UserId } from '@gather/contracts';
 import { Button } from '@/components/ui/button';
 import {
@@ -27,63 +40,208 @@ import { toast } from '@/components/ui/toast';
 import { describeError } from '@/lib/describe-error';
 import { UPLINK_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
-import { getCallMesh, primeSharePlan, SHARE_RELAY_NOTE } from '@/lib/call-mesh';
+import type { RoomConnection } from '@/lib/room-connection';
+import { getCallMesh, onCallMeshClosed, primeSharePlan, SHARE_RELAY_NOTE } from '@/lib/call-mesh';
 
-type HostPhase = 'idle' | 'preflight' | 'capturing' | 'live';
+/* ── host share session (module-level; see the header comment) ───────────── */
+
+/** How long the host waits for the room to acknowledge restream.start before
+ *  the share is declared failed and torn back down to a clickable idle. */
+export const SHARE_ACK_TIMEOUT_MS = 8_000;
+
+/** A dismissed picker and a denied permission both throw one NotAllowedError —
+ *  indistinguishable, so one sentence covers both. */
+export const SHARE_NOT_STARTED_NOTE =
+  'Screen sharing didn’t start — the picker was closed or permission was blocked.';
+
+/** The room never switched (restream.start rejected, or no answer in time). */
+export const SHARE_NO_ACK_NOTE =
+  'The room couldn’t switch to your share — check your connection and try again.';
+
+/** The room moved on while we were live: a moderator stopped the share, or
+ *  handed it to someone else. The capture must not outlive the room's word. */
+export const SHARE_ENDED_NOTE = 'Your share was ended for the room.';
+
+type SharePhase = 'idle' | 'capturing' | 'starting' | 'live';
+
+interface ShareHostState {
+  phase: SharePhase;
+  stream: MediaStream | null;
+}
+
+/** Every mounted ModeBStage renders the same session through this store. */
+export const useShareHost = create<ShareHostState>()(() => ({
+  phase: 'idle',
+  stream: null,
+}));
+
+/** Active session teardown; null when no session holds a capture. */
+let teardown: ((notifyServer: boolean) => void) | null = null;
+
+/** Stop the running share: capture released, mesh track withdrawn, room told. */
+export function stopShare(): void {
+  teardown?.(true);
+}
+
+/** Test hook: drop any session and restore the pristine idle store. */
+export function resetShareHost(): void {
+  teardown?.(false);
+  Object.assign(useShareHost.getInitialState(), { phase: 'idle', stream: null });
+  useShareHost.setState({ phase: 'idle', stream: null });
+}
+
+/**
+ * The whole host flow: capture → local feed → mesh fan-out → restream.start →
+ * wait for the room's restream.state to confirm. The local feed and the mesh
+ * track come straight from the capture — local truth, never gated on the
+ * server echo; only the 'live' phase waits for the room.
+ */
+export async function startShare(connection: RoomConnection, userId: UserId): Promise<void> {
+  if (useShareHost.getState().phase !== 'idle') return;
+  useShareHost.setState({ phase: 'capturing' });
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true, // tab/screen audio — the whole point of Mode B
+    });
+  } catch (err) {
+    useShareHost.setState({ phase: 'idle', stream: null });
+    toast.error(
+      err instanceof DOMException && err.name === 'NotAllowedError'
+        ? SHARE_NOT_STARTED_NOTE
+        : describeError(err, SHARE_NOT_STARTED_NOTE),
+    );
+    return;
+  }
+
+  const mesh = getCallMesh(connection, userId);
+  mesh.start();
+  const video = stream.getVideoTracks()[0] ?? null;
+  const audio = stream.getAudioTracks()[0] ?? null;
+  mesh.setLocalTrack('share', video);
+  if (audio !== null) mesh.setLocalTrack('mic', audio);
+  // Free shares over a relayed connection are quality-limited; the host is
+  // told once, in one sentence, and the share carries on.
+  const offRelayed = mesh.onShareRelayed(() => toast(SHARE_RELAY_NOTE));
+
+  // The browser's own "Stop sharing" bar ends the track outside our UI.
+  const onEnded = (): void => stopShare();
+  video?.addEventListener('ended', onEnded);
+
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  let offAck: () => void = () => undefined;
+  let offMeshClosed: () => void = () => undefined;
+
+  teardown = (notifyServer: boolean): void => {
+    teardown = null;
+    if (watchdog !== null) {
+      clearTimeout(watchdog);
+      watchdog = null;
+    }
+    offAck();
+    offMeshClosed();
+    offRelayed();
+    video?.removeEventListener('ended', onEnded);
+    for (const track of stream.getTracks()) track.stop();
+    if (!mesh.closed) {
+      mesh.setLocalTrack('share', null);
+      if (audio !== null) mesh.setLocalTrack('mic', null);
+    }
+    if (notifyServer) {
+      connection.restreamStop();
+      connection.presenceUpdate({ sharing: false });
+    }
+    useShareHost.setState({ phase: 'idle', stream: null });
+  };
+
+  const fail = (): void => {
+    teardown?.(true);
+    toast.error(SHARE_NO_ACK_NOTE);
+  };
+
+  offAck = connection.useRoomState.subscribe((s, prev) => {
+    const { phase } = useShareHost.getState();
+    if (phase !== 'starting' && phase !== 'live') return;
+    if (s.restream?.active === true && s.restream.hostUserId === userId) {
+      if (watchdog !== null) {
+        clearTimeout(watchdog);
+        watchdog = null;
+      }
+      if (phase === 'starting') useShareHost.setState({ phase: 'live' });
+      return;
+    }
+    // The hub answers a failed/unsupported restream.start with an error frame;
+    // while we are the one waiting, that frame is ours — fail now, with the
+    // sentence, instead of waiting out the clock.
+    if (phase === 'starting' && s.lastError !== prev.lastError && s.lastError !== null) {
+      fail();
+      return;
+    }
+    // LIVE and the room no longer says it is ours: a moderator stopped the
+    // share, or it was taken over. The capture must end NOW — the browser's
+    // recording indicator staying on after the room moved on is the exact
+    // silent-share failure this file exists to prevent. No restream.stop:
+    // the server state already moved, and re-sending would stomp a takeover.
+    if (phase === 'live' && !(s.restream?.active === true && s.restream.hostUserId === userId)) {
+      teardown?.(false);
+      toast(SHARE_ENDED_NOTE);
+    }
+  });
+
+  // Room unmount closes the mesh (closeCallMesh); a capture that outlives the
+  // room would keep the browser's recording indicator on with no UI to stop it.
+  offMeshClosed = onCallMeshClosed((closedConn) => {
+    if (closedConn === connection) teardown?.(false);
+  });
+
+  watchdog = setTimeout(fail, SHARE_ACK_TIMEOUT_MS);
+
+  useShareHost.setState({ phase: 'starting', stream });
+  connection.restreamStart();
+  connection.presenceUpdate({ sharing: true });
+
+  // The room may already say we are live (synchronous test fakes, a rejoin).
+  const current = connection.useRoomState.getState().restream;
+  if (current?.active === true && current.hostUserId === userId) {
+    if (watchdog !== null) {
+      clearTimeout(watchdog);
+      watchdog = null;
+    }
+    useShareHost.setState({ phase: 'live' });
+  }
+}
+
+/* ── components ──────────────────────────────────────────────────────────── */
 
 /** Host flow: pre-flight honesty → capture → mesh fan-out. */
-function HostControls({ onStream }: { onStream(stream: MediaStream | null): void }) {
+function HostControls() {
   const connection = useRoomConnection();
-  const [phase, setPhase] = useState<HostPhase>('idle');
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const stop = (): void => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    connection.restreamStop();
-    connection.presenceUpdate({ sharing: false });
-    onStream(null);
-    setPhase('idle');
-  };
-
-  const begin = async (): Promise<void> => {
-    setPhase('capturing');
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true, // tab/screen audio — the whole point of Mode B
-      });
-      streamRef.current = stream;
-      const video = stream.getVideoTracks()[0];
-      video?.addEventListener('ended', stop); // user hit the browser's stop bar
-      connection.restreamStart();
-      connection.presenceUpdate({ sharing: true });
-      onStream(stream);
-      setPhase('live');
-    } catch (err) {
-      setPhase('idle');
-      if (err instanceof DOMException && err.name === 'NotAllowedError') return; // cancelled
-      toast.error(describeError(err, 'Could not start screen sharing'));
-    }
-  };
+  const { member } = useRoom();
+  const phase = useShareHost((s) => s.phase);
+  const [preflightOpen, setPreflightOpen] = useState(false);
 
   return (
     <>
       {phase === 'idle' && (
-        <Button variant="secondary" size="sm" onClick={() => setPhase('preflight')}>
+        <Button variant="secondary" size="sm" onClick={() => setPreflightOpen(true)}>
           Share screen
         </Button>
       )}
       {phase === 'capturing' && (
         <span className="text-xs text-low">Waiting for the picker…</span>
       )}
-      {phase === 'live' && (
-        <Button variant="destructive" size="sm" onClick={stop}>
+      {phase === 'starting' && (
+        <span className="text-xs text-low">Starting your share…</span>
+      )}
+      {(phase === 'starting' || phase === 'live') && (
+        <Button variant="destructive" size="sm" onClick={stopShare}>
           Stop sharing
         </Button>
       )}
 
-      <Dialog open={phase === 'preflight'} onOpenChange={(o) => !o && setPhase('idle')}>
+      <Dialog open={preflightOpen} onOpenChange={setPreflightOpen}>
         <DialogContent aria-label="Before you share">
           <DialogTitle>Share your screen with the room</DialogTitle>
           <div className="mt-2 flex flex-col gap-2 text-sm text-mid">
@@ -102,10 +260,17 @@ function HostControls({ onStream }: { onStream(stream: MediaStream | null): void
             </p>
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setPhase('idle')}>
+            <Button variant="ghost" onClick={() => setPreflightOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={() => void begin()}>Choose what to share</Button>
+            <Button
+              onClick={() => {
+                setPreflightOpen(false);
+                void startShare(connection, member.userId);
+              }}
+            >
+              Choose what to share
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -157,8 +322,10 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
 /** Mode B stage content + host controls; the pane mounts this when relevant. */
 export function ModeBStage({ restream }: { restream: RestreamState }) {
   const { member } = useRoom();
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const connection = useRoomConnection();
+  // Local truth: the capture this device holds. Never gated on the server
+  // echo (restream.hostUserId) — that round-trip is exactly what can fail,
+  // and the host must see their own feed the moment the capture exists.
+  const localStream = useShareHost((s) => s.stream);
   const isHost = restream.hostUserId === member.userId;
 
   // Resolve the plan before a share can start: the mesh reads it when it is
@@ -167,32 +334,13 @@ export function ModeBStage({ restream }: { restream: RestreamState }) {
     primeSharePlan();
   }, []);
 
-  // Fan the capture out over the mesh while we host.
-  useEffect(() => {
-    if (localStream === null) return;
-    const mesh = getCallMesh(connection, member.userId);
-    mesh.start();
-    const video = localStream.getVideoTracks()[0] ?? null;
-    const audio = localStream.getAudioTracks()[0] ?? null;
-    mesh.setLocalTrack('share', video);
-    if (audio !== null) mesh.setLocalTrack('mic', audio);
-    // Free shares over a relayed connection are quality-limited; the host is
-    // told once, in one sentence, and the share carries on.
-    const offRelayed = mesh.onShareRelayed(() => toast(SHARE_RELAY_NOTE));
-    return () => {
-      offRelayed();
-      mesh.setLocalTrack('share', null);
-      if (audio !== null) mesh.setLocalTrack('mic', null);
-    };
-  }, [connection, member.userId, localStream]);
-
-  if (restream.active && !isHost && restream.hostUserId !== null) {
+  if (restream.active && !isHost && restream.hostUserId !== null && localStream === null) {
     return <ShareViewer hostUserId={restream.hostUserId} />;
   }
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
-      {isHost && localStream !== null ? (
+      {localStream !== null ? (
         <LocalPreview stream={localStream} />
       ) : (
         <>
@@ -207,7 +355,7 @@ export function ModeBStage({ restream }: { restream: RestreamState }) {
         </>
       )}
       <div className="flex items-center gap-2">
-        <HostControls onStream={setLocalStream} />
+        <HostControls />
         {restream.active && (
           <Badge variant="aurora">
             Live · {restream.viewerCount} watching

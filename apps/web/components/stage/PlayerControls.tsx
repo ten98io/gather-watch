@@ -29,6 +29,7 @@ import { useRoomConnection } from '@/lib/room-context';
 import { describeError } from '@/lib/describe-error';
 import { formatMs } from '@/lib/permissions';
 import type { PlayerAdapter } from '@/lib/player/adapter';
+import { useExtensionDriver } from '@/lib/player/extension-driver';
 import type { NativeAdapter } from '@/lib/player/native';
 import {
   airPlayAvailable,
@@ -44,6 +45,48 @@ const RATES = [0.75, 1, 1.25, 1.5, 2] as const;
  *  `!` is required because `cn` only joins — Tailwind's own source order would
  *  otherwise let the size class win. */
 const ICON_BTN = '!h-8 !w-8 shrink-0 !p-0';
+
+/** Names for the cast sentence a provider item shows. 'embed' never reaches
+ *  this bar (StagePane withholds the transport there), but the fallback keeps
+ *  the sentence grammatical if it ever does. */
+const PROVIDER_CAST_NAME: Partial<Record<PlayerAdapter['kind'], string>> = {
+  youtube: 'YouTube',
+  soundcloud: 'SoundCloud',
+  vimeo: 'Vimeo',
+};
+
+/**
+ * Why the platform pickers cannot act, in one sentence — or null when they
+ * can (native media with a working picker). docs/EXTENSION_FIRST.md Part 3:
+ * provider content casts only through the service's OWN cast control, so the
+ * bar must explain that instead of silently dropping the button; no branch
+ * may leave the cast affordance both silent and dead.
+ */
+function castExplanation(input: {
+  adapterKind: PlayerAdapter['kind'] | null;
+  nativeEl: HTMLMediaElement | null;
+  pickerAvailable: boolean;
+  extensionDriving: boolean;
+  extensionProviderName: string | null;
+}): string | null {
+  const { adapterKind, nativeEl, pickerAvailable, extensionDriving, extensionProviderName } =
+    input;
+  if (nativeEl !== null) {
+    return pickerAvailable ? null : 'Casting isn’t available in this browser';
+  }
+  if (adapterKind !== null && adapterKind !== 'native') {
+    const name = PROVIDER_CAST_NAME[adapterKind] ?? 'This service';
+    return `${name} casts with its own cast button, from its app or site`;
+  }
+  if (extensionDriving) {
+    // The service's real page is open in the tab the extension drives, so its
+    // own cast control genuinely is reachable there.
+    return extensionProviderName !== null
+      ? `${extensionProviderName} casts with its own cast button — it’s in the ${extensionProviderName} tab`
+      : 'This site casts with its own cast button — it’s in the playing tab';
+  }
+  return 'Casting options appear once the media loads';
+}
 
 export function PlayerControls({
   adapter,
@@ -113,6 +156,18 @@ export function PlayerControls({
   const canCast = nativeEl !== null && remotePlaybackAvailable(nativeEl);
   const canAirPlay = nativeEl !== null && airPlayAvailable(nativeEl);
   const canPip = nativeEl !== null && 'requestPictureInPicture' in document;
+
+  // Shares StagePane's singleton store; this is a second subscriber, not a
+  // second detection pass.
+  const extension = useExtensionDriver();
+  const castExplain = castExplanation({
+    adapterKind: adapter !== null ? adapter.kind : null,
+    nativeEl,
+    pickerAvailable: canAirPlay || canCast,
+    extensionDriving: extension.driving,
+    extensionProviderName:
+      extension.state.phase === 'ready' ? (extension.state.provider?.name ?? null) : null,
+  });
 
   const togglePlay = (): void => {
     if (!enabled || adapter === null) return;
@@ -246,33 +301,51 @@ export function PlayerControls({
           </Button>
         </Tooltip>
       )}
-      {canAirPlay && nativeEl !== null && (
-        <Tooltip content="AirPlay" align="end">
+      {/* One cast affordance in every session (EXTENSION_FIRST.md Part 3):
+          working pickers when the platform has them, otherwise the same slot
+          explains — tooltip for pointers, tap-to-toast for touch. */}
+      {castExplain !== null ? (
+        <Tooltip content={castExplain} align="end">
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => showAirPlayPicker(nativeEl)}
-            className={ICON_BTN}
-          >
-            <AirplayIcon size={16} />
-          </Button>
-        </Tooltip>
-      )}
-      {canCast && nativeEl !== null && (
-        <Tooltip content="Cast to TV" align="end">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              void promptRemotePlayback(nativeEl).catch((err: unknown) => {
-                toast.error(describeError(err, 'Casting is unavailable right now'));
-              });
-            }}
+            onClick={() => toast(castExplain)}
             className={ICON_BTN}
           >
             <CastIcon size={16} />
           </Button>
         </Tooltip>
+      ) : (
+        <>
+          {canAirPlay && nativeEl !== null && (
+            <Tooltip content="AirPlay" align="end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => showAirPlayPicker(nativeEl)}
+                className={ICON_BTN}
+              >
+                <AirplayIcon size={16} />
+              </Button>
+            </Tooltip>
+          )}
+          {canCast && nativeEl !== null && (
+            <Tooltip content="Cast to TV" align="end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void promptRemotePlayback(nativeEl).catch((err: unknown) => {
+                    toast.error(describeError(err, 'Casting is unavailable right now'));
+                  });
+                }}
+                className={ICON_BTN}
+              >
+                <CastIcon size={16} />
+              </Button>
+            </Tooltip>
+          )}
+        </>
       )}
     </div>
   );

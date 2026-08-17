@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Member, Room, RoomId } from '@gather/contracts';
 import { api } from './api';
@@ -21,11 +21,23 @@ export interface RoomContextValue {
   connection: RoomConnection;
 }
 
-const RoomContext = createContext<RoomContextValue | null>(null);
+/**
+ * The context itself carries the join-response SNAPSHOTS plus the connection;
+ * `useRoom` overlays the live store on top, so a promotion, demotion, or host
+ * transfer reaches every permission gate without a rejoin. Consumers never
+ * see this shape.
+ */
+interface RoomContextSeed {
+  snapshotRoom: Room;
+  snapshotMember: Member;
+  connection: RoomConnection;
+}
+
+const RoomContext = createContext<RoomContextSeed | null>(null);
 
 export function RoomProvider({
   room: initialRoom,
-  member,
+  member: initialMember,
   lastEventSeq,
   children,
 }: {
@@ -35,7 +47,6 @@ export function RoomProvider({
   lastEventSeq: number | undefined;
   children: ReactNode;
 }) {
-  const [room, setRoom] = useState(initialRoom);
   const [connection] = useState(
     () =>
       new RoomConnection({
@@ -50,17 +61,15 @@ export function RoomProvider({
   );
 
   useEffect(() => {
-    setRoom(initialRoom);
     connection.seedRoom(initialRoom);
-  }, [connection, initialRoom]);
+    connection.seedMember(initialMember);
+  }, [connection, initialRoom, initialMember]);
 
   useEffect(() => {
     connection.connect().catch(() => {
       toast.error('Could not connect to the room. Sign in again if this persists.');
     });
     void connection.loadRecentMessages().catch(() => undefined);
-    // Live room entity: theater toggle / policy edits arrive as room.updated.
-    const off = connection.on('room.updated', (ev) => setRoom(ev.payload));
     // The idle presence state follows what is PLAYING (music → 'listening'),
     // 'watching' when nothing does — the server no longer infers it from the
     // room, so this client must say it accurately.
@@ -81,7 +90,7 @@ export function RoomProvider({
       const next = presenceIdleStateFor(s.playback?.mediaRef ?? null);
       if (next === lastIdle) return;
       lastIdle = next;
-      const mine = s.presence[member.userId]?.state;
+      const mine = s.presence[initialMember.userId]?.state;
       if (mine === 'in-call' || mine === 'away') return;
       if (connection.status !== 'live') return;
       connection.presenceUpdate({ state: next });
@@ -89,25 +98,41 @@ export function RoomProvider({
     return () => {
       offPlayback();
       offStatus();
-      off();
       connection.close();
     };
-  }, [connection, member.userId]);
+  }, [connection, initialMember.userId]);
 
-  return (
-    <RoomContext.Provider value={{ room, member, connection }}>{children}</RoomContext.Provider>
+  const seed = useMemo(
+    () => ({ snapshotRoom: initialRoom, snapshotMember: initialMember, connection }),
+    [connection, initialRoom, initialMember],
   );
+
+  return <RoomContext.Provider value={seed}>{children}</RoomContext.Provider>;
 }
 
 export function useRoom(): RoomContextValue {
   const ctx = useContext(RoomContext);
   if (ctx === null) throw new Error('useRoom must be used within <RoomProvider>');
-  return ctx;
+  const { connection, snapshotRoom, snapshotMember } = ctx;
+  // Live overlays: seeded from the join response, advanced by room.updated /
+  // member.updated — so every gate (canAct, host checks, theater visibility)
+  // follows a role change with no rejoin. The reducers keep identities stable
+  // when content is unchanged, so effects keyed on these objects stay quiet
+  // across unrelated events (presence, chat, sync ticks).
+  const liveRoom = connection.useRoomState((s) => s.room);
+  const liveMember = connection.useRoomState((s) => s.members[snapshotMember.userId]);
+  return {
+    room: liveRoom ?? snapshotRoom,
+    member: liveMember ?? snapshotMember,
+    connection,
+  };
 }
 
 /** The shared realtime connection for this room (one per room, never per pane). */
 export function useRoomConnection(): RoomConnection {
-  return useRoom().connection;
+  const ctx = useContext(RoomContext);
+  if (ctx === null) throw new Error('useRoomConnection must be used within <RoomProvider>');
+  return ctx.connection;
 }
 
 export type { RoomId };

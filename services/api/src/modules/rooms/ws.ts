@@ -59,6 +59,11 @@ export const roomsWsHandlers: HandlerMap = {
         ctx.reply('sync.state', room.playback);
       }
       ctx.reply('queue.state', { items: room.queue.items, version: room.queue.version });
+      // A late joiner must land on the share, not on an empty stage; the
+      // restream module owns transitions, this is only the snapshot.
+      if (room.restream !== null && room.restream.active) {
+        ctx.reply('restream.state', room.restream);
+      }
     }
   },
 };

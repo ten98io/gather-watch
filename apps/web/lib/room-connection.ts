@@ -6,6 +6,7 @@ import type {
 } from '@gather/api-client';
 import type {
   ClientEvent,
+  Member,
   Message,
   MessageId,
   PlaybackState,
@@ -103,6 +104,11 @@ export interface EmoteBurst {
 export interface RoomState {
   /** Live room entity — updated by room.updated (theater toggle, policies). */
   room: Room | null;
+  /** Member rows by userId — the caller's row is seeded from the join
+   *  response, then every row advances on member.updated (promotion,
+   *  demotion, host transfer, ban). Identity is preserved when content is
+   *  unchanged so gates keyed on the object stay quiet. */
+  members: Record<UserId, Member>;
   playback: PlaybackState | null;
   queue: QueueState;
   /** Presence by userId (presence.state snapshots + presence.diff). */
@@ -134,6 +140,7 @@ export const EMOTE_TTL_MS = 2500;
 function initialRoomState(): RoomState {
   return {
     room: null,
+    members: {},
     playback: null,
     queue: initialQueueState(),
     presence: {},
@@ -150,6 +157,29 @@ function initialRoomState(): RoomState {
     membersVersion: 0,
     lastError: null,
   };
+}
+
+/**
+ * Structural equality over JSON-shaped values (server payloads). Reducers use
+ * it to keep an object's identity when a re-delivered or re-seeded payload
+ * carries no actual change — components key effects off these objects
+ * (StagePane's extension handoff, room-shell's theater gate), so an
+ * identical-content replacement must not fire them.
+ */
+export function jsonEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+    return false;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => jsonEqual(v, b[i]));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((k) => jsonEqual(left[k], right[k]));
 }
 
 /** Insert ascending-by-seq, deduping by message id; caps the window. */
@@ -333,7 +363,22 @@ export class RoomConnection {
 
   /** Seeds the live room entity (from GetRoomResponse) into the room store. */
   seedRoom(room: Room): void {
-    this.useRoomState.setState({ room });
+    this.useRoomState.setState((s) =>
+      s.room !== null && jsonEqual(s.room, room) ? {} : { room },
+    );
+  }
+
+  /**
+   * Seeds a member row (the caller's own, from GetRoomResponse) into the
+   * store; member.updated advances it from there so role changes take effect
+   * without a rejoin.
+   */
+  seedMember(member: Member): void {
+    this.useRoomState.setState((s) => {
+      const prev = s.members[member.userId];
+      if (prev !== undefined && jsonEqual(prev, member)) return {};
+      return { members: { ...s.members, [member.userId]: member } };
+    });
   }
 
   /** Initial chat window (newest page, applied ascending). Idempotent. */
@@ -555,11 +600,22 @@ export class RoomConnection {
     });
 
     this.socket.on('room.updated', (ev) => {
-      set({ room: ev.payload });
+      set((s) =>
+        s.room !== null && jsonEqual(s.room, ev.payload) ? {} : { room: ev.payload },
+      );
     });
 
-    this.socket.on('member.updated', () => {
-      set((s) => ({ membersVersion: s.membersVersion + 1 }));
+    this.socket.on('member.updated', (ev) => {
+      set((s) => {
+        const prev = s.members[ev.payload.userId];
+        const members =
+          prev !== undefined && jsonEqual(prev, ev.payload)
+            ? s.members
+            : { ...s.members, [ev.payload.userId]: ev.payload };
+        // The version still bumps: the People pane refetches its roster (the
+        // REST list carries profiles this event does not).
+        return { members, membersVersion: s.membersVersion + 1 };
+      });
     });
 
     this.socket.on('emote.burst', (ev) => {

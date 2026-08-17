@@ -357,6 +357,20 @@ export class CallMesh {
 /* Lazy per-connection registry: panes share one mesh per room connection. */
 const meshes = new WeakMap<RoomConnection, CallMesh>();
 
+type MeshClosedListener = (conn: RoomConnection) => void;
+const meshClosedSubs = new Set<MeshClosedListener>();
+
+/** Fires when a room's mesh is torn down via closeCallMesh (room unmount).
+ *  Anything holding live media on that mesh — the host share session — must
+ *  release its capture, or the browser's recording indicator outlives every
+ *  control that could stop it. */
+export function onCallMeshClosed(fn: MeshClosedListener): () => void {
+  meshClosedSubs.add(fn);
+  return () => {
+    meshClosedSubs.delete(fn);
+  };
+}
+
 export function getCallMesh(conn: RoomConnection, localUserId: UserId): CallMesh {
   // Kick the plan lookup on every acquire: the earlier it resolves, the more
   // likely the mesh a premium share rides was built uncapped.
@@ -376,4 +390,5 @@ export function closeCallMesh(conn: RoomConnection): void {
   if (mesh === undefined) return;
   meshes.delete(conn);
   mesh.close();
+  for (const fn of [...meshClosedSubs]) fn(conn);
 }

@@ -5,8 +5,9 @@
  *  - Chromecast: Cast sender framework loaded ON DEMAND (never in the initial
  *    bundle), default media receiver playing the HLS/MP4 URL, then
  *    HTMLMediaElement.remote.prompt().
- * Everything is feature-detected; unsupported browsers simply don't render
- * the buttons (callers check availability first).
+ * Everything is feature-detected; when a picker is unavailable the caller
+ * must keep the cast control visible with a plain-language reason — never
+ * silently drop it (docs/EXTENSION_FIRST.md Part 3).
  */
 
 interface RemotePlaybackLike {
