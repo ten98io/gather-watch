@@ -31,10 +31,12 @@ failure is one sentence, 8s ack watchdog, capture torn down when the room
 ends the share), always-discoverable cast control with three honest states,
 and live member/room context (role changes flip every gate without rejoin).
 
-Still open: TURN keys (user; voice dropouts persist until set), the \$5 Cast
+Config-as-code is DONE (both services) — deploys are now zero-downtime,
+gated on /readyz.
+
+Still open: TURN keys (user; voice dropouts persist until set), the $5 Cast
 receiver hardware spike (gates the Chromecast TV-participant feature,
-docs/CAST_RELAY.md), config-as-code done;  (deploys hard-swap
-until set — user-visible blink), LiveKit deletion (approved, post-launch),
+docs/CAST_RELAY.md), LiveKit deletion (approved, post-launch),
 relay-guard residuals (task chip), web-slimming deletions (still gated),
 mobile RN type defects (hero size, unbundled mono font). `docs/COST_MODEL.md`
 holds verified rates and the two unclosable lines.
