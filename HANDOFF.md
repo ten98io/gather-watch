@@ -24,7 +24,16 @@ shared tokens, attachments read via stable capability URLs
 watch/listen choice is gone; `mediaKindFor(ref)` routes the stage per playing
 item (`room.kind` is vestigial on the wire, drives nothing).
 
-Still open: config-as-code paths in the Railway dashboard (deploys hard-swap
+Live-triage batch (2026-08-17, deployed): the restream server module — Mode
+B's server half was never written; the wire contract existed on both sides
+and no handler was registered — plus the share feedback contract (every
+failure is one sentence, 8s ack watchdog, capture torn down when the room
+ends the share), always-discoverable cast control with three honest states,
+and live member/room context (role changes flip every gate without rejoin).
+
+Still open: TURN keys (user; voice dropouts persist until set), the \$5 Cast
+receiver hardware spike (gates the Chromecast TV-participant feature,
+docs/CAST_RELAY.md), config-as-code done;  (deploys hard-swap
 until set — user-visible blink), LiveKit deletion (approved, post-launch),
 relay-guard residuals (task chip), web-slimming deletions (still gated),
 mobile RN type defects (hero size, unbundled mono font). `docs/COST_MODEL.md`
