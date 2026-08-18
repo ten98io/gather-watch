@@ -164,6 +164,26 @@ export interface TelemetryPayload {
   at: number;
 }
 
+/**
+ * The driven item ran out. Deliberately NOT a telemetry sample and
+ * deliberately not a pause: telemetry is a heartbeat the page samples, and a
+ * pause is something a person did. This is the one event that says the media
+ * has no more frames — what a room advances on.
+ */
+export interface EndedPayload {
+  /** Where the player stopped. */
+  positionMs: number;
+  /** The item's full length; 0 when it was never known. The page needs it to
+   *  clamp a projection that would otherwise run past the end of the item. */
+  durationMs: number;
+  /** Which item ended, as the extension's driver keys it (`mediaKeyOf`), so a
+   *  page that has already moved on can ignore a late end. null when the room
+   *  had no ref. */
+  mediaKey: string | null;
+  /** Extension-side clock when the end was seen (Date.now()). */
+  at: number;
+}
+
 /* ──────────────────────────── request union ──────────────────────────── */
 
 export type ProtocolRequest =
@@ -185,7 +205,7 @@ export const REQUEST_TYPES: readonly ProtocolRequestType[] = [
   'release',
 ];
 
-export type ProtocolEventType = 'telemetry' | 'status' | 'capability';
+export type ProtocolEventType = 'telemetry' | 'status' | 'capability' | 'ended';
 
 /**
  * Advertised in `hello`. Additive only — a capability that ever shipped keeps
@@ -201,6 +221,8 @@ export const EXTENSION_CAPABILITIES: readonly string[] = [
   'release',
   'modeB',
   'modeB.desktop',
+  /** This build reports the end of the driven item (`ended` port event). */
+  'ended',
 ];
 
 /* ─────────────────────────── wire message types ──────────────────────── */
@@ -528,7 +550,9 @@ export function readEvent(raw: unknown): ProtocolEventMessage | null {
   if (!isRecord(raw)) return null;
   if (raw['channel'] !== PROTOCOL_CHANNEL) return null;
   const event = raw['event'];
-  if (event !== 'telemetry' && event !== 'status' && event !== 'capability') return null;
+  if (event !== 'telemetry' && event !== 'status' && event !== 'capability' && event !== 'ended') {
+    return null;
+  }
   return {
     channel: PROTOCOL_CHANNEL,
     v: typeof raw['v'] === 'number' ? raw['v'] : PROTOCOL_VERSION,

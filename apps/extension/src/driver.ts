@@ -3,7 +3,7 @@
  *  PlaybackDriver — the one contract — and the extension's elastic corrector
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Four things live here, and they are deliberately separate:
+ * Five things live here, and they are deliberately separate:
  *
  *  1. {@link PlaybackDriver}: the interface EVERY playback surface implements
  *     (docs/EXTENSION_FIRST.md, Part 2 "One contract, three implementations").
@@ -31,6 +31,11 @@
  *     (background.ts forwards it under the room's permission model), and
  *     {@link ElasticDriver.noteLocalIntent} keeps the corrector from fighting
  *     it while the room echoes it back.
+ *
+ *  5. {@link MediaEndDetector}: the other half of that judgement. Because a
+ *     pause caused by arrival at the end is deliberately NOT intent, the end
+ *     has to be reported on its own channel — or it is never reported at all,
+ *     and the room stalls forever on the last frame of the item.
  *
  * ── Why a driver contract and not just an adapter ──────────────────────────
  * apps/web's `PlayerAdapter` OWNS its player: it created the <video> or the
@@ -241,6 +246,10 @@ export function mediaKeyOf(ref: MediaRef | null): string | null {
       return `url:${ref.url}`;
     case 'embed':
       return `embed:${ref.provider}:${ref.embedUrl}`;
+    // An arbitrary web page the room queued: the url IS the identity, and it
+    // is what the generic driver goes looking for a player on.
+    case 'page':
+      return `page:${ref.url}`;
   }
 }
 
@@ -739,9 +748,25 @@ export class ElasticDriver {
       });
     }
 
-    const action = this.controller.decide(room.expectedMs, local.positionMs, { nowMs });
+    // The item's own length is the controller's terminal state: without it the
+    // room's projection keeps climbing after the source runs out, reads as an
+    // ever-growing lag, and prescribes a seek past the end once per tick — and
+    // seeking a finished player is what starts it again. 0 is every player's
+    // "not known yet" (pre-metadata, or a live stream) and must not be passed
+    // as a length, or a real lag would stop being corrected. Infinity is a live
+    // stream's honest answer and clamps nothing, here or in the controller.
+    const action = this.controller.decide(room.expectedMs, local.positionMs, {
+      nowMs,
+      ...(local.durationMs > 0 ? { durationMs: local.durationMs } : {}),
+    });
     const anchorNow = this.controller.anchorOffsetMs();
-    this.driftMs = room.expectedMs - anchorNow - local.positionMs;
+    // The SAME clamped expectation the controller just decided against. Read
+    // raw, this reports a lag the driver has deliberately chosen not to
+    // correct — so a finished item would sit at "30s behind the room" forever
+    // in the status chip while the player is simply over.
+    const expectedMs =
+      local.durationMs > 0 ? Math.min(room.expectedMs, local.durationMs) : room.expectedMs;
+    this.driftMs = expectedMs - anchorNow - local.positionMs;
 
     if (action.action === 'seek') {
       if (!this.canSeekNow(nowMs)) {
@@ -1088,6 +1113,95 @@ export class UserIntentDetector {
         return { intent: 'seek', positionMs: ev.positionMs };
       }
     }
+  }
+}
+
+/* ═════════════ 5. the end of the media (content side, and NOT intent) ════ */
+
+/**
+ * One 'ended' event, as the content script saw it on the driven element.
+ *
+ * `sourceKey` identifies the ELEMENT AND ITS SOURCE, not the event: it is what
+ * makes "this end was already reported" answerable. The content script bumps
+ * it when the element it drives is replaced, and it carries the element's own
+ * `currentSrc`, so a site that swaps the next track into the same node gets a
+ * new key and its genuine end is still reported.
+ */
+export interface ObservedEnd {
+  sourceKey: string;
+  /** The element's position when the event was handled. */
+  positionMs: number;
+  /** 0 when unknown (pre-metadata, or a live stream reporting Infinity). */
+  durationMs: number;
+  /** HTMLMediaElement.ended, re-read when the event was handled — the
+   *  element's own word, not the event's, so a stale one can be caught. */
+  ended: boolean;
+}
+
+/** The verdict: the media really ran out, and where. */
+export interface DetectedEnd {
+  positionMs: number;
+  durationMs: number;
+}
+
+/**
+ * How far back before the end a player must be for the end we already reported
+ * to belong to a previous play-through. Comfortably past a final keyframe and
+ * past the twitching a paused last frame does, and far short of anything a
+ * person would call "watching it again".
+ */
+export const END_REARM_MS = 3000;
+
+/**
+ * Arrival at the end of the media, told apart from everything that merely
+ * looks like it. This is the OTHER half of the rule
+ * {@link UserIntentDetector} keeps: a pause caused by the end is not the user
+ * pausing, so the intent path drops it — and it therefore has to be reported
+ * here, on its own, or the end is never reported at all and a room driven by
+ * this extension stalls forever on the last frame.
+ *
+ * The two paths never cross. Nothing in here can produce a `UserIntentKind`,
+ * nothing in {@link UserIntentDetector} can produce a {@link DetectedEnd}, and
+ * the content script routes the DOM's 'ended' event to this one alone.
+ *
+ * What it refuses, and why — sites fire 'ended' more than once and SPAs
+ * manufacture ends that never happened:
+ *   - an element that no longer says it ended. A stale event that lands after
+ *     the site loaded the next item into the same node arrives at an element
+ *     sitting at position 0 with `ended` false. That is not an end.
+ *   - an end of nothing: no duration AND no position, which is what a
+ *     freshly-emptied element looks like.
+ *   - a source whose end was already reported. One item ends once, however
+ *     many times its player says so — until the player is genuinely playing
+ *     it again, which is what {@link MediaEndDetector.notePosition} watches
+ *     for, so watching something twice ends it twice.
+ */
+export class MediaEndDetector {
+  private reportedKey: string | null = null;
+
+  /** A different element or a different item: the latch describes neither. */
+  reset(): void {
+    this.reportedKey = null;
+  }
+
+  /**
+   * Telemetry heartbeat. A player back at a position well before the end is no
+   * longer sitting on the end we reported — it is playing the item again — so
+   * the latch is disarmed and the NEXT end is a real one. An unknown duration
+   * (a live stream) cannot be judged this way and stays latched.
+   */
+  notePosition(positionMs: number, durationMs: number): void {
+    if (this.reportedKey === null || durationMs <= 0) return;
+    if (positionMs <= durationMs - END_REARM_MS) this.reportedKey = null;
+  }
+
+  /** The verdict for one 'ended' event: the end, or null for noise. */
+  observe(ev: ObservedEnd): DetectedEnd | null {
+    if (!ev.ended) return null;
+    if (ev.durationMs <= 0 && ev.positionMs <= 0) return null;
+    if (ev.sourceKey === this.reportedKey) return null;
+    this.reportedKey = ev.sourceKey;
+    return { positionMs: ev.positionMs, durationMs: ev.durationMs };
   }
 }
 

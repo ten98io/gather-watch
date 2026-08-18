@@ -82,7 +82,7 @@ export function SheetContent({
             aria-modal="true"
             aria-label={ariaLabel}
             className={cn(
-              'glass-panel absolute inset-x-0 bottom-0 flex max-h-[72dvh] flex-col rounded-b-none p-4 pb-[max(1rem,env(safe-area-inset-bottom))]',
+              'glass-panel absolute inset-x-0 bottom-0 flex max-h-[72dvh] flex-col rounded-b-none p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-e3',
               className,
             )}
             initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 48 }}

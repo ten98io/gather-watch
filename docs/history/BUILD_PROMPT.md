@@ -1,8 +1,40 @@
-> **HISTORICAL (moved 2026-08-17).** This is the original build spec. Its plan
-> has been superseded — the watch/listen room split is gone (rooms are adaptive,
-> composed per playing item), LiveKit was never used and is being removed, and
-> the extension is now the primary playback driver. Kept for the record; do not
-> build from it. Current docs: `README.md`, `docs/EXTENSION_FIRST.md`.
+> **HISTORICAL (moved 2026-08-17; re-annotated 2026-08-18). DO NOT BUILD FROM
+> THIS FILE.** It is the original build spec, kept because it explains why some
+> code has the shape it does. Large parts of its plan were executed and then
+> **deleted**, and following them now would rebuild things this repo has
+> deliberately removed. What is dead:
+>
+> - **Everything about money.** §Plans/§Premium relay tier/§Billing describe a
+>   free/premium split, per-room Theater as a paid feature, Stripe checkout +
+>   portal + webhooks, and an entitlements service. **All of it is deleted.**
+>   Gather has ONE tier. `services/api/test/no-billing.test.ts`,
+>   `rooms-ungated.test.ts` and `apps/web/test/no-paywall.test.ts` fail if any
+>   of it comes back. Theater is a layout, not a paid transport.
+> - **LiveKit**, everywhere it appears (stack table, deploy topology, the
+>   `ENABLE_SFU` flag, `@livekit/*` client packages, the ICE-TCP/UDP-ingress
+>   reasoning, `livekit.yaml`). No room ever successfully used it; it is gone
+>   from the repo. Mesh + Cloudflare TURN is the topology, with the Cloudflare
+>   Realtime SFU present in the design and dialled by nothing.
+> - **Self-hosted coturn** and its `TURN_STATIC_AUTH_SECRET` HMAC scheme.
+>   Deleted, and pinned deleted by `services/api/test/config-coturn.test.ts`.
+> - **The media pipeline and the per-user library** (§Media library & pipeline,
+>   the `media` service, ffmpeg → HLS → S3, chunked uploads, thumbnails,
+>   waveforms, `ENABLE_MEDIA_PIPELINE`). `services/media` is deleted; nobody
+>   uploads a stream and nothing transcodes. What replaced the library is
+>   **in-room playback history** (`GET /rooms/:roomId/history`), which is per
+>   room and dies with it.
+> - **The watch/listen room split.** Rooms are adaptive: `mediaKindFor(ref)`
+>   composes the stage per playing item. `room.kind` is vestigial ballast.
+> - **The 4-hour room TTL.** Rooms are created `expiresAt: null` and never
+>   expire; only empty rooms quiet for 30 days are swept.
+> - **The `infra/` and Railway topologies** listed here (services `media`,
+>   `livekit`, seed scripts, `livekit.yaml`). Current: `docs/DEPLOY_RAILWAY.md`
+>   and `infra/README.md`.
+>
+> What survives is the shape of the thing: two playback modes, TS everywhere,
+> shared `contracts`/`sync-core`/`api-client` packages, the full chat surface,
+> Mongo. Current docs: `README.md`, `HANDOFF.md`, `DESIGN.md`,
+> `docs/EXTENSION_FIRST.md`.
 
 # Gather — Build Spec v3 (FULL SCOPE)
 

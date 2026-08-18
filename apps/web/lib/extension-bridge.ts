@@ -9,6 +9,7 @@
  *   - hands a room over (room id + room-scoped access token + media intent),
  *   - asks what the extension can do with the user's current tab,
  *   - streams telemetry back from the driven tab,
+ *   - reports when the driven item RAN OUT, so the room can auto-advance,
  *   - relinquishes the room.
  *
  * ── Rules this file obeys ─────────────────────────────────────────────────
@@ -50,6 +51,7 @@
  * are the tripwire — a mismatch produces a typed UNSUPPORTED_VERSION refusal
  * rather than silent misbehaviour.
  */
+import type { MediaRef } from '@gather/contracts';
 
 /* ══════════════════════════ protocol (duplicated) ═════════════════════════ */
 
@@ -68,7 +70,7 @@ export type ProtocolRequestType =
   | 'intent'
   | 'release';
 
-export type ProtocolEventType = 'telemetry' | 'status' | 'capability';
+export type ProtocolEventType = 'telemetry' | 'status' | 'capability' | 'ended';
 
 export type ProtocolErrorCode =
   | 'UNSUPPORTED_VERSION'
@@ -88,7 +90,9 @@ export interface BridgeError {
   message: string;
 }
 
-/** Structurally compatible with `lib/result.ts`'s `Result<T, BridgeError>`. */
+/** A discriminated result rather than a throw: every bridge call crosses into
+ *  a browser extension that may not be installed, so failure is an ordinary
+ *  outcome the caller renders, not an exception. */
 export type BridgeResult<T> = { ok: true; value: T } | { ok: false; error: BridgeError };
 
 /** What the room believes is playing. `contentUrl` is a classification hint
@@ -138,6 +142,56 @@ export interface TelemetryPayload {
   playing: boolean;
   rate: number;
   at: number;
+}
+
+/**
+ * The driven item ran out. The extension's content script makes exactly ONE
+ * such judgement per item and the worker deliberately does not de-duplicate
+ * (apps/extension/src/background.ts, `case 'mediaEnded'`), so the de-duplication
+ * this room needs is the WEB's job — see StagePane's `advancedKeyRef`.
+ */
+export interface EndedPayload {
+  /** Where the player stopped. */
+  positionMs: number;
+  /** The item's full length; 0 when it was never known. */
+  durationMs: number;
+  /** Which item ended, keyed by {@link extensionMediaKey}. null when the
+   *  extension's room had no ref — never a match for an item on our stage. */
+  mediaKey: string | null;
+  /** Extension-side clock when the end was seen (Date.now()). */
+  at: number;
+}
+
+/**
+ * Identity of a room item, in the EXTENSION's spelling.
+ *
+ * A mirror of `mediaKeyOf` in apps/extension/src/driver.ts, and part of the
+ * duplication contract at the top of this file: `EndedPayload.mediaKey` is
+ * produced by that function, so this is the only way the web can tell "the
+ * item that ended" from "an item we already moved on from".
+ *
+ * Deliberately NOT `lib/player/adapter.ts`'s `mediaKey`, which appends the
+ * playback `seq` — that is a media+EPOCH key, and every play/pause/seek mints
+ * a fresh epoch. This one changes when the ITEM changes and at no other time.
+ */
+export function extensionMediaKey(ref: MediaRef | null): string | null {
+  if (ref === null) return null;
+  switch (ref.kind) {
+    case 'hls':
+      return `hls:${ref.assetId}`;
+    case 'youtube':
+      return `youtube:${ref.videoId}`;
+    case 'vimeo':
+      return `vimeo:${ref.videoId}`;
+    case 'soundcloud':
+      return `soundcloud:${ref.url}`;
+    case 'url':
+      return `url:${ref.url}`;
+    case 'embed':
+      return `embed:${ref.provider}:${ref.embedUrl}`;
+    case 'page':
+      return `page:${ref.url}`;
+  }
 }
 
 export interface AnnouncePayload {
@@ -240,7 +294,14 @@ export function readEvent(raw: unknown): ProtocolEventMessage | null {
   if (!isRecord(raw)) return null;
   if (raw['channel'] !== PROTOCOL_CHANNEL) return null;
   const event = raw['event'];
-  if (event !== 'telemetry' && event !== 'status' && event !== 'capability') return null;
+  if (
+    event !== 'telemetry' &&
+    event !== 'status' &&
+    event !== 'capability' &&
+    event !== 'ended'
+  ) {
+    return null;
+  }
   return {
     channel: PROTOCOL_CHANNEL,
     v: typeof raw['v'] === 'number' ? raw['v'] : PROTOCOL_VERSION,
@@ -642,6 +703,7 @@ type Listener<T> = (value: T) => void;
 const telemetryListeners = new Set<Listener<TelemetryPayload>>();
 const statusListeners = new Set<Listener<SessionStatus>>();
 const capabilityListeners = new Set<Listener<ProviderSummary | null>>();
+const endedListeners = new Set<Listener<EndedPayload>>();
 
 let port: ChromePortLike | null = null;
 let portOpening = false;
@@ -651,7 +713,10 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 
 function hasListeners(): boolean {
   return (
-    telemetryListeners.size > 0 || statusListeners.size > 0 || capabilityListeners.size > 0
+    telemetryListeners.size > 0 ||
+    statusListeners.size > 0 ||
+    capabilityListeners.size > 0 ||
+    endedListeners.size > 0
   );
 }
 
@@ -684,6 +749,19 @@ function handleEvent(raw: unknown): void {
   }
   if (event.event === 'capability') {
     emit(capabilityListeners, (event.payload ?? null) as ProviderSummary | null);
+    return;
+  }
+  if (event.event === 'ended' && isRecord(event.payload)) {
+    // `mediaKey` is the load-bearing field: it is what lets a room that has
+    // already moved on ignore a late end. An absent or non-string one becomes
+    // null, which matches no item on any stage.
+    const key = event.payload['mediaKey'];
+    emit(endedListeners, {
+      positionMs: typeof event.payload['positionMs'] === 'number' ? event.payload['positionMs'] : 0,
+      durationMs: typeof event.payload['durationMs'] === 'number' ? event.payload['durationMs'] : 0,
+      mediaKey: typeof key === 'string' && key.length > 0 ? key : null,
+      at: typeof event.payload['at'] === 'number' ? event.payload['at'] : Date.now(),
+    });
   }
 }
 
@@ -773,4 +851,19 @@ export function onStatus(cb: (status: SessionStatus) => void): () => void {
 /** The driven tab's provider changed (SPA navigation, tab switch). */
 export function onCapability(cb: (provider: ProviderSummary | null) => void): () => void {
   return subscribe(capabilityListeners, cb);
+}
+
+/**
+ * The item the extension was driving RAN OUT.
+ *
+ * This is the extension-side counterpart of `PlayerAdapter.on('ended')`: when
+ * the extension drives, no adapter exists on this page, so without this
+ * subscription an extension-driven room never auto-advances at all.
+ *
+ * Fires once per item, and NOT de-duplicated on either side (see
+ * {@link EndedPayload}) — match `payload.mediaKey` against
+ * {@link extensionMediaKey} of what the room is playing before acting on it.
+ */
+export function onEnded(cb: (ended: EndedPayload) => void): () => void {
+  return subscribe(endedListeners, cb);
 }

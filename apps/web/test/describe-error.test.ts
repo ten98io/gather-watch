@@ -22,9 +22,12 @@ describe('describeError', () => {
     }
   });
 
-  it('treats payment-required as a plan gate', () => {
-    expect(describeError(new ApiError('INTERNAL', 'plan required', 402), FALLBACK)).toBe(
-      'This needs the Premium plan.',
+  it('never answers with a plan gate — nothing in Gather is paid for', () => {
+    // 402 used to short-circuit to "This needs the Premium plan."; there are no
+    // plans, so an unmapped status is just the caller's fallback.
+    expect(describeError(new ApiError('INTERNAL', 'plan required', 402), FALLBACK)).toBe(FALLBACK);
+    expect(describeError(new ApiError('FORBIDDEN', 'nope', 402), FALLBACK)).toBe(
+      'You don’t have permission to do that here.',
     );
   });
 
@@ -61,8 +64,28 @@ describe('enum display labels', () => {
     }
   });
 
-  it('keeps the relay badge wording the privacy policy and billing pages quote', () => {
+  it('keeps the relay badge wording the privacy policy quotes', () => {
     expect(RELAY_LABEL.mesh).toBe('Private · device-to-device');
-    expect(RELAY_LABEL['cf-sfu']).toBe('Relayed · Theater');
+  });
+
+  it('tells a legacy cf-sfu room the truth: it meshes like everything else', () => {
+    // Older rooms were flipped to 'cf-sfu' by the theater toggle, which no
+    // longer touches transport. The client only ever joins the mesh, so the
+    // badge must not claim a relay carries the media.
+    expect(RELAY_LABEL['cf-sfu']).toBe(RELAY_LABEL.mesh);
+    expect(RELAY_SHORT_LABEL['cf-sfu']).toBe(RELAY_SHORT_LABEL.mesh);
+  });
+
+  it('never offers a plan, a tier or an upgrade anywhere in the label copy', () => {
+    const copy = [
+      ...Object.values(ROLE_LABEL),
+      ...Object.values(RELAY_LABEL),
+      ...Object.values(RELAY_SHORT_LABEL),
+      ...Object.values(UPLINK_LABEL),
+      describeError(new ApiError('INTERNAL', 'plan required', 402), FALLBACK),
+    ];
+    for (const line of copy) {
+      expect(line).not.toMatch(/premium|upgrade|billing|subscription|free plan/i);
+    }
   });
 });

@@ -7,10 +7,17 @@
  * configured. An injected `sendImpl` implies enabled regardless of config —
  * tests rely on this. With no transport and no keys the factory returns a
  * no-op port.
+ *
+ * THE ENDPOINT IS RE-CHECKED HERE, not just at subscribe time. This is the
+ * line that actually opens a socket to a client-chosen URL, and rows written
+ * before push/endpoint.ts existed are already in production databases — a
+ * check only at the door would leave every one of them live. Cheap enough to
+ * be unconditional: no DNS, just the host list.
  */
 import webPush from 'web-push';
 import type { MessageId, RoomId, UserId } from '@gather/contracts';
 import { memberDocId } from '../../adapters/ports';
+import { isKnownPushService } from '../push/endpoint';
 import type { Deps } from '../types';
 
 export interface MentionNotification {
@@ -47,6 +54,16 @@ const noopPort: NotifyPort = {
   roomStarted: async () => {},
 };
 
+/** https + a known push service. Unparseable is not deliverable. */
+function deliverableEndpoint(endpoint: string): boolean {
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === 'https:' && isKnownPushService(url);
+  } catch {
+    return false;
+  }
+}
+
 export function createNotifier(
   deps: Pick<Deps, 'config' | 'store' | 'log'>,
   sendImpl?: WebPushSend,
@@ -82,6 +99,10 @@ export function createNotifier(
       const subs = await store.pushSubs.findMany({ userId, platform: 'web' });
       for (const sub of subs) {
         if (sub.endpoint === null || sub.keys === null) {
+          continue;
+        }
+        if (!deliverableEndpoint(sub.endpoint)) {
+          log.warn({ subId: sub.id }, 'skipping push subscription with a disallowed endpoint');
           continue;
         }
         try {

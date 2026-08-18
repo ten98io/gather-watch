@@ -1,7 +1,24 @@
-> **HISTORICAL (moved 2026-08-17).** The original concept and feasibility
-> matrix. The two-mode insight survives, but the plan around it was superseded:
-> no watch/listen room split (rooms adapt per item), no LiveKit, extension-first
-> playback. Kept for the record; current docs live in `README.md` and `docs/`.
+> **HISTORICAL (moved 2026-08-17; re-annotated 2026-08-18). DO NOT BUILD FROM
+> THIS FILE.** The original concept and feasibility matrix. The two-mode
+> insight survives — Mode A (each device plays its own copy) and Mode B (one
+> member re-streams) are still the product. Everything around it was
+> superseded:
+>
+> - **No LiveKit and no coturn.** The architecture sketch mints LiveKit tokens
+>   and runs a self-hosted SFU plus coturn. Neither exists. Mesh + Cloudflare
+>   TURN is the topology; the Cloudflare Realtime SFU is a design option
+>   nothing dials.
+> - **No uploads, no media service, no HLS pipeline.** The `Uploads ──► media
+>   service ──► ffmpeg → HLS ──► MinIO` leg of that diagram is deleted, along
+>   with `services/media` itself. Nothing transcodes.
+> - **No watch/listen room split.** Rooms are adaptive — the stage composes per
+>   playing item via `mediaKindFor(ref)`.
+> - **No FastAPI/Python.** The control plane is Fastify + TypeScript, so the
+>   "fits FastAPI" reasoning for picking LiveKit no longer applies to anything.
+> - **Extension-first.** Playback is driven on the user's own device by the
+>   browser extension, not by an embed in the Gather tab.
+>
+> Current docs: `README.md`, `HANDOFF.md`, `docs/EXTENSION_FIRST.md`.
 
 # Gather — a shared living-room for the internet
 

@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   COLOR_TOKEN_NAMES,
+  CONTROL_SIZE_NAMES,
+  ELEVATION_NAMES,
+  controlSizes,
   cssVarName,
   emitCssThemes,
   fontFamily,
@@ -30,6 +33,17 @@ import {
   typeRamp,
 } from '@gather/design';
 import tailwindConfig from '../tailwind.config';
+
+/**
+ * Web takes the scale variables too, not only the palette.
+ *
+ * It did not use to: scales reached web through Tailwind alone, and globals.css
+ * paid for that by hand-writing `border-radius: 20px` on `.glass-panel` and
+ * `12px` on `.glass-raised` — the radius ladder, copied, and free to drift from
+ * it. It also has to: a control's height is the one token that must resolve at
+ * RUNTIME, because `@media (pointer: coarse)` is what decides it.
+ */
+const EMIT_OPTIONS = { includeScales: true } as const;
 
 const GENERATED_CSS_PATH = fileURLToPath(new URL('../app/tokens.generated.css', import.meta.url));
 const GLOBALS_CSS_PATH = fileURLToPath(new URL('../app/globals.css', import.meta.url));
@@ -53,6 +67,7 @@ const extend = (tailwindConfig.theme?.extend ?? {}) as unknown as {
   fontSize: Record<string, [string, Record<string, string>]>;
   borderRadius: Record<string, string>;
   spacing: Record<string, string>;
+  boxShadow: Record<string, string>;
   transitionTimingFunction: Record<string, string>;
   transitionDuration: Record<string, string>;
   animation: Record<string, string>;
@@ -60,7 +75,7 @@ const extend = (tailwindConfig.theme?.extend ?? {}) as unknown as {
 
 describe('generated token stylesheet', () => {
   it('is exactly what @gather/design emits', () => {
-    const expected = emitCssThemes();
+    const expected = emitCssThemes(EMIT_OPTIONS);
     if (REGENERATE) {
       writeFileSync(GENERATED_CSS_PATH, expected, 'utf8');
     }
@@ -159,6 +174,33 @@ describe('tailwind scale bindings', () => {
     expect(extend.spacing.tap).toBe(`${layout.tap}px`);
     expect(extend.spacing.row).toBe(`${layout.row}px`);
     expect(extend.spacing.rail).toBe(`${layout.rail}px`);
+  });
+
+  it('leaves control heights as var(), never as a baked number', () => {
+    // A baked height would be one number for both device classes, and the one
+    // that would get baked is the desktop one — which is how you ship a 32px
+    // touch target. The custom property is what lets the coarse-pointer block
+    // in tokens.generated.css raise it back to `tap`.
+    for (const name of CONTROL_SIZE_NAMES) {
+      expect(extend.spacing[`ctl-${name}`], `h-ctl-${name}`).toBe(`var(--control-h-${name})`);
+      expect(extend.spacing[`ctl-x-${name}`], `px-ctl-x-${name}`).toBe(`var(--control-px-${name})`);
+      expect(extend.spacing[`ctl-g-${name}`], `gap-ctl-g-${name}`).toBe(
+        `var(--control-gap-${name})`,
+      );
+      expect(String(extend.spacing[`ctl-${name}`])).not.toContain(
+        `${controlSizes[name].height}px`,
+      );
+    }
+  });
+
+  it('binds the neutral elevation ladder and keeps glow apart from it', () => {
+    for (const name of ELEVATION_NAMES) {
+      expect(extend.boxShadow[name], `shadow-${name}`).toBe(`var(--elevation-${name})`);
+    }
+    // Glow survives, and stays the aurora — it is a signature moment, not a
+    // depth cue. If these ever became the same value the distinction is gone.
+    expect(extend.boxShadow.glow).toContain('--aurora-1');
+    expect(extend.boxShadow.glow).not.toContain('--elevation-');
   });
 
   it('takes motion from the package', () => {

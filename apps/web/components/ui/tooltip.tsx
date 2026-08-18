@@ -47,7 +47,12 @@ export function Tooltip({ content, children, align = 'center', className }: Tool
           // pointer-events-none: the bubble must never swallow the hover (or the
           // click) meant for the control it describes.
           'pointer-events-none absolute -top-9 z-[65] whitespace-nowrap',
-          'glass-raised rounded-ctl px-2.5 py-1 text-xs text-hi',
+          // Opaque, deliberately. Tooltips describe the transport bar, which is
+          // itself glass over video — and DESIGN.md §4 says never stack two
+          // glass layers, which is exactly what `glass-raised` here did. A
+          // solid step plus neutral elevation also means the label's contrast
+          // does not depend on the frame of video behind it.
+          'rounded-sm border border-hairline bg-surface-3 px-2 py-1 text-label text-hi shadow-e2',
           'opacity-0 transition-opacity duration-150 [transition-delay:0ms]',
           'group-hover:opacity-100 group-hover:[transition-delay:300ms]',
           'group-focus-within:opacity-100 group-focus-within:[transition-delay:0ms]',

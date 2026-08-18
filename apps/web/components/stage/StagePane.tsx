@@ -1,21 +1,38 @@
 'use client';
 
 /**
- * StagePane — the room's sun (DESIGN.md §1). Mode A: real <video>/<audio>/
- * YouTube-iframe adapters drift-corrected by sync-core via useSyncEngine;
- * server-authoritative transport, wait-for-all buffering, captions, PiP,
- * AirPlay/Cast, MediaSession. Mode B (restream.state active): the host's
- * mesh screen share takes the stage (ModeBStage). Ambient glow samples the
- * playing media (§5.1) with an aurora fallback; emote bursts float above.
+ * StagePane — the room's sun (DESIGN.md §1).
+ *
+ * Three things can hold the stage, in this order of precedence:
+ *   1. a member's SCREEN SHARE (restream.state active) → ScreenShareStage;
+ *   2. the browser EXTENSION driving the user's own content tab, in which case
+ *      this page deliberately builds no player at all and says where the
+ *      picture went;
+ *   3. this page's own player — real <video>/<audio>/YouTube-iframe adapters
+ *      drift-corrected by sync-core via useSyncEngine, with
+ *      server-authoritative transport, wait-for-all buffering, captions and
+ *      MediaSession.
+ *
+ * Ambient glow samples the playing media (§5.1) with an aurora fallback; emote
+ * bursts float above.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { RoomId } from '@gather/contracts';
+import type { ReactNode } from 'react';
+import { motion } from '@gather/design';
+import type { RoomId, UserId } from '@gather/contracts';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { RELAY_LABEL } from '@/lib/labels';
 import { canAct } from '@/lib/permissions';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { adapterKindFor, isFullSyncKind, mediaKey, stageGate } from '@/lib/player/adapter';
+import {
+  isAdvancerClient,
+  masterClaimDelayMs,
+  masterClaimEpoch,
+  masterSeatVacant,
+  nextTrackOnEnd,
+} from '@/lib/player/advance';
 import { mediaKindFor } from '@/lib/media-kind';
 import type { PlayerAdapter, StageGate } from '@/lib/player/adapter';
 import { NativeAdapter } from '@/lib/player/native';
@@ -25,6 +42,7 @@ import { VimeoAdapter } from '@/lib/player/vimeo';
 import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
 import { useExtensionDriver } from '@/lib/player/extension-driver';
+import { extensionMediaKey, onEnded } from '@/lib/extension-bridge';
 import { API_URL, getAccessToken } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,7 +52,7 @@ import { cn } from '@/lib/cn';
 import { EmoteOverlay } from './EmoteOverlay';
 import { ListenStage } from './ListenStage';
 import { PlayerControls } from './PlayerControls';
-import { ModeBStage } from './ModeBStage';
+import { ScreenShareStage } from './ScreenShareStage';
 
 /** Ambient stage glow (§5.1): dominant color sampled off the video at 1 fps,
  *  bled into the void behind the stage. Cross-origin video without CORS
@@ -189,15 +207,159 @@ function StageShield({
   );
 }
 
-/** An empty room promises neither mode — the stage decides when media plays. */
+/**
+ * Anything the stage says instead of showing a picture, wearing the system's
+ * one page transition: fade + a 12 px rise (DESIGN.md §6, `motion.pageRisePx`
+ * — which had no consumer anywhere until this).
+ *
+ * The fade is the CSS class, so it works before hydration and is already
+ * clamped by the global `prefers-reduced-motion` rule in globals.css. The rise
+ * is the inline transition, flipped one frame after mount, and is dropped
+ * outright under reduced motion — a rise is exactly the kind of positional
+ * motion §9 says to remove, and the fade alone still reads as a transition.
+ *
+ * Deliberately restrained: a room where content is playing must not have
+ * things moving around it. This animates only in the gaps where there IS no
+ * content — an empty queue, the handover to the extension, the moment between
+ * two items.
+ */
+function StageMessage({ children }: { children: ReactNode }) {
+  const reduced = useReducedMotion();
+  const [risen, setRisen] = useState(false);
+  useEffect(() => {
+    if (reduced) return undefined;
+    const handle = requestAnimationFrame(() => setRisen(true));
+    return () => cancelAnimationFrame(handle);
+  }, [reduced]);
+  return (
+    <div
+      className={cn(
+        'flex h-full w-full flex-col items-center justify-center gap-2 p-8 text-center',
+        !reduced && 'animate-fade-in',
+      )}
+      style={
+        reduced
+          ? undefined
+          : {
+              transform: risen ? 'none' : `translateY(${String(motion.pageRisePx)}px)`,
+              transition: `transform ${String(motion.microMs)}ms ease-out`,
+            }
+      }
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Anchors the stage offers as actions. Same shape as ListenStage's own
+ *  "Tap to start listening together" control, because they are the same kind of
+ *  thing: one calm affordance on a stage with no picture on it. */
+const STAGE_LINK_CLASS =
+  'glass-raised inline-flex items-center rounded-ctl px-3 py-2 text-body text-hi transition-colors hover:text-accent';
+
+/** An empty room promises nothing — the stage decides when media plays. */
 function EmptyStage() {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+    <StageMessage>
       <p className="font-display text-lg font-semibold text-mid">Nothing playing yet</p>
       <p className="max-w-sm text-sm text-low">
         Add to the queue from the Queue tab — everyone’s player follows along.
       </p>
-    </div>
+    </StageMessage>
+  );
+}
+
+/**
+ * The gap between two items. Until now this was the bare void: a track change
+ * across kinds tears the old adapter down and builds a new one, and for that
+ * whole stretch — plus however long the new source takes to start — the stage
+ * showed nothing at all, with EmptyStage reserved for "no media" and the
+ * shield's backdrop only for paused/blocked. This is the honest third state:
+ * the room is playing this item, and this device has not begun it yet.
+ */
+function CueingStage({ title }: { title: string | null }) {
+  return (
+    <StageMessage>
+      {title !== null && title !== '' && (
+        <p className="line-clamp-2 max-w-lg text-title text-hi">{title}</p>
+      )}
+      <p className="text-label text-low">Starting…</p>
+    </StageMessage>
+  );
+}
+
+/**
+ * A `page` item on a browser that cannot play one.
+ *
+ * The queue accepts ANY link — that is the promise QueuePane makes at the
+ * paste box — but a page is a LINK, not media bytes: only the extension can
+ * play it, by driving whatever video the page itself mounts, in the viewer's
+ * own tab. `adapterKindFor` correctly refuses to build a player for one, and
+ * until now NOTHING rendered in its place: a completely blank stage, no
+ * message, no controls, no explanation, directly contradicting what the queue
+ * had just promised.
+ *
+ * Both ways out are offered because both are real: add the extension and it
+ * plays here in time with the room, or open the link and watch it on your own.
+ */
+function PageLinkStage({
+  url,
+  title,
+  installUrl,
+}: {
+  url: string;
+  title: string | null;
+  /** Null when this browser cannot install the extension at all, or already
+   *  has it — either way there is nothing to send anyone to. */
+  installUrl: string | null;
+}) {
+  return (
+    <StageMessage>
+      {title !== null && title !== '' && (
+        <p className="line-clamp-2 max-w-lg text-title text-hi">{title}</p>
+      )}
+      <p className="max-w-sm text-sm text-low">
+        This one is a link to a page, and the Gather extension is what plays those — in
+        your own browser, in time with everyone.
+      </p>
+      <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+        {installUrl !== null && (
+          <a
+            href={installUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={STAGE_LINK_CLASS}
+          >
+            Add the extension
+            <span className="sr-only">(opens in a new tab)</span>
+          </a>
+        )}
+        <a href={url} target="_blank" rel="noopener noreferrer" className={STAGE_LINK_CLASS}>
+          Open the link
+          <span className="sr-only">(opens in a new tab)</span>
+        </a>
+      </div>
+    </StageMessage>
+  );
+}
+
+/**
+ * The source refused to load on THIS device. The adapters have always emitted
+ * 'error' — a dead <video>, an HLS manifest that will not parse, a provider
+ * iframe that never comes up — and nothing on the stage was listening, so the
+ * room sat on CueingStage's "Starting…" for as long as it stayed open.
+ */
+function LoadFailedStage({ title }: { title: string | null }) {
+  return (
+    <StageMessage>
+      {title !== null && title !== '' && (
+        <p className="line-clamp-2 max-w-lg text-title text-hi">{title}</p>
+      )}
+      <p className="max-w-sm text-sm text-low">
+        This didn’t load on your device. Everyone else is unaffected, and the next item
+        starts fresh.
+      </p>
+    </StageMessage>
   );
 }
 
@@ -209,7 +371,7 @@ function EmptyStage() {
  */
 function ExtensionDrivingStage({ providerName }: { providerName: string | null }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+    <StageMessage>
       <p className="font-display text-lg font-semibold text-mid">
         {providerName === null ? 'Playing in your other tab' : `Playing on ${providerName}`}
       </p>
@@ -217,7 +379,7 @@ function ExtensionDrivingStage({ providerName }: { providerName: string | null }
         Everyone stays on the same second. Play, pause and skip from here or from the
         tab — the room follows either way.
       </p>
-    </div>
+    </StageMessage>
   );
 }
 
@@ -228,6 +390,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const restream = connection.useRoomState((s) => s.restream);
   const waitingOn = connection.useRoomState((s) => s.waitingOn);
   const queueItems = connection.useRoomState((s) => s.queue.items);
+  const master = connection.useRoomState((s) => s.master);
+  const presence = connection.useRoomState((s) => s.presence);
   const reduced = useReducedMotion();
 
   const mediaRef = playback?.mediaRef ?? null;
@@ -252,7 +416,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
    *  composition, a video item the video stage. The room's stored `kind` is
    *  deprecated wire ballast and drives nothing. */
   const listen = mediaKindFor(mediaRef) === 'music';
-  const showModeB = restream?.active === true;
+  /** A member is sharing their screen: that share owns the stage. */
+  const shareOnStage = restream?.active === true;
   /** Room policy: may this member drive playback? */
   const controlEnabled = canAct(room.policies.playbackControl, member.role);
 
@@ -269,8 +434,14 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   // says what it should be doing, and the two disagree when the browser
   // refuses to start (autoplay policy).
   const [localPlaying, setLocalPlaying] = useState(false);
+  /** This device's source has run out. Distinct from "not playing": a finished
+   *  player must not be restarted, and it is not waiting for a gesture either. */
+  const [localEnded, setLocalEnded] = useState(false);
   const [localBuffering, setLocalBuffering] = useState(false);
   const [localReady, setLocalReady] = useState(false);
+  /** This device's source refused to load. Distinct from every other wait: it
+   *  is not going to arrive, so the stage must stop saying "Starting…". */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [playRefused, setPlayRefused] = useState(false);
   const [startStalled, setStartStalled] = useState(false);
   /** Bumped by every start gesture so the "did it actually start?" watchdog
@@ -349,6 +520,106 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     return mediaKey(mediaRef, undefined);
   }, [mediaRef]);
 
+  /**
+   * Identity of the ITEM on the stage — what the terminal latch and the
+   * auto-advance guard below both hang on.
+   *
+   * NOT `mediaKey(mediaRef, playback.seq)`, which this used to be. `seq` is
+   * minted by EVERY playback mutation (services/api sync/service.ts mutate():
+   * play, pause, seek and rate all take a fresh one), not by a track change —
+   * so a pause during the credits changed the key and cleared a latch whose
+   * whole job is to say "this item is over here". The next play then restarted
+   * a finished player and the room advanced a second time.
+   *
+   * `queueIndex` earns its place: the same media queued twice in a row is two
+   * items, and `mediaIdentity` alone cannot tell them apart. What is left
+   * uncovered is a `setTrack { kind: 'media' }` that re-sets the SAME ref with
+   * no index — a replay of a one-off item, which carries nothing that
+   * distinguishes it from the item already on the stage.
+   */
+  const trackKey = `${mediaIdentity}#${playback?.queueIndex ?? -1}`;
+
+  /** Everyone the room lists as here. Derived through a key rather than
+   *  straight into an array so its IDENTITY tracks the set: presence churns on
+   *  every mic toggle, and a fresh array on each of those would re-arm the
+   *  claim timer below forever and never let it fire. */
+  const presentKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const entry of Object.values(presence)) {
+      if (entry.state !== 'offline') ids.push(entry.userId);
+    }
+    return ids.sort().join(' ');
+  }, [presence]);
+  const presentUserIds = useMemo(
+    () => (presentKey === '' ? [] : (presentKey.split(' ') as UserId[])),
+    [presentKey],
+  );
+  /**
+   * WHO ADVANCES THE QUEUE. Elastic sync leaves viewers deliberately out of
+   * step by up to ~15 s, so in an N-person room the item ends at N different
+   * moments. If every client advanced, whoever reached the credits first would
+   * yank everyone still ten seconds out into the next item. Exactly ONE client
+   * advances; the rest follow the setTrack it sends — which is correct, because
+   * a track change is HOST INTENT (docs/EXTENSION_FIRST.md Part 1) and applies
+   * immediately and unbanded, while drift correction stays comfort-banded.
+   *
+   * The predicate must name ONE client, never "anyone permitted to": the room's
+   * playbackControl policy can be 'everyone', which would re-open the race. So
+   * it is the room's master seat — server-elected by compare-and-set — with the
+   * old host rule as the fallback that covers the moment before the seat is
+   * filled. See lib/player/advance.ts for why the seat and not the roster.
+   */
+  const isAdvancer = isAdvancerClient({
+    selfUserId: member.userId,
+    selfIsHost: member.role === 'host',
+    master,
+    presentUserIds,
+  });
+
+  /**
+   * CLAIMING THE SEAT. Nothing anywhere sent sync.claimMaster, so the seat the
+   * server was built to arbitrate stayed empty forever and the fallback was the
+   * whole election. A mounted StagePane is by definition a client that CAN
+   * advance — it holds both 'ended' subscriptions, the adapter's and the
+   * extension bridge's — so it is a legitimate candidate, and it says so.
+   *
+   * Claimed on mount rather than at the end of an item: the seat has to be
+   * settled BEFORE the credits, and a claim landing in the last second would
+   * change the advancer mid-decision.
+   *
+   * The send is guarded because it is a courtesy, not the feature: a socket
+   * that has not opened yet throws outright, and losing a claim only means the
+   * fallback keeps deciding.
+   */
+  useEffect(() => {
+    // Only a client that may actually DRIVE may take the seat. The seat makes
+    // its holder the SOLE advancer and every other tab stands down, so a seat
+    // held by someone the policy forbids is strictly worse than an empty one:
+    // their setTrack is refused and nobody else tries. In a default 'host'
+    // room the first guest to mount used to win it and the queue never moved
+    // again. The server enforces the same predicate on the claim; this is the
+    // half that stops the pointless round trip.
+    if (!controlEnabled) return undefined;
+    if (!masterSeatVacant({ master, presentUserIds })) return undefined;
+    const epoch = masterClaimEpoch(master);
+    const handle = setTimeout(
+      () => {
+        // Re-read the seat at the last moment: an earlier candidate's claim may
+        // have landed while this one was waiting its turn.
+        if (!masterSeatVacant({ master: connection.useRoomState.getState().master, presentUserIds }))
+          return;
+        try {
+          connection.rawSocket.send('sync.claimMaster', { epoch });
+        } catch {
+          // No socket yet. The fallback advancer still decides, and the next
+          // roster change re-arms this.
+        }
+      },
+      masterClaimDelayMs({ selfUserId: member.userId, presentUserIds }),
+    );
+    return () => clearTimeout(handle);
+  }, [connection, master, presentUserIds, member.userId, controlEnabled]);
+
   // These two run FIRST on purpose: the subscribe/load pair below fires real
   // adapter events during the same commit, and a reset scheduled after them
   // would wipe the state those events just reported. A fresh player starts
@@ -362,7 +633,42 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     setLocalPlaying(false);
     setPlayRefused(false);
     setStartStalled(false);
+    setLoadFailed(false);
   }, [adapter, mediaIdentity]);
+  // The end latch belongs to ONE ITEM, and only a new item may clear it.
+  useEffect(() => {
+    setLocalEnded(false);
+  }, [adapter, trackKey]);
+
+  /**
+   * The auto-advance decision, kept fresh in a ref so the subscription below
+   * stays keyed on the adapter alone instead of re-arming on every queue or
+   * playback change.
+   */
+  const advanceRef = useRef<() => void>(() => undefined);
+  const advancedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    advanceRef.current = (): void => {
+      // ONE end per item, from any source. A local adapter can fire 'ended'
+      // more than once (a correction landing on the end re-fires it), and the
+      // extension deliberately does not de-duplicate at all
+      // (apps/extension/src/background.ts, `case 'mediaEnded'`) because its
+      // content script makes exactly one judgement per item — which makes this
+      // guard, keyed on the item rather than the playback epoch, the only
+      // thing standing between a room and a double skip.
+      if (advancedKeyRef.current === trackKey) return;
+      const next = nextTrackOnEnd({
+        queueIndex: playback?.queueIndex ?? null,
+        items: queueItems,
+        mediaRef,
+        isAdvancer,
+      });
+      // null is a real answer at the end of the queue: let the room stop.
+      if (next === null) return;
+      advancedKeyRef.current = trackKey;
+      connection.syncSetTrackByQueue(next.index);
+    };
+  });
 
   // Subscribed BEFORE the load below, or the adapters' first buffering edge
   // fires into an empty room and the server's wait-for-all never hears it.
@@ -385,8 +691,25 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         setPlayRefused(false);
       }),
       adapter.on('paused', () => setLocalPlaying(false)),
-      adapter.on('ended', () => setLocalPlaying(false)),
+      // The source ran out. Latch it (nothing may restart a finished player)
+      // and, on the one designated client, hand the room the next item.
+      adapter.on('ended', () => {
+        setLocalPlaying(false);
+        setLocalEnded(true);
+        advanceRef.current();
+      }),
       adapter.on('blocked', () => setPlayRefused(true)),
+      // The one adapter event nothing on this page listened to. Every adapter
+      // has emitted it since the interface was written (adapter.ts documents
+      // it), and a failed load therefore left the stage on "Starting…" forever
+      // AND left the room's wait-for-all holding for a member who is never
+      // going to buffer — so the report and the release go together.
+      adapter.on('error', () => {
+        setLoadFailed(true);
+        setLocalBuffering(false);
+        setLocalPlaying(false);
+        connection.syncBuffering(false);
+      }),
       adapter.on('ready', () => {
         setLocalReady(true);
         if (adapter.kind === 'native') {
@@ -405,6 +728,33 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     adapter.load(mediaRef);
   }, [adapter, mediaIdentity]);
 
+  /**
+   * THE SAME END, from the other driver. When the extension plays, this page
+   * builds no adapter at all (see `adapterKind` above), so `adapter.on('ended')`
+   * above can never fire and an extension-driven room used to run one item and
+   * stop there forever — the extension reported the end, and nothing on this
+   * side was listening.
+   *
+   * Subscribed unconditionally rather than only while `extension.driving`: the
+   * bridge opens no port at all without an extension, and gating on a flag that
+   * the end of an item can itself flip is how an end gets dropped.
+   *
+   * The payload names WHICH item ended, in the extension's own spelling, and it
+   * has to match ours or we ignore it — a late end for something the room has
+   * already moved past must not skip the item now playing. `advanceRef` then
+   * de-duplicates per item, which is load-bearing here because nothing upstream
+   * does.
+   */
+  const extensionKey = extensionMediaKey(mediaRef);
+  useEffect(() => {
+    return onEnded((ended) => {
+      if (extensionKey === null || ended.mediaKey !== extensionKey) return;
+      setLocalPlaying(false);
+      setLocalEnded(true);
+      advanceRef.current();
+    });
+  }, [extensionKey]);
+
   useSyncEngine({
     adapter: isFullSyncKind(adapterKind) ? adapter : null,
     playback,
@@ -422,30 +772,50 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   // a stub and be silently dropped. That is what leaves YouTube sitting in its
   // unstarted state behind its own centre overlay. Re-assert once the player
   // is genuinely usable.
+  //
+  // NOT once it has finished. `ended` clears localPlaying while the room still
+  // says playing, so without the latch this fires instantly — and playVideo()
+  // on an ENDED YouTube player restarts it from 0 (HTMLMediaElement.play() does
+  // the same per spec, so a queued .mp4 looped identically). This effect exists
+  // to rescue a stub that dropped a play command, never to resurrect an item
+  // that is over.
   useEffect(() => {
-    if (adapter === null || !fullSync || !localReady || !wantsPlay || localPlaying) return;
+    if (adapter === null || !fullSync || !localReady || !wantsPlay || localPlaying || localEnded)
+      return;
     adapter.play();
-  }, [adapter, fullSync, localReady, wantsPlay, localPlaying, startAttempt]);
+  }, [adapter, fullSync, localReady, wantsPlay, localPlaying, localEnded, startAttempt]);
 
   // Autoplay reality (UX_OVERHAUL B2): browsers refuse playback nobody asked
   // for. NativeAdapter/VimeoAdapter report the refusal outright; the iframe
   // widgets can only be caught by noticing that a ready, un-buffering player
   // still is not running a beat after the room said play.
+  // A player that has FINISHED is also ready, un-buffering and not running, so
+  // it trips this watchdog too — and a follower waiting out the last seconds of
+  // the room's copy would be told its browser refused to start. It did not.
   useEffect(() => {
-    if (!fullSync || !wantsPlay || !localReady || localPlaying || localBuffering) {
+    if (!fullSync || !wantsPlay || !localReady || localPlaying || localBuffering || localEnded) {
       setStartStalled(false);
       return undefined;
     }
     const h = setTimeout(() => setStartStalled(true), 1500);
     return () => clearTimeout(h);
-  }, [fullSync, wantsPlay, localReady, localPlaying, localBuffering, mediaIdentity, startAttempt]);
+  }, [
+    fullSync,
+    wantsPlay,
+    localReady,
+    localPlaying,
+    localBuffering,
+    localEnded,
+    mediaIdentity,
+    startAttempt,
+  ]);
 
   /** Are we driving a player on this device at all? True for every full-sync
    *  source, music or video — it is what decides whether a refused start is
-   *  worth recovering, independent of who draws the surface. Not for Mode B
-   *  (the share owns the stage) and not for approximate-tier embeds (their
-   *  iframe is the only control they have). */
-  const drivenSurface = !showModeB && playback !== null && mediaRef !== null && fullSync;
+   *  worth recovering, independent of who draws the surface. Not while a
+   *  member's screen share holds the stage, and not for approximate-tier
+   *  embeds (their iframe is the only control they have). */
+  const drivenSurface = !shareOnStage && playback !== null && mediaRef !== null && fullSync;
 
   /** Is there provider chrome on screen for us to shield? Only while video
    *  plays: a music item shows the artwork hero and keeps the provider's
@@ -464,6 +834,31 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     localPlaying,
     blocked: playRefused || startStalled,
   });
+
+  /**
+   * The gap between two items (C11). `gate` already owns the two waits that
+   * have their own affordance — the room is paused, or this browser refused to
+   * start — so what is left over a video surface is exactly: the room is
+   * playing this item and our player has not begun it. Across a kind change
+   * that is the whole adapter teardown and rebuild, which showed the bare void.
+   *
+   * Video only. A music item's hero is already a picture of what is coming, and
+   * an approximate-tier embed never reports playing at all, so a wait keyed on
+   * `localPlaying` would sit on it forever.
+   */
+  const cueing = providerSurface && gate === 'none' && !localPlaying && !localEnded && !loadFailed;
+
+  /** …and the failure itself, which is not a wait at all. Same slot, same
+   *  precedence rules: below the shield, and only where we were driving. */
+  const failed = drivenSurface && loadFailed && !localPlaying;
+
+  /** A pasted link with no extension to play it. `adapterKindFor` returns null
+   *  for a page ref on purpose, so nothing else on this stage claims the space. */
+  const pageRef = mediaRef !== null && mediaRef.kind === 'page' ? mediaRef : null;
+  const extensionInstall =
+    extension.state.phase === 'unavailable' || extension.state.phase === 'incompatible'
+      ? extension.state.installUrl
+      : null;
 
   /** The stage's one action: recover a refused start locally, or drive the
    *  room's transport under the same policy gate as the keyboard map. */
@@ -591,7 +986,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
    *  or inline under a music item's hero (there is no moving picture there
    *  for it to get out of the way of). */
   const transportNode =
-    !showModeB && playback !== null && adapterKind !== 'embed' ? (
+    !shareOnStage && playback !== null && adapterKind !== 'embed' ? (
       <PlayerControls
         adapter={adapter}
         playback={playback}
@@ -635,8 +1030,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       </div>
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center">
-        {showModeB ? (
-          <ModeBStage restream={restream} />
+        {shareOnStage ? (
+          <ScreenShareStage restream={restream} />
         ) : extensionDriving ? (
           <ExtensionDrivingStage
             providerName={
@@ -702,14 +1097,29 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                   onActivate={activateStage}
                   {...(transportNode !== null ? { transport: transportNode } : {})}
                 />
-                {/* The audio element is the real player — visualizer taps it. */}
-                <video ref={mediaElRef} className="hidden" playsInline crossOrigin="anonymous" />
+                {/* The audio element is the real player — visualizer taps it.
+                    No crossOrigin here either: see the note on the video
+                    element below, and ListenStage's own same-origin guard. */}
+                <video ref={mediaElRef} className="hidden" playsInline />
               </div>
             ) : (
+              /* NO crossOrigin. It was `anonymous`, unconditionally, on both
+                 media elements — and `crossOrigin` does not mean "please use
+                 CORS if you can": it makes the fetch a CORS request outright,
+                 so every direct .mp4 and .mp3 from a host that does not send
+                 Access-Control-Allow-Origin — most of the web — failed to load
+                 at all. A black stage.
+
+                 What it bought was canvas sampling of CROSS-ORIGIN video for
+                 the ambient glow, which is decoration with a documented aurora
+                 fallback (useAmbientGlow catches the taint), so the trade was
+                 playing nothing in order to tint something. Same-origin media
+                 samples cleanly with no attribute at all, which is where the
+                 glow keeps working; everywhere else it falls back, exactly as
+                 that function already said it would. */
               <video
                 ref={mediaElRef}
                 playsInline
-                crossOrigin="anonymous"
                 className={cn(
                   'max-h-full max-w-full bg-black',
                   adapterKind === 'native' ? '' : 'hidden',
@@ -718,6 +1128,32 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
               />
             )}
             {mediaRef === null && <EmptyStage />}
+            {pageRef !== null && (
+              <PageLinkStage
+                url={pageRef.url}
+                title={currentItem?.title ?? null}
+                installUrl={extensionInstall}
+              />
+            )}
+            {/* The item is on its way. Below the shield (z-10) and inert, so
+                the one play affordance stays the one play affordance; keyed on
+                the item so consecutive track changes each get the transition
+                rather than one long-lived element that animates once. */}
+            {cueing && (
+              <div key={mediaIdentity} className="pointer-events-none absolute inset-0 z-0">
+                <CueingStage title={currentItem?.title ?? null} />
+              </div>
+            )}
+            {failed && (
+              // Opaque, and at the shield's own layer. There is nothing behind
+              // this worth seeing — a dead player, or (in a listen room) an
+              // artwork hero whose own z-10 content would otherwise bury the
+              // one sentence explaining why nothing is coming out of it.
+              // Inert, so the transport above it stays reachable.
+              <div className="pointer-events-none absolute inset-0 z-10 bg-surface-0">
+                <LoadFailedStage title={currentItem?.title ?? null} />
+              </div>
+            )}
             {/* One shield over every full-sync provider: the provider's own
                 play overlay is unreachable, and while we are paused or the
                 browser refused to start, invisible too. */}
@@ -736,7 +1172,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         <EmoteOverlay />
       </div>
 
-      {/* waiting-for-all honesty + relay badge + Mode B entry */}
+      {/* waiting-for-all honesty + relay badge + screen-share entry */}
       <div className="pointer-events-none absolute right-4 top-4 z-20 flex flex-col items-end gap-2">
         <Badge variant="muted" className="pointer-events-auto">
           {RELAY_LABEL[room.relayMode]}
@@ -746,7 +1182,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
             Waiting for {waitingOn.length} to buffer…
           </Badge>
         )}
-        {!showModeB && (
+        {!shareOnStage && (
           <Button
             variant="secondary"
             size="sm"
@@ -779,11 +1215,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         </div>
       )}
 
-      {/* Mode B hosting entry (when no one is sharing) */}
+      {/* Screen-share hosting entry (when no one is sharing) */}
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent aria-label="Share your screen">
           <DialogTitle>Share your screen</DialogTitle>
-          <ModeBStage
+          <ScreenShareStage
             restream={
               restream ?? {
                 active: false,

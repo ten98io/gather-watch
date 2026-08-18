@@ -8,14 +8,17 @@
  * RoomConnection store; sends are ClientEvents (never optimistic).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Message, MessageId, RoomId, UserId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { canAct } from '@/lib/permissions';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
+import { unreadChatCount } from '@/lib/room-connection';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useTabBadge, useTabPanelActive } from '@/components/ui/tabs';
 import { cn } from '@/lib/cn';
 import { Composer } from './Composer';
 import type { Mentionable } from './Composer';
@@ -85,33 +88,109 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
 
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const historyExhausted = connection.useRoomState((s) => s.chatHistoryExhausted);
+  const chatSeenSeq = connection.useRoomState((s) => s.chatSeenSeq);
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchQ, setSearchQ] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [tick, setTick] = useState(0); // prunes typing indicators once a second
-  const lastReadSentRef = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
+  /**
+   * Roving tab stop over the message log. Message actions live behind a
+   * context menu, and the keyboard Menu key fires `contextmenu` on the FOCUSED
+   * element — so messages must be focusable. Making all 300 focusable would
+   * bury the composer behind 300 tab stops, so exactly one message is in the
+   * tab order and Arrow keys move it. Index is into the rendered `messages`
+   * window; -1 until the user first arrows in.
+   */
+  const [rovingIndex, setRovingIndex] = useState(-1);
 
   useEffect(() => {
     const h = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(h);
   }, []);
 
-  // Read cursor: advance to the newest seq (once per seq).
+  /**
+   * Read cursor and unread badge, which are the same fact seen from two sides.
+   *
+   * This pane is one of three tabs and is no longer torn down when you leave
+   * it (components/ui/tabs.tsx keeps inactive panels mounted), so "the newest
+   * message arrived" and "you have seen the newest message" stopped being the
+   * same event: rendering off-screen is not reading. Seen advances only while
+   * this is the tab on screen; everything past the seen mark, from anyone else,
+   * is what the Chat trigger counts.
+   */
+  const paneActive = useTabPanelActive();
   const latestSeq = messages.length > 0 ? (messages[messages.length - 1]?.seq ?? 0) : 0;
   useEffect(() => {
-    if (latestSeq > lastReadSentRef.current) {
-      lastReadSentRef.current = latestSeq;
-      connection.chatRead(latestSeq);
-    }
-  }, [connection, latestSeq]);
+    if (paneActive) connection.markChatSeen(latestSeq);
+  }, [connection, latestSeq, paneActive]);
+  const unread = useMemo(
+    () => unreadChatCount(messages, chatSeenSeq, me),
+    [messages, chatSeenSeq, me],
+  );
+  useTabBadge(paneActive ? 0 : unread);
 
-  // Stick to bottom for new messages unless the user scrolled up.
+  /**
+   * Stick to bottom for new messages unless the user scrolled up.
+   *
+   * Keyed on the NEWEST SEQ, never on `messages.length`. The window is capped
+   * at MAX_MESSAGES (300) by insertMessage, so past that point every new
+   * message shifts the window without changing its length — a length
+   * dependency freezes at 300 and this effect stops running for the rest of
+   * the session. Messages keep arriving and rendering; the viewport just stops
+   * following them, which reads exactly like a dead socket and survives every
+   * transport fix. seq is monotonic, so it moves on every message forever.
+   *
+   * Also keyed on `paneActive`. A hidden panel is display:none, where
+   * scrollHeight is 0 and the browser keeps no scroll offset — so writing the
+   * offset while away is a no-op that leaves the log parked at the top the
+   * moment it is shown again. Re-running on the way back is what puts you at
+   * the newest message, which is where someone who just cleared an unread
+   * badge is going.
+   *
+   * Deliberately a plain effect, not useLayoutEffect: this is a client
+   * component that Next still renders on the server, where useLayoutEffect
+   * warns. The one-frame settle is the cheaper trade.
+   */
   useEffect(() => {
+    if (!paneActive) return;
     const el = listRef.current;
     if (el !== null && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+  }, [latestSeq, paneActive]);
+
+  /**
+   * The one message in the tab order. Defaults to the newest — Tab from the
+   * composer should land on what just arrived, not on 300-messages-ago — and
+   * is clamped so a pruned or paginated window can never strand the tab stop
+   * on an index that no longer renders.
+   */
+  const activeMessageIndex =
+    messages.length === 0
+      ? -1
+      : rovingIndex < 0
+        ? messages.length - 1
+        : Math.min(rovingIndex, messages.length - 1);
+
+  /**
+   * Arrow-key navigation between messages. Only acts when focus is already on
+   * a message — otherwise Arrow keys inside the edit input, a link, or the
+   * search field would be stolen from the control the user is actually in.
+   */
+  const onListKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const el = listRef.current;
+    if (el === null) return;
+    const items = [...el.querySelectorAll<HTMLElement>('[data-msg-focusable]')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    if (at === -1) return;
+    e.preventDefault();
+    // Clamped, not wrapping: arrowing off the end of a chat log should stop at
+    // the newest message, not jump back to the oldest.
+    const next = Math.min(items.length - 1, Math.max(0, at + (e.key === 'ArrowDown' ? 1 : -1)));
+    setRovingIndex(next);
+    items[next]?.focus();
+  };
 
   const onScroll = (): void => {
     const el = listRef.current;
@@ -265,6 +344,7 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
       <div
         ref={listRef}
         onScroll={onScroll}
+        onKeyDown={onListKeyDown}
         aria-live="polite"
         className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2"
       >
@@ -314,6 +394,7 @@ export function ChatPane({ roomId }: { roomId: RoomId }) {
                     : undefined
                 }
                 highlighted={m.mentions.includes(me)}
+                tabIndex={i === activeMessageIndex ? 0 : -1}
                 onReply={setReplyTo}
                 onJump={jumpTo}
               />

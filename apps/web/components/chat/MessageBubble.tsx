@@ -3,13 +3,26 @@
 /**
  * MessageBubble — one chat message: quote, markdown-lite body, gif /
  * attachment / voice rendering, reactions with counts, tombstones, and the
- * hover action bar (react / reply / edit / delete / pin). Author accent
+ * right-click action menu (react / reply / edit / delete / pin). Author accent
  * leading edge on group starts (DESIGN.md §8); bubbles pop in with a spring.
+ *
+ * Actions live behind a context menu rather than a hover bar. The hover bar
+ * cost a row of layout under every message the pointer crossed, so the log
+ * reflowed as you moved through it, and it was unreachable without a pointer.
+ * The menu opens on right-click, on long-press (touch), and on the keyboard
+ * Menu key — the bubble carries `tabIndex` from `triggerProps` so that last
+ * one has somewhere to land.
  */
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import type { Message, MessageId, UserId } from '@gather/contracts';
 import { Button } from '@/components/ui/button';
+import {
+  ContextMenu,
+  ContextMenuItem,
+  ContextMenuRow,
+  useContextMenuTrigger,
+} from '@/components/ui/context-menu';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
@@ -96,6 +109,7 @@ export function MessageBubble({
   replyTarget,
   replyTargetName,
   highlighted,
+  tabIndex,
   onReply,
   onJump,
 }: {
@@ -110,12 +124,14 @@ export function MessageBubble({
   replyTargetName: string | undefined;
   /** I am @mentioned — aurora highlight (spec: mentions with highlight). */
   highlighted: boolean;
+  /** Roving tab stop: 0 for the log's one reachable message, -1 otherwise. */
+  tabIndex: number;
   onReply(msg: Message): void;
   onJump?(messageId: MessageId): void;
 }) {
   const connection = useRoomConnection();
   const reduced = useReducedMotion();
-  const [hover, setHover] = useState(false);
+  const { point, close, triggerProps } = useContextMenuTrigger();
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(msg.body);
   const mine = msg.authorId === me;
@@ -144,15 +160,21 @@ export function MessageBubble({
       animate={{ opacity: 1, scale: 1 }}
       transition={reduced ? { duration: 0.15 } : { type: 'spring', stiffness: 260, damping: 30 }}
       className={cn('group flex flex-col', mine && 'items-end')}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
     >
       {groupStart && !mine && (
         <span className="mb-0.5 ml-1 text-xs text-low">{authorName}</span>
       )}
       <div
+        {...triggerProps}
+        // Roving tab stop: the log owns which message is reachable, so a
+        // 300-message window costs ONE tab stop, not 300. Overrides the
+        // hook's default of 0 — order matters, this must follow the spread.
+        tabIndex={tabIndex}
+        data-msg-focusable=""
+        aria-label={`Message from ${authorName}. Press the menu key for actions.`}
         className={cn(
           'relative max-w-[85%] rounded-card border border-border-glass px-3 py-2',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           mine ? 'bg-[rgba(149,91,254,0.16)]' : 'glass-raised',
           !mine && groupStart && 'border-l-2',
           highlighted && 'ring-1 ring-aurora-3',
@@ -234,63 +256,69 @@ export function MessageBubble({
         </div>
       )}
 
-      {hover && !editing && (
-        <div className={cn('mt-1 flex flex-wrap gap-1', mine && 'justify-end')}>
-          {QUICK_REACTIONS.map((emoji) => (
-            <Button
-              key={emoji}
-              variant="secondary"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => {
-                const users = msg.reactions[emoji] ?? [];
-                connection.chatReact(msg.id, emoji, users.includes(me) ? 'remove' : 'add');
-              }}
-            >
-              {emoji}
-            </Button>
-          ))}
-          <Button variant="secondary" size="sm" className="h-7 px-2 text-xs" onClick={() => onReply(msg)}>
+      {/* Editing owns the bubble outright — offering Edit/Delete on top of an
+          open editor is two ways to change one message at the same time. */}
+      {!editing && (
+        <ContextMenu point={point} onClose={close} label="Message actions">
+          <ContextMenuRow>
+            {QUICK_REACTIONS.map((emoji) => {
+              const users = msg.reactions[emoji] ?? [];
+              const reacted = users.includes(me);
+              return (
+                <Button
+                  key={emoji}
+                  variant="secondary"
+                  size="sm"
+                  role="menuitem"
+                  aria-pressed={reacted}
+                  aria-label={reacted ? `Remove ${emoji} reaction` : `React ${emoji}`}
+                  className="h-8 w-9 px-0 text-sm"
+                  onClick={() => {
+                    connection.chatReact(msg.id, emoji, reacted ? 'remove' : 'add');
+                    close();
+                  }}
+                >
+                  {emoji}
+                </Button>
+              );
+            })}
+          </ContextMenuRow>
+          <ContextMenuItem onSelect={() => onReply(msg)} onClose={close}>
             Reply
-          </Button>
+          </ContextMenuItem>
           {mine && msg.kind === 'text' && (
-            <Button
-              variant="secondary"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => {
+            <ContextMenuItem
+              onSelect={() => {
                 setEditDraft(msg.body);
                 setEditing(true);
               }}
+              onClose={close}
             >
               Edit
-            </Button>
-          )}
-          {(mine || canModerate) && (
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => connection.chatDelete(msg.id)}
-            >
-              Delete
-            </Button>
+            </ContextMenuItem>
           )}
           {canModerate && (
-            <Button
-              variant="secondary"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={() => {
+            <ContextMenuItem
+              onSelect={() => {
                 void api.messages
                   .pinMessage(msg.roomId, { messageId: msg.id, pinned: !msg.pinned })
                   .catch(() => toast.error('Could not update the pin'));
               }}
+              onClose={close}
             >
               {msg.pinned ? 'Unpin' : 'Pin'}
-            </Button>
+            </ContextMenuItem>
           )}
-        </div>
+          {(mine || canModerate) && (
+            <ContextMenuItem
+              destructive
+              onSelect={() => connection.chatDelete(msg.id)}
+              onClose={close}
+            >
+              Delete
+            </ContextMenuItem>
+          )}
+        </ContextMenu>
       )}
     </motion.div>
   );

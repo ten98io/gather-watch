@@ -13,10 +13,10 @@ export const modules: ModulePlugin[] = [
   (await import('./sync/index')).default,
   (await import('./queue/index')).default,
   (await import('./metadata/index')).default,
-  (await import('./billing/index')).default,
   (await import('./rtc/index')).default,
   (await import('./compliance/index')).default,
   (await import('./restream/index')).default,
+  (await import('./push/index')).default,
   (await import('./rooms/index')).default,
   (await import('./admin/index')).default,
 ];

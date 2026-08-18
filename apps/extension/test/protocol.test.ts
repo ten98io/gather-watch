@@ -230,6 +230,15 @@ describe('response and event encoding', () => {
     expect(ev?.event).toBe('telemetry');
     expect(ev?.payload).toEqual({ positionMs: 10, durationMs: 20 });
   });
+
+  /** The end of an item is its own event, not a telemetry sample and not a
+   *  pause — a page that reads it as either cannot advance a queue. */
+  it('round-trips the end of the driven item', () => {
+    const payload = { positionMs: 5_400_000, durationMs: 5_400_000, mediaKey: 'url:x', at: 7 };
+    const ev = readEvent(eventMessage('ended', payload));
+    expect(ev?.event).toBe('ended');
+    expect(ev?.payload).toEqual(payload);
+  });
 });
 
 /* ── advertised capabilities ── */
@@ -238,7 +247,7 @@ describe('EXTENSION_CAPABILITIES', () => {
   /** Pages branch on the ABSENCE of a capability, so a name that shipped can
    *  never be renamed or dropped — only added to. */
   it('still advertises everything that has ever shipped', () => {
-    for (const capability of ['handoff', 'telemetry', 'capability', 'release', 'modeB']) {
+    for (const capability of ['handoff', 'telemetry', 'capability', 'release', 'modeB', 'ended']) {
       expect(EXTENSION_CAPABILITIES, capability).toContain(capability);
     }
   });

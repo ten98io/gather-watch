@@ -8,8 +8,15 @@
  *    playback renders but is NOT drift-corrected on mobile — the room stays
  *    in sync only via play/pause/seek commands being issued at roughly the
  *    same server time. A native YT bridge is a follow-up milestone.
+ *  - page MediaRef → honest boundary panel. A page item is a LINK; only the
+ *    browser extension can play one, and there is no extension on mobile.
  *  - Mode B (restream.state active) → honest boundary panel (native viewing
  *    needs the the relay call module; see CallBar.tsx).
+ *
+ * A new MediaRef member MUST be decided here, not defaulted: an unhandled kind
+ * has no native source and no embed, so it lands on the native player and
+ * renders a black box with no message. That is the bug the `page` kind
+ * shipped. The embedUri switch below is exhaustive so typecheck says so.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -23,9 +30,23 @@ import type { MemberRole, PlaybackState, RoomKind } from '@gather/contracts';
 import type { RoomConnection } from '../room-connection';
 import { canAct } from '../permissions';
 import { useSyncEngine } from '../sync/useSyncEngine';
+import { roomVoiceActive } from '../sync/voice';
 import { auroraGradient, layout, palette, radii, spacing, type as typeScale } from '../theme';
 
 const RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+
+/**
+ * Host of an http(s) URL, for showing a person where a link goes. Read off the
+ * string rather than via `new URL()`: React Native's URL polyfill does not
+ * reliably populate `hostname`, and a wrong host in this panel is worse than
+ * no host. Returns null when there is nothing trustworthy to show.
+ */
+function hostOf(url: string): string | null {
+  const authority = /^https?:\/\/([^/?#]+)/i.exec(url)?.[1];
+  if (authority === undefined) return null;
+  const host = authority.replace(/^[^@]*@/, '').replace(/:\d+$/, '');
+  return host === '' ? null : host;
+}
 
 function formatMs(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -167,6 +188,28 @@ function EmbedStage(props: { uri: string; label: string }) {
   );
 }
 
+/**
+ * A page item is a link, not a stream. Nothing on this device can play it, so
+ * the stage says where it went instead of mounting a player against nothing —
+ * the same trade web makes for a page item, minus the extension branch, which
+ * mobile has no equivalent of.
+ */
+function PageStage(props: { url: string }) {
+  const host = hostOf(props.url);
+  return (
+    <View style={styles.stageBody}>
+      <Text style={styles.modeBTitle}>
+        {host === null ? 'This one plays in a browser' : `Playing on ${host}`}
+      </Text>
+      <Text style={styles.limitation}>
+        This item is a link, not a stream. The Gather browser extension plays it on each
+        person’s own screen, and there’s no extension on mobile — open the room in a
+        browser to watch along. Chat, the queue and the call keep working here.
+      </Text>
+    </View>
+  );
+}
+
 export function Stage(props: {
   conn: RoomConnection;
   kind: RoomKind;
@@ -177,6 +220,11 @@ export function Stage(props: {
   const restream = useStore(conn.store, (s) => s.restream);
   const room = useStore(conn.store, (s) => s.room);
   const waitingOn = useStore(conn.store, (s) => s.waitingOn);
+  /* E17 — somebody in the room is on mic, so the elastic band tightens
+     (src/sync/voice.ts). Presence, not measured speech: this changes when
+     people join or leave a call, which is the timescale the band's 2 s / 8 s
+     ramps are built for. */
+  const voiceActive = useStore(conn.store, roomVoiceActive);
 
   const mediaRef = playback?.mediaRef ?? null;
   const nativeSource = useMemo(() => {
@@ -184,23 +232,45 @@ export function Stage(props: {
     return { uri: mediaRef.url };
   }, [mediaRef]);
 
-  /** WebView embed URL for the no-native-player kinds (approximate sync). */
+  /**
+   * WebView embed URL for the no-native-player kinds (approximate sync).
+   *
+   * EXHAUSTIVE SWITCH ON PURPOSE. This was an if-chain, and an if-chain is how
+   * the `page` kind reached production unhandled: a new MediaRef member fell
+   * off the end as `null`, and typecheck had nothing to say about it. The
+   * `never` assignment makes the NEXT new kind a compile error right here,
+   * where the decision has to be made. Delete a case to see it fail.
+   */
   const embedUri = useMemo(() => {
     if (mediaRef === null) return null;
-    if (mediaRef.kind === 'youtube') {
-      return `https://www.youtube.com/embed/${mediaRef.videoId}?playsinline=1&rel=0`;
+    switch (mediaRef.kind) {
+      case 'youtube':
+        return `https://www.youtube.com/embed/${mediaRef.videoId}?playsinline=1&rel=0`;
+      case 'soundcloud':
+        return `https://w.soundcloud.com/player/?url=${encodeURIComponent(mediaRef.url)}&auto_play=false`;
+      case 'vimeo':
+        return `https://player.vimeo.com/video/${mediaRef.videoId}`;
+      case 'embed':
+        return mediaRef.embedUrl;
+      // Deliberately not embeds: hls/url have a native player, and `page` has
+      // no player on this device at all (see PageStage).
+      case 'hls':
+      case 'url':
+      case 'page':
+        return null;
+      default: {
+        const unhandled: never = mediaRef;
+        return unhandled;
+      }
     }
-    if (mediaRef.kind === 'soundcloud') {
-      return `https://w.soundcloud.com/player/?url=${encodeURIComponent(mediaRef.url)}&auto_play=false`;
-    }
-    if (mediaRef.kind === 'vimeo') {
-      return `https://player.vimeo.com/video/${mediaRef.videoId}`;
-    }
-    if (mediaRef.kind === 'embed') {
-      return mediaRef.embedUrl;
-    }
-    return null;
   }, [mediaRef]);
+
+  /**
+   * A page item has neither a native source nor an embed — it is the one kind
+   * with no player on this device at all, so it gets its own branch instead of
+   * falling through to a VideoView pointed at nothing.
+   */
+  const pageUrl = useMemo(() => (mediaRef?.kind === 'page' ? mediaRef.url : null), [mediaRef]);
 
   const player = useVideoPlayer(nativeSource, (p) => {
     p.timeUpdateEventInterval = 0.5;
@@ -210,6 +280,7 @@ export function Stage(props: {
     player: nativeSource === null ? null : player,
     playback,
     clock: conn.clock,
+    voiceActive,
   });
 
   // Buffering reports drive the server's wait-for-all coordination.
@@ -254,6 +325,8 @@ export function Stage(props: {
             Add to the queue from the Queue tab — everyone’s player follows along.
           </Text>
         </View>
+      ) : pageUrl !== null ? (
+        <PageStage url={pageUrl} />
       ) : embedUri !== null ? (
         <EmbedStage
           uri={embedUri}

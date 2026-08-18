@@ -32,6 +32,13 @@ export function mediaKindFor(ref: MediaRef | null): MediaKind | null {
       // The id space is shared with YouTube Music; the parse-time flag is the
       // only place the origin survives into the MediaRef.
       return ref.music === true ? 'music' : 'video';
+    case 'page':
+      // An arbitrary page is whatever the extension finds once it opens it —
+      // not something the url can be read for. 'video' is the honest default:
+      // it is the composition that shows the item rather than folding it into
+      // an audio-only shell, and 'watching' is the same presence the
+      // extension's own generic profile reports (driver.ts profileForContent).
+      return 'video';
     case 'vimeo':
     case 'hls':
       return 'video';

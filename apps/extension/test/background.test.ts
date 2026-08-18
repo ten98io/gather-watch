@@ -130,6 +130,8 @@ interface ChromeFake {
   store: Record<string, unknown>;
   onMessage: FakeEvent<MessageListener>;
   onRemoved: FakeEvent<(tabId: number) => void>;
+  /** The web app's event port arrives here — see openEventPort. */
+  onConnectExternal: FakeEvent<(port: unknown) => void>;
 }
 
 function evt<F = () => void>(): FakeEvent<F> {
@@ -146,6 +148,7 @@ function evt<F = () => void>(): FakeEvent<F> {
 function installChromeFake(): ChromeFake {
   const onMessage = evt<MessageListener>();
   const onRemoved = evt<(tabId: number) => void>();
+  const onConnectExternal = evt<(port: unknown) => void>();
   const state: ChromeFake = {
     desktopCalls: [],
     tabCaptureCalls: [],
@@ -164,13 +167,14 @@ function installChromeFake(): ChromeFake {
     store: {},
     onMessage,
     onRemoved,
+    onConnectExternal,
   };
 
   const chrome = {
     runtime: {
       onMessage,
       onMessageExternal: evt(),
-      onConnectExternal: evt(),
+      onConnectExternal,
       onSuspend: evt(),
       getManifest: () => ({ version: '0.1.0' }),
       sendMessage: async (msg: Record<string, unknown>) => {
@@ -261,8 +265,12 @@ function installChromeFake(): ChromeFake {
 /** The guest join the popup path performs before a room can be shared. */
 /** Mutable so a test can express "the user opened a DIFFERENT room". */
 let joinRoomId = 'room_1';
+/** Mutable so a test can express "nothing on this path named the user" —
+ *  which is the web-handoff path's normal state, and the state a share must
+ *  never be signed in. */
+let joinUserId: string | null = 'user_1';
 const GUEST_WIRE = (): Record<string, unknown> => ({
-  user: { id: 'user_1' },
+  ...(joinUserId === null ? {} : { user: { id: joinUserId } }),
   room: { id: joinRoomId, name: 'Movie night' },
   accessToken: 'tok_abc',
 });
@@ -276,6 +284,8 @@ let membersWire: Record<string, unknown> = {};
 let roomWire: Record<string, unknown> = {};
 /** Every URL the worker fetched, so a test can say what it did NOT fetch. */
 let fetched: string[] = [];
+/** Make GET /rooms/:id never answer, as a dead network does. */
+let hangRoomFetch = false;
 
 let fake: ChromeFake;
 let bg: typeof import('../src/background');
@@ -285,6 +295,9 @@ beforeAll(async () => {
   globalThis.fetch = (async (url: string) => {
     const u = String(url);
     fetched.push(u);
+    // A request that never settles — not a rejection, which every caller
+    // already handles, but the silence a dead network actually produces.
+    if (hangRoomFetch && /\/rooms\/[^/]+$/.test(u)) return new Promise(() => undefined);
     const body = u.includes('/members')
       ? membersWire
       : /\/rooms\/[^/]+$/.test(u)
@@ -310,6 +323,7 @@ beforeEach(() => {
   membersWire = {};
   roomWire = {};
   fetched = [];
+  hangRoomFetch = false;
   fake.nextPick = { streamId: 'desktop-stream-1', canRequestAudioTrack: false };
   fake.nextTabStreamId = 'tab-stream-1';
   fake.nextShareReply = { ok: true, audio: true, note: '' };
@@ -318,6 +332,7 @@ beforeEach(() => {
   fake.offscreenClosed = 0;
   for (const key of Object.keys(fake.store)) delete fake.store[key];
   joinRoomId = 'room_1';
+  joinUserId = 'user_1';
   fake.stopBeforeClose = null;
   fake.offscreenBroken = false;
   fake.activeTab = { id: 7, url: 'https://example.com/watch' };
@@ -377,7 +392,7 @@ async function closeTab(tabId: number): Promise<void> {
 
 /* ── injected deps, so the plan can be tested without a browser ── */
 
-const ROOM: ShareRoom = { roomId: 'room_1', accessToken: 'tok_abc', tabId: 7 };
+const ROOM: ShareRoom = { roomId: 'room_1', accessToken: 'tok_abc', tabId: 7, userId: 'user_1' };
 
 const NETFLIX: ProviderSummary = { id: 'netflix', name: 'Netflix', tier: 'drm' };
 const YOUTUBE: ProviderSummary = { id: 'youtube', name: 'YouTube', tier: 'api' };
@@ -450,6 +465,9 @@ describe('planShare — tab (the original Mode B path)', () => {
       streamId: 'tab-stream-9',
       roomId: 'room_1',
       accessToken: 'tok_abc',
+      // Who the share is FROM. Every viewer derives the pair's connectionId
+      // from it, so a message without it is a share nobody can receive.
+      userId: 'user_1',
       source: 'tab',
       canRequestAudioTrack: true,
     });
@@ -514,6 +532,7 @@ describe('planShare — screen and window', () => {
       streamId: 'screen-77',
       roomId: 'room_1',
       accessToken: 'tok_abc',
+      userId: 'user_1',
       source: 'desktop',
       canRequestAudioTrack: true,
     });
@@ -645,6 +664,7 @@ describe('sharing a room', () => {
       streamId: 'tab-stream-1',
       roomId: 'room_1',
       accessToken: 'tok_abc',
+      userId: 'user_1',
       source: 'tab',
       canRequestAudioTrack: true,
     });
@@ -744,6 +764,103 @@ describe('sharing a room', () => {
   });
 });
 
+/* ── who the share is from ── */
+
+/**
+ * D2. The offscreen document signs every signalling frame as whoever this
+ * message says it is, and the server stamps the sender's id from the
+ * authenticated socket — so the two must be the same person or every frame in
+ * both directions fails the receiving mesh's connectionId guard. The share
+ * then connects to nobody while telling the sharer it started.
+ */
+describe('the share knows who is sharing', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('sends the id the room issued at guest join', async () => {
+    joinUserId = 'user_77';
+    await connectRoom();
+
+    await share('tab');
+
+    const start = fake.sent.find((m) => m['kind'] === 'startShare');
+    expect(start?.['userId']).toBe('user_77');
+  });
+
+  /**
+   * The handoff path is the one that matters: the web app hands over a room id
+   * and a token and NOTHING about who the user is — deliberately, because a
+   * page may not tell this worker who it is talking to. The token names them,
+   * so the room's own record does too.
+   */
+  it('learns the id from the room’s own record when nothing else named it', async () => {
+    joinUserId = null;
+    roomWire = { room: { policies: { playbackControl: 'everyone' } }, member: { role: 'host', userId: 'user_from_room' } };
+    await connectRoom();
+    // loadRoomAccess is fire-and-forget; let it land, as a real click would.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await share('tab');
+
+    const start = fake.sent.find((m) => m['kind'] === 'startShare');
+    expect(start?.['userId']).toBe('user_from_room');
+    expect(fetched.some((u) => /\/rooms\/room_1$/.test(u))).toBe(true);
+  });
+
+  it('fetches the id on demand when the share is the first thing to need it', async () => {
+    joinUserId = null;
+    roomWire = { member: { role: 'member', userId: 'user_late' } };
+    await connectRoom();
+
+    // No settling wait at all: the share itself must go and find out.
+    const res = await share('tab');
+
+    expect(res.shared).toBe(true);
+    expect(fake.sent.find((m) => m['kind'] === 'startShare')?.['userId']).toBe('user_late');
+  });
+
+  /**
+   * The look-up sits in front of a button a person just pressed, and the
+   * request behind it has no timeout of its own. A dead network must cost
+   * them a sentence, never a Share button that never answers.
+   */
+  it('gives up waiting rather than leaving the share button hanging', async () => {
+    joinUserId = null;
+    await connectRoom();
+    hangRoomFetch = true;
+    vi.useFakeTimers();
+    try {
+      const pending = share('tab');
+      await vi.advanceTimersByTimeAsync(5000);
+      const res = await pending;
+      expect(res.shared).toBe(false);
+      expect(res.note).toMatch(/moment|again/i);
+      expect(fake.offscreenCreated).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses rather than capturing for a room that cannot place us', async () => {
+    joinUserId = null;
+    roomWire = {}; // the API said nothing useful about who we are
+    await connectRoom();
+
+    const res = await share('tab');
+
+    expect(res.shared).toBe(false);
+    expect(res.cancelled).toBe(false);
+    // A sentence, not a code, and it says what will fix it.
+    expect(res.note).toMatch(/moment|again/i);
+    // Nothing was captured, nothing was opened, nothing claims to be sharing.
+    expect(fake.sent.some((m) => m['kind'] === 'startShare')).toBe(false);
+    expect(fake.offscreenCreated).toBe(0);
+    expect(fake.tabCaptureCalls).toEqual([]);
+    expect((await status()).sharing).toBe(false);
+  });
+});
+
 describe('stopping a share that is not there', () => {
   afterEach(async () => {
     await ask({ kind: 'popup:disconnect' });
@@ -794,9 +911,16 @@ function claimFrom(tabId: number, frameId: number, metrics: unknown = PLAYER_CLA
 }
 
 /** The room's playback, as sync.state delivers it. */
-function playbackAt(positionMs: number): Record<string, unknown> {
+function playbackAt(
+  positionMs: number,
+  mediaRef: Record<string, unknown> = {
+    kind: 'url',
+    url: 'https://cdn.example.com/feature.m3u8',
+    mime: 'video/mp4',
+  },
+): Record<string, unknown> {
   return {
-    mediaRef: { kind: 'url', url: 'https://cdn.example.com/feature.m3u8', mime: 'video/mp4' },
+    mediaRef,
     positionMs,
     rate: 1,
     playing: true,
@@ -805,6 +929,9 @@ function playbackAt(positionMs: number): Record<string, unknown> {
     queueIndex: null,
   };
 }
+
+/** An arbitrary web page in the queue — what the registry used to refuse. */
+const PAGE_REF = (url = 'https://some.site/article') => ({ kind: 'page', url });
 
 const messagesOfKind = (kind: string): TabMessage[] =>
   fake.tabMessages.filter((m) => m.msg['kind'] === kind);
@@ -902,6 +1029,69 @@ describe('driving a tab', () => {
       { tab: { id: 7 }, frameId: 3 },
     );
     expect((await status()).telemetry?.positionMs).toBe(222);
+  });
+});
+
+/* ── E19: an arbitrary page, driven like anything else ── */
+
+/**
+ * The whole promise of the generic driver: the room queues a plain web page,
+ * and whichever frame of the driven tab found a <video> follows the room on
+ * it. Nothing about a page is special to this worker — which is the point, and
+ * is exactly what these tests pin, because the worker used to have no key for
+ * such an item at all and every one of them looked like the same nameless
+ * thing to the drift controller.
+ */
+describe('a page in the queue is driven like any other item', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('drives the elected frame for a page ref', async () => {
+    await connectRoom();
+    room.emit('sync.state', playbackAt(0, PAGE_REF()));
+    claimFrom(7, 3);
+
+    expect(rolesSent()).toContainEqual({ frameId: 3, role: 'driver' });
+    expect(drivenFrames()).toEqual([3]);
+  });
+
+  it('names the page when its end is reported, so a late end can be matched', async () => {
+    const web = openEventPort();
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('sync.state', playbackAt(600_000, PAGE_REF('https://some.site/film')));
+
+    notify(
+      { kind: 'mediaEnded', positionMs: 5_400_000, durationMs: 5_400_000 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+
+    const payload = web.posted.filter((m) => m['event'] === 'ended')[0]?.['payload'] as
+      | Record<string, unknown>
+      | undefined;
+    // Not undefined: a page used to fall off the end of mediaKeyOf's switch,
+    // so every page in a room shared one nameless identity.
+    expect(payload?.['mediaKey']).toBe('page:https://some.site/film');
+  });
+
+  it('keeps driving a page as the room moves, tick after tick', async () => {
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('sync.state', playbackAt(0, PAGE_REF()));
+    fake.tabMessages.length = 0;
+
+    // Telemetry from a real player on that page, then the room moves on.
+    notify(
+      { kind: 'telemetry', positionMs: 0, durationMs: 5_400_000, playing: true, rate: 1 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+    room.emit('sync.state', playbackAt(600_000, PAGE_REF()));
+
+    // 600 s adrift on a page is 600 s adrift on anything: it is corrected.
+    const drive = messagesOfKind('drive').at(-1);
+    expect(drive?.frameId).toBe(3);
+    expect((drive?.msg['elastic'] as Record<string, unknown>)['seekToMs']).not.toBeNull();
   });
 });
 
@@ -1069,6 +1259,103 @@ describe("a user's gesture on the driven player becomes room intent", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+/* ── the end of the driven item, on its own event ── */
+
+/**
+ * The web app's event port, exactly as `runtime.connect` from an allowlisted
+ * origin produces one: a name that carries the protocol version, a sender the
+ * browser populated, and somewhere for the worker's events to land.
+ */
+function openEventPort(): { posted: Array<Record<string, unknown>> } {
+  const posted: Array<Record<string, unknown>> = [];
+  const port = {
+    name: 'gather.ext.events.v1',
+    sender: { origin: 'http://localhost:3000', url: 'http://localhost:3000/room/room_1' },
+    postMessage: (msg: Record<string, unknown>) => {
+      posted.push(msg);
+    },
+    disconnect: () => undefined,
+    onDisconnect: { addListener: () => undefined },
+  };
+  for (const listener of fake.onConnectExternal.listeners) {
+    (listener as unknown as (p: unknown) => void)(port);
+  }
+  posted.length = 0; // drop the opening status snapshot
+  return { posted };
+}
+
+describe('the driven item running out', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  async function openDrivenRoom(): Promise<void> {
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('sync.state', playbackAt(600_000));
+  }
+
+  function endedFrom(
+    frameId: number,
+    over: { positionMs?: unknown; durationMs?: unknown } = {},
+    tabId = 7,
+  ): void {
+    notify(
+      {
+        kind: 'mediaEnded',
+        positionMs: over.positionMs ?? 5_400_000,
+        durationMs: over.durationMs ?? 5_400_000,
+      },
+      { tab: { id: tabId }, frameId },
+    );
+  }
+
+  const endEvents = (posted: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+    posted.filter((m) => m['event'] === 'ended');
+
+  it('reaches the web app as its own event, never as a pause', async () => {
+    const web = openEventPort();
+    await openDrivenRoom();
+
+    endedFrom(3);
+
+    const [event] = endEvents(web.posted);
+    expect(event).toBeDefined();
+    const payload = event?.['payload'] as Record<string, unknown>;
+    expect(payload['positionMs']).toBe(5_400_000);
+    // The duration travels with it: the page cannot clamp its projection to an
+    // item it does not know the length of.
+    expect(payload['durationMs']).toBe(5_400_000);
+    expect(payload['mediaKey']).toBe('url:https://cdn.example.com/feature.m3u8');
+    // The end is a fact about the media. Nobody paused anything.
+    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+  });
+
+  it('takes the end from the elected frame of the driven tab only', async () => {
+    const web = openEventPort();
+    await openDrivenRoom();
+
+    endedFrom(9); // an unelected frame of the driven tab
+    endedFrom(3, {}, 8); // the elected frame id, but another tab entirely
+    notify({ kind: 'mediaEnded', positionMs: 1, durationMs: 2 }, {}); // no tab at all
+
+    expect(endEvents(web.posted)).toEqual([]);
+  });
+
+  it('drops malformed ends without throwing', async () => {
+    const web = openEventPort();
+    await openDrivenRoom();
+
+    expect(() => {
+      endedFrom(3, { positionMs: Number.NaN, durationMs: '5400000' });
+    }).not.toThrow();
+
+    const payload = endEvents(web.posted)[0]?.['payload'] as Record<string, unknown>;
+    expect(payload['positionMs']).toBe(0);
+    expect(payload['durationMs']).toBe(0);
   });
 });
 

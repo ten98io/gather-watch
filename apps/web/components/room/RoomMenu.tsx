@@ -1,12 +1,10 @@
 'use client';
 
 /**
- * RoomMenu — room CRUD (host/mod) + the free-plan expiry countdown chip.
- * Rename broadcasts room.updated to everyone; delete is a double-confirm and
- * lands back on /home. The chip counts down to room.expiresAt (amber under
- * 30 min) and explains that activity resets the clock.
+ * RoomMenu — room CRUD (host/mod). Rename broadcasts room.updated to everyone;
+ * delete is a double-confirm and lands back on /home.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { UpdateRoomResponse } from '@gather/contracts';
 import { Ok } from '@gather/contracts';
@@ -22,36 +20,6 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast';
-
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const h = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(h);
-  }, [intervalMs]);
-  return now;
-}
-
-export function ExpiryChip({ room }: { room: Room }) {
-  const now = useNow(30_000);
-  if (room.expiresAt === null) return null;
-  const remainingMs = Math.max(0, room.expiresAt - now);
-  const h = Math.floor(remainingMs / 3_600_000);
-  const m = Math.ceil((remainingMs % 3_600_000) / 60_000);
-  const soon = remainingMs < 30 * 60_000;
-  return (
-    <span
-      title="Free-plan rooms expire after 4 hours — any room activity resets the clock. Premium rooms persist."
-      className={
-        soon
-          ? 'rounded-full bg-warn/20 px-2 py-0.5 text-xs font-medium text-warn'
-          : 'rounded-full bg-glass px-2 py-0.5 text-xs text-low'
-      }
-    >
-      ⏳ {h}h {m}m
-    </span>
-  );
-}
 
 export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }) {
   const router = useRouter();

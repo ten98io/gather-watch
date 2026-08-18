@@ -7,10 +7,28 @@
 import { Redis } from 'ioredis';
 import type { BusHandler, BusPort } from './ports';
 
+/**
+ * Liveness ceiling. `maxRetriesPerRequest: null` (below) means a command
+ * issued while the connection is down QUEUES instead of failing, so an
+ * unbounded PING would hang /readyz rather than answer it — and a healthcheck
+ * that hangs reads as a timeout to some probes and as nothing at all to
+ * others. Bound it and report false.
+ */
+const PING_TIMEOUT_MS = 2_000;
+
 export class RedisBus implements BusPort {
+  readonly mode = 'redis' as const;
+
   private readonly publisher: Redis;
   private readonly subscriber: Redis;
+  /**
+   * Channel → local handlers. An entry here means "Redis has ACKed the
+   * SUBSCRIBE for this channel"; nothing is published into it earlier, so a
+   * concurrent subscriber can never read it as live ahead of the server.
+   */
   private readonly handlers = new Map<string, Set<BusHandler>>();
+  /** Channel → the one in-flight SUBSCRIBE concurrent callers wait on. */
+  private readonly subscribing = new Map<string, Promise<void>>();
 
   constructor(url: string) {
     // lazyConnect: the adapter is constructed at boot but only dials out on
@@ -48,12 +66,34 @@ export class RedisBus implements BusPort {
   }
 
   async subscribe(channel: string, handler: BusHandler): Promise<() => Promise<void>> {
-    let subscribers = this.handlers.get(channel);
+    // SUBSCRIBE only on the first local handler for the channel — and publish
+    // the handler set only once that SUBSCRIBE has really landed. Registering
+    // it up front made this method resolve for a SECOND concurrent caller
+    // while Redis was still silent: that caller believes the channel is live,
+    // starts emitting, and its events go into a channel nobody here is on.
+    // Concurrent callers share the one in-flight promise, so no duplicate
+    // SUBSCRIBE (which would double-deliver every event) and no deadlock.
+    while (!this.handlers.has(channel)) {
+      const inflight = this.subscribing.get(channel);
+      if (inflight !== undefined) {
+        await inflight;
+        continue;
+      }
+      const started = this.subscriber.subscribe(channel).then(() => {
+        if (!this.handlers.has(channel)) this.handlers.set(channel, new Set());
+      });
+      this.subscribing.set(channel, started);
+      try {
+        await started;
+      } finally {
+        // A rejected SUBSCRIBE caches nothing: the next caller retries it.
+        if (this.subscribing.get(channel) === started) this.subscribing.delete(channel);
+      }
+    }
+    const subscribers = this.handlers.get(channel);
     if (subscribers === undefined) {
-      subscribers = new Set();
-      this.handlers.set(channel, subscribers);
-      // SUBSCRIBE only on the first local handler for the channel.
-      await this.subscriber.subscribe(channel);
+      // Unreachable: the loop above only exits once the entry exists.
+      throw new Error(`bus subscribe lost its handler set for ${channel}`);
     }
     subscribers.add(handler);
 
@@ -72,8 +112,28 @@ export class RedisBus implements BusPort {
     };
   }
 
+  /**
+   * Both connections must answer. The publisher carries this instance's
+   * outbound events and the subscriber carries every other instance's, so
+   * either one dying alone already means broken fan-out — a probe that only
+   * checked the publisher would call a deaf instance ready. PING is one of the
+   * few commands a connection in subscribe mode still accepts.
+   */
+  async ping(): Promise<boolean> {
+    const probe = Promise.all([this.publisher.ping(), this.subscriber.ping()])
+      .then((replies) => replies.every((reply) => reply === 'PONG'))
+      .catch(() => false);
+    const expiry = new Promise<false>((resolve) => {
+      const timer = setTimeout(() => resolve(false), PING_TIMEOUT_MS);
+      // A pending probe must never hold the process open at shutdown.
+      timer.unref();
+    });
+    return Promise.race([probe, expiry]);
+  }
+
   async close(): Promise<void> {
     this.handlers.clear();
+    this.subscribing.clear();
     await Promise.allSettled([this.publisher.quit(), this.subscriber.quit()]);
   }
 }

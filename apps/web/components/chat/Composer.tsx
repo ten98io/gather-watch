@@ -45,6 +45,17 @@ const MAX_TEXTAREA_PX = 5 * 20 + 24;
 /** Anything taller than one line loses the full pill radius (text would clip). */
 const SINGLE_LINE_PX = 48;
 
+/** Shorter than this and it was a mis-tap, not a message. */
+const MIN_VOICE_MS = 400;
+
+/** A finished recording waiting for the user to send or discard it. */
+interface PendingVoice {
+  file: File;
+  durationMs: number;
+  /** Object URL for local playback; revoked when the take goes away. */
+  url: string;
+}
+
 function formatElapsed(ms: number): string {
   const total = Math.floor(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
@@ -231,11 +242,21 @@ export function Composer({
     }
   };
 
-  // ── voice notes (MediaRecorder → the attachment upload path) ──
+  /* ── voice notes (MediaRecorder → review → the attachment upload path) ──
+     Stopping the recorder does NOT send. A take lands in `pendingVoice` and
+     waits: play it back, then send or discard. iMessage and WhatsApp both work
+     this way, and for the same reason — a voice note is the one message kind
+     you cannot re-read before committing to it, so the only chance to catch a
+     bad take is after the recorder stops and before anyone else hears it. */
   const [recording, setRecording] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const startedAtRef = useRef(0);
+  /** A finished take awaiting the user's decision. Never auto-sends. */
+  const [pendingVoice, setPendingVoice] = useState<PendingVoice | null>(null);
+  const [voiceSending, setVoiceSending] = useState(false);
+  /** Set while stopping to discard, so onstop knows not to keep the take. */
+  const discardOnStopRef = useRef(false);
   // Late-resolving sends (voice upload) must use the reply target as it stands
   // when they land, not as it stood when recording started.
   const replyToRef = useRef(replyTo);
@@ -271,25 +292,22 @@ export function Composer({
       recorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
         recorderRef.current = null;
+        const discarded = discardOnStopRef.current;
+        discardOnStopRef.current = false;
         // Composer went away (mobile sheet closed): mic released, take dropped.
         if (unmountedRef.current) return;
         setRecording(false);
+        if (discarded) return;
         const durationMs = Date.now() - startedAtRef.current;
         const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-        const file = new File([blob], `voice-note.webm`, { type: blob.type });
-        void uploadChatAttachment(roomId, file, { durationMs })
-          .then((attachment) => {
-            connection.chatSend({
-              kind: 'voice',
-              body: 'Voice note',
-              attachment,
-              replyTo: replyToRef.current?.id ?? null,
-            });
-            onCancelReply();
-          })
-          .catch((err: unknown) => {
-            toast.error(describeError(err, 'Could not send that voice note'));
-          });
+        // A take under ~0.4s is a mis-tap, not a message. Dropping it silently
+        // is friendlier than shipping an empty bubble or scolding the user.
+        if (blob.size === 0 || durationMs < MIN_VOICE_MS) return;
+        setPendingVoice({
+          file: new File([blob], 'voice-note.webm', { type: blob.type }),
+          durationMs,
+          url: URL.createObjectURL(blob),
+        });
       };
       recorderRef.current = recorder;
       startedAtRef.current = Date.now();
@@ -304,6 +322,53 @@ export function Composer({
   const stopRecording = (): void => {
     recorderRef.current?.stop();
   };
+
+  /** Abandon the take mid-recording — the slide-to-cancel gesture's target. */
+  const cancelRecording = (): void => {
+    discardOnStopRef.current = true;
+    recorderRef.current?.stop();
+  };
+
+  const discardPendingVoice = (): void => {
+    setPendingVoice((prev) => {
+      if (prev !== null) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  };
+
+  const sendPendingVoice = (): void => {
+    const take = pendingVoice;
+    if (take === null || voiceSending) return;
+    setVoiceSending(true);
+    void uploadChatAttachment(roomId, take.file, { durationMs: take.durationMs })
+      .then((attachment) => {
+        connection.chatSend({
+          kind: 'voice',
+          body: 'Voice note',
+          attachment,
+          replyTo: replyToRef.current?.id ?? null,
+        });
+        onCancelReply();
+        // Only drop the take once it is actually sent — a failed upload must
+        // leave it on screen so the recording is not lost with nothing to retry.
+        URL.revokeObjectURL(take.url);
+        setPendingVoice(null);
+      })
+      .catch((err: unknown) => {
+        toast.error(describeError(err, 'Could not send that voice note'));
+      })
+      .finally(() => {
+        if (!unmountedRef.current) setVoiceSending(false);
+      });
+  };
+
+  // Never leak the object URL if the composer goes away mid-review.
+  useEffect(
+    () => () => {
+      if (pendingVoice !== null) URL.revokeObjectURL(pendingVoice.url);
+    },
+    [pendingVoice],
+  );
 
   const send = (): void => {
     const body = draft.trim();
@@ -474,13 +539,50 @@ export function Composer({
             recording && 'border-danger',
           )}
         >
-          {recording ? (
+          {pendingVoice !== null ? (
+            /* Review before sending. The take is already captured — the only
+               ways out are Send and Discard, and neither is the default, so a
+               recording is never published by inaction or a stray Enter. */
+            <div className="flex min-h-[44px] flex-1 items-center gap-2 py-1 pl-3 pr-2">
+              <audio
+                src={pendingVoice.url}
+                controls
+                preload="metadata"
+                aria-label={`Voice note, ${Math.round(pendingVoice.durationMs / 1000)} seconds — play it back before sending`}
+                className="h-8 min-w-0 flex-1"
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="shrink-0"
+                onClick={discardPendingVoice}
+                disabled={voiceSending}
+              >
+                Discard
+              </Button>
+              <Button
+                size="sm"
+                className="shrink-0"
+                onClick={sendPendingVoice}
+                disabled={voiceSending}
+              >
+                {voiceSending ? 'Sending…' : 'Send'}
+              </Button>
+            </div>
+          ) : recording ? (
             <div role="status" className="flex min-h-[44px] flex-1 items-center gap-2 pl-4 pr-2">
               <span
                 aria-hidden
                 className={cn('h-2 w-2 shrink-0 rounded-full bg-danger', !reduced && 'animate-pulse')}
               />
               <span className="truncate text-sm text-mid">Recording voice note…</span>
+              <span className="ml-auto shrink-0 tabular-nums text-sm text-low">
+                {Math.floor(elapsedMs / 60_000)}:
+                {String(Math.floor((elapsedMs % 60_000) / 1000)).padStart(2, '0')}
+              </span>
+              <Button variant="ghost" size="sm" className="shrink-0" onClick={cancelRecording}>
+                Cancel
+              </Button>
             </div>
           ) : (
             <>

@@ -53,6 +53,40 @@ function resolveAccentRgb(el: HTMLElement): [number, number, number] {
 }
 
 /**
+ * MAY WE TAP THIS ELEMENT WITH WEBAUDIO?
+ *
+ * Only if its source is same-origin. `createMediaElementSource` does not fail
+ * on a cross-origin resource — it succeeds and then outputs SILENCE, while
+ * routing the element's audio through the graph, so tapping a plain .mp3 from
+ * somebody else's host turns a working track into a silent one with a
+ * visualiser bouncing on nothing. That was survivable only because the stage
+ * element carried `crossOrigin="anonymous"`, which made those files fail to
+ * load in the first place; now that they load, this is the guard that keeps
+ * them audible, and it is what makes this file's header promise ("only works
+ * for CORS-clean sources; anything else honestly renders the static glow")
+ * actually true.
+ *
+ * hls.js feeds a blob: URL minted by this document, so MSE playback is
+ * same-origin here and keeps its visualiser.
+ *
+ * Decided once per ELEMENT, not per track: a tap redirects the element's output
+ * into the graph for the element's whole life and cannot be undone, and the
+ * listen composition reuses one element across consecutive music items. So a
+ * same-origin item must never share an element with a cross-origin one — which
+ * holds today because nothing in this product serves same-origin media at all.
+ */
+export function canTapMediaElement(el: { currentSrc?: string; src?: string }): boolean {
+  const src = el.currentSrc !== undefined && el.currentSrc !== '' ? el.currentSrc : (el.src ?? '');
+  if (src === '') return false;
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URL(src, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The visualiser is a supporting element: it reinforces the artwork's colour
  * and shows that audio is really moving, so it never competes with the hero.
  */
@@ -76,53 +110,70 @@ function Visualizer({
     let raf = 0;
     let audioCtx: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
+    let tapped = false;
 
-    try {
-      audioCtx = new AudioContext();
-      const source = audioCtx.createMediaElementSource(el);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.8;
-      source.connect(analyser);
-      analyser.connect(audioCtx.destination);
-      setLive(true);
-    } catch {
-      // Element already tapped elsewhere, or CORS-tainted — static glow only.
-      setLive(false);
-      return;
-    }
-
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d') ?? null;
-    if (canvas === null || ctx === null) return;
-
-    const draw = (): void => {
-      raf = requestAnimationFrame(draw);
-      const { width, height } = canvas;
-      ctx.clearRect(0, 0, width, height);
-      if (analyser === null) return;
-      analyser.getByteFrequencyData(data);
-      // Re-read per frame: the accent changes on track change, and this is one
-      // getComputedStyle against an element whose style is already resolved.
-      const [r, g, b] = resolveAccentRgb(canvas);
-      const barW = width / BAR_COUNT;
-      for (let i = 0; i < BAR_COUNT; i += 1) {
-        const v = (data[i] ?? 0) / 255;
-        const h = Math.max(2, v * height);
-        const grad = ctx.createLinearGradient(0, height - h, 0, height);
-        grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.9)`);
-        grad.addColorStop(0.7, `rgba(${r}, ${g}, ${b}, 0.45)`);
-        grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0.15)`);
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.roundRect(i * barW + 1, height - h, barW - 2, h, 3);
-        ctx.fill();
+    // Decided LAZILY, on the adapter's own 'ready', because it depends on the
+    // source and the element has none when this effect first runs: StagePane
+    // builds the adapter, and only the commit after that loads it.
+    const start = (): void => {
+      if (tapped) return;
+      if (!canTapMediaElement(el)) {
+        setLive(false);
+        return;
       }
+      tapped = true;
+
+      try {
+        audioCtx = new AudioContext();
+        const source = audioCtx.createMediaElementSource(el);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 128;
+        analyser.smoothingTimeConstant = 0.8;
+        source.connect(analyser);
+        analyser.connect(audioCtx.destination);
+        setLive(true);
+      } catch {
+        // Element already tapped elsewhere — static glow only.
+        setLive(false);
+        return;
+      }
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d') ?? null;
+      if (canvas === null || ctx === null) return;
+
+      const draw = (): void => {
+        raf = requestAnimationFrame(draw);
+        const { width, height } = canvas;
+        ctx.clearRect(0, 0, width, height);
+        if (analyser === null) return;
+        analyser.getByteFrequencyData(data);
+        // Re-read per frame: the accent changes on track change, and this is one
+        // getComputedStyle against an element whose style is already resolved.
+        const [r, g, b] = resolveAccentRgb(canvas);
+        const barW = width / BAR_COUNT;
+        for (let i = 0; i < BAR_COUNT; i += 1) {
+          const v = (data[i] ?? 0) / 255;
+          const h = Math.max(2, v * height);
+          const grad = ctx.createLinearGradient(0, height - h, 0, height);
+          grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.9)`);
+          grad.addColorStop(0.7, `rgba(${r}, ${g}, ${b}, 0.45)`);
+          grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0.15)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.roundRect(i * barW + 1, height - h, barW - 2, h, 3);
+          ctx.fill();
+        }
+      };
+      draw();
     };
-    draw();
+
+    start();
+    const offReady = adapter.on('ready', start);
 
     return () => {
+      offReady();
       cancelAnimationFrame(raf);
       void audioCtx?.close().catch(() => undefined);
     };

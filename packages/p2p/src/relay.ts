@@ -1,7 +1,7 @@
 /**
  * Relay provider abstraction: one uniform media-plane interface over the two
  * supported topologies — p2p mesh (default) and Cloudflare Realtime SFU
- * (premium Theater mode). Providers are switchable per room mid-session; sync
+ * (Theater mode). Providers are switchable per room mid-session; sync
  * beacons ride DataChannels in every topology.
  */
 
@@ -19,10 +19,38 @@ import type {
   RtcPeerConnectionLike,
   SessionDescriptionLike,
   SetTimeoutFn,
+  TrackRole,
 } from './types';
 
 /** Media relay topology, mirroring contracts RelayMode. */
 export type RelayKind = RelayMode;
+
+/**
+ * A local track and the mesh role it must publish under.
+ *
+ * This is the only way a caller can say "this pair is a screen capture, not a
+ * camera and a microphone": a MediaStreamTrack carries nothing that
+ * distinguishes the two, and the difference matters because a role is a
+ * SENDER — publishing a capture's soundtrack on 'mic' takes the person's live
+ * microphone away from the whole room.
+ */
+export interface RoledTrack {
+  role: TrackRole;
+  track: MediaStreamTrackLike;
+}
+
+/** What {@link RelayProvider.publishTracks} accepts: a bare track, whose role
+ *  is inferred, or one the caller has already named. */
+export type PublishableTrack = MediaStreamTrackLike | RoledTrack;
+
+function isRoled(entry: PublishableTrack): entry is RoledTrack {
+  return (entry as RoledTrack).track !== undefined;
+}
+
+/** Strip the role tag: topologies that publish by track, not by role. */
+function bareTrack(entry: PublishableTrack): MediaStreamTrackLike {
+  return isRoled(entry) ? entry.track : entry;
+}
 
 /** Error raised by relay providers; `code` classifies the failure. */
 export class RelayError extends Error {
@@ -48,12 +76,12 @@ export interface RelayAuth {
 }
 
 /** Uniform media-plane interface: mesh (default) or Cloudflare Realtime SFU
- *  (premium Theater mode). Switchable per room mid-session; sync beacons ride
+ *  (Theater mode). Switchable per room mid-session; sync beacons ride
  *  DataChannels in every topology. */
 export interface RelayProvider {
   readonly kind: RelayKind;
   connect(roomId: RoomId, auth: RelayAuth): Promise<void>;
-  publishTracks(tracks: MediaStreamTrackLike[]): Promise<void>;
+  publishTracks(tracks: PublishableTrack[]): Promise<void>;
   /** Subscribe to remote tracks; `source` is the publishing peer/session id. */
   subscribe(fn: (source: string, track: MediaStreamTrackLike) => void): () => void;
   /** A raw DataChannel for the label, when the topology exposes one; mesh returns
@@ -77,17 +105,35 @@ export class MeshProvider implements RelayProvider {
     return Promise.resolve();
   }
 
-  /** Maps kinds → roles: audio→'mic', first video→'cam', further video→'share'. */
-  publishTracks(tracks: MediaStreamTrackLike[]): Promise<void> {
+  /**
+   * A role-tagged track publishes under exactly the role it names. A bare one
+   * falls back to the shape of a getUserMedia stream: the FIRST audio is the
+   * microphone and the FIRST video is the camera, and everything past them
+   * belongs to a capture — further video is 'share', further audio is
+   * 'share-audio'.
+   *
+   * That last clause is the point. Mapping every audio track to 'mic' meant a
+   * capture published through here replaced the person's live microphone for
+   * the whole room — one role is one sender — and withdrawing it when the
+   * share stopped left them silent with the mic button still reading "on".
+   * Nothing routes a share through this adapter today; the mapping is fixed so
+   * that nothing can walk into it, and so a caller that DOES know what it is
+   * holding can say so instead of relying on order at all.
+   */
+  publishTracks(tracks: PublishableTrack[]): Promise<void> {
+    let micTaken = false;
     let camTaken = false;
-    for (const track of tracks) {
-      if (track.kind === 'audio') {
-        this.mesh.setLocalTrack('mic', track);
-      } else if (!camTaken) {
-        camTaken = true;
-        this.mesh.setLocalTrack('cam', track);
+    for (const entry of tracks) {
+      if (isRoled(entry)) {
+        this.mesh.setLocalTrack(entry.role, entry.track);
+        micTaken = micTaken || entry.role === 'mic';
+        camTaken = camTaken || entry.role === 'cam';
+      } else if (entry.kind === 'audio') {
+        this.mesh.setLocalTrack(micTaken ? 'share-audio' : 'mic', entry);
+        micTaken = true;
       } else {
-        this.mesh.setLocalTrack('share', track);
+        this.mesh.setLocalTrack(camTaken ? 'share' : 'cam', entry);
+        camTaken = true;
       }
     }
     return Promise.resolve();
@@ -137,7 +183,7 @@ function pickField(body: unknown, key: string): unknown {
 }
 
 /**
- * Cloudflare Realtime SFU provider (premium Theater mode) over the HTTP session
+ * Cloudflare Realtime SFU provider (Theater mode) over the HTTP session
  * API. Flow per Cloudflare docs: POST /v1/apps/{appId}/sessions/new (Bearer auth)
  * → { sessionId }; publishing: createOffer with local tracks, POST
  * /v1/apps/{appId}/sessions/{sessionId}/tracks/new with
@@ -202,21 +248,24 @@ export class CfSfuProvider implements RelayProvider {
   }
 
   /** Publish local tracks: offer with the tracks attached, then bind them to
-   *  the session via tracks/new and apply the returned answer. */
-  async publishTracks(tracks: MediaStreamTrackLike[]): Promise<void> {
+   *  the session via tracks/new and apply the returned answer. A role tag is
+   *  mesh vocabulary and means nothing to the SFU, which names tracks; it is
+   *  dropped here. */
+  async publishTracks(tracks: PublishableTrack[]): Promise<void> {
     const { pc, session, appId } = this.requireConnected();
-    for (const track of tracks) pc.addTrack(track);
+    const media = tracks.map(bareTrack);
+    for (const track of media) pc.addTrack(track);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     const body = await this.api('POST', `/v1/apps/${appId}/sessions/${session}/tracks/new`, {
       sessionDescription: pc.localDescription ?? offer,
-      tracks: tracks.map((track) => ({ location: 'local', trackName: track.id })),
+      tracks: media.map((track) => ({ location: 'local', trackName: track.id })),
     });
     const answer = pickField(body, 'sessionDescription');
     if (typeof answer === 'object' && answer !== null) {
       await pc.setRemoteDescription(answer as SessionDescriptionLike);
     }
-    for (const track of tracks) this.localTrackNames.add(track.id);
+    for (const track of media) this.localTrackNames.add(track.id);
   }
 
   /** Pull specific remote tracks published by another session. */

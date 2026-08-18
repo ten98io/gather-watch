@@ -102,3 +102,49 @@ describe('DriftController', () => {
     expect(d.decide(1040, 1000)).toEqual({ action: 'none', rate: 1 });
   });
 });
+
+describe('DriftController terminal state (durationMs)', () => {
+  it('an expectation past the end reads as in-sync, not as "behind"', () => {
+    // The item is 60 s long and has run out; the room's projection keeps
+    // climbing. Without a duration this is a 40 s deficit forever.
+    const runaway = new DriftController();
+    expect(runaway.decide(100_000, 60_000)).toEqual({
+      action: 'seek',
+      toMs: 100_000,
+      rate: 1,
+    });
+
+    const d = new DriftController();
+    expect(d.decide(100_000, 60_000, { durationMs: 60_000 })).toEqual({
+      action: 'none',
+      rate: 1,
+    });
+    expect(d.isNudging()).toBe(false);
+  });
+
+  it('never prescribes a seek past the end', () => {
+    const d = new DriftController();
+    // Well past the seek threshold, but the player is only slightly short of
+    // the end: the correction may only ever name a position inside the media.
+    const res = d.decide(100_000, 40_000, { durationMs: 60_000 });
+    expect(res.action).toBe('seek');
+    if (res.action === 'seek') expect(res.toMs).toBe(60_000);
+  });
+
+  it('corrects normally while the expectation is inside the media', () => {
+    const d = new DriftController();
+    const res = d.decide(20_300, 20_000, { durationMs: 60_000 });
+    expect(res.action).toBe('nudge');
+    expect(res.rate).toBeCloseTo(1.03, 10);
+  });
+
+  it('ignores a duration that is unknown or nonsense', () => {
+    // 0 is "not known yet" for every adapter (pre-metadata / YouTube
+    // pre-ready); a live stream reports Infinity. Neither may clamp anything.
+    const unknown = new DriftController();
+    expect(unknown.decide(100_000, 60_000, { durationMs: 0 }).action).toBe('seek');
+
+    const live = new DriftController();
+    expect(live.decide(100_000, 60_000, { durationMs: Infinity }).action).toBe('seek');
+  });
+});

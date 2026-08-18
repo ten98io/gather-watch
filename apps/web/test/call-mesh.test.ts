@@ -2,11 +2,44 @@
  * CallMesh retention/replay — the layer B1 ("you join a call and see nobody")
  * actually broke on. `pc.ontrack` fires once, whenever the peer connection
  * happens to negotiate; a pane that subscribed later used to miss it forever.
+ *
+ * And the credential gate: an RTCPeerConnection captures its ICE servers at
+ * construction, so a peer built before the first TURN fetch answers is stuck
+ * on host/srflx candidates for its entire life — the "join, then refresh the
+ * tab and join again" bug, from the app side.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
-import { CallMesh, closeCallMesh, getCallMesh } from '@/lib/call-mesh';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PresenceEntry, RoomId, TurnCredentialsResponse, UserId } from '@gather/contracts';
+import {
+  CALL_PEER_NOTE,
+  CALL_SETUP_NOTE,
+  CallMesh,
+  CREDENTIAL_WAIT_MS,
+  closeCallMesh,
+  getCallMesh,
+} from '@/lib/call-mesh';
 import type { RoomConnection } from '@/lib/room-connection';
+
+/* The TURN fetch, per test. Hoisted so the module mock below can reach it. */
+const turnStub = vi.hoisted(() => ({
+  fetch: (): Promise<TurnCredentialsResponse> => Promise.reject(new Error('offline')),
+}));
+
+vi.mock('@/lib/api', () => ({
+  api: { rtc: { turnCredentials: () => turnStub.fetch() } },
+}));
+
+/** Drain the microtask queue — works under fake timers, unlike setTimeout(0). */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+};
+
+const CREDENTIALS: TurnCredentialsResponse = {
+  iceServers: [{ urls: ['turn:relay.test:3478'], username: 'u', credential: 'c' }],
+  // 0 = no expiry-driven refresh, so no stray timer outlives the test.
+  ttlSeconds: 0,
+  fairUseRemainingGb: null,
+};
 
 /* ── fakes ────────────────────────────────────────────────────────────────── */
 
@@ -68,13 +101,18 @@ class FakePc {
   ontrack: ((ev: { track: unknown; streams: unknown[] }) => void) | null = null;
   ondatachannel: ((ev: { channel: unknown }) => void) | null = null;
   readonly addedTracks: unknown[] = [];
-  readonly removedSenders: unknown[] = [];
   readonly senders: FakeSender[] = [];
+  /** Every ICE list pushed onto this connection after construction. */
+  readonly configured: unknown[] = [];
   closed = false;
 
-  constructor() {
+  constructor(readonly config?: { iceServers?: unknown[] }) {
     FakePc.instances.push(this);
   }
+  setConfiguration(config: { iceServers?: unknown }): void {
+    this.configured.push(config.iceServers);
+  }
+  restartIce(): void {}
   static reset(): void {
     FakePc.instances = [];
   }
@@ -107,9 +145,9 @@ class FakePc {
     this.senders.push(sender);
     return sender;
   }
-  removeTrack(sender: unknown): void {
-    this.removedSenders.push(sender);
-  }
+  // Present because RTCPeerConnection has it and MeshManager still uses it on
+  // teardown and on platforms without replaceTrack — nothing here observes it.
+  removeTrack(): void {}
   getSenders(): FakeSender[] {
     return this.senders;
   }
@@ -181,7 +219,7 @@ describe('CallMesh', () => {
     FakePc.reset();
     (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
     // TURN credentials are fetched on start(); fail fast and stay offline.
-    (globalThis as { fetch?: unknown }).fetch = () => Promise.reject(new Error('offline'));
+    turnStub.fetch = () => Promise.reject(new Error('offline'));
   });
 
   afterEach(() => {
@@ -189,26 +227,29 @@ describe('CallMesh', () => {
     delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
   });
 
-  const startedMesh = (
+  /** Start a mesh and let the first credential attempt settle — peers are only
+   *  built after it does, so every case here waits for it exactly once. */
+  const startedMesh = async (
     presence: Record<string, PresenceEntry> = { [PEER]: presenceEntry(PEER, 'in-call') },
-  ): { mesh: CallMesh; conn: FakeConnection } => {
+  ): Promise<{ mesh: CallMesh; conn: FakeConnection }> => {
     const conn = fakeConnection(presence);
     const mesh = new CallMesh(conn.connection, ME);
     created.push(mesh);
     mesh.start();
+    await settle();
     return { mesh, conn };
   };
 
-  it('opens one peer connection per present remote user', () => {
-    startedMesh();
+  it('opens one peer connection per present remote user', async () => {
+    await startedMesh();
     expect(FakePc.instances).toHaveLength(1);
     // The negotiator must be wired before any track is added, otherwise
     // publishing mid-call would never re-offer.
     expect(FakePc.instances[0]?.onnegotiationneeded).not.toBeNull();
   });
 
-  it('replays remote tracks to a subscriber that arrives after them', () => {
-    const { mesh } = startedMesh();
+  it('replays remote tracks to a subscriber that arrives after them', async () => {
+    const { mesh } = await startedMesh();
     const cam = track('cam-1', 'video');
     const mic = track('mic-1', 'audio');
     FakePc.instances[0]?.emitTrack(cam);
@@ -225,8 +266,8 @@ describe('CallMesh', () => {
     expect(mesh.remoteTrackList()).toHaveLength(2);
   });
 
-  it('delivers later tracks to existing subscribers exactly once', () => {
-    const { mesh } = startedMesh();
+  it('delivers later tracks to existing subscribers exactly once', async () => {
+    const { mesh } = await startedMesh();
     const seen: string[] = [];
     mesh.onRemoteTrack((_userId, t) => seen.push(t.id));
     const cam = track('cam-1', 'video');
@@ -235,8 +276,8 @@ describe('CallMesh', () => {
     expect(seen).toEqual(['cam-1']);
   });
 
-  it('forgets a remote track when it ends and tells subscribers', () => {
-    const { mesh } = startedMesh();
+  it('forgets a remote track when it ends and tells subscribers', async () => {
+    const { mesh } = await startedMesh();
     const removed: string[] = [];
     mesh.onRemoteTrackRemoved((_userId, t) => removed.push(t.id));
     const cam = new FakeTrack('cam-1', 'video');
@@ -248,16 +289,16 @@ describe('CallMesh', () => {
     expect(mesh.remoteTrackList()).toHaveLength(0);
   });
 
-  it('drops a peer’s tracks when its connection closes', () => {
-    const { mesh } = startedMesh();
+  it('drops a peer’s tracks when its connection closes', async () => {
+    const { mesh } = await startedMesh();
     FakePc.instances[0]?.emitTrack(track('cam-1', 'video'));
     expect(mesh.remoteTrackList()).toHaveLength(1);
     FakePc.instances[0]?.setConnectionState('closed');
     expect(mesh.remoteTrackList()).toHaveLength(0);
   });
 
-  it('publishes a camera turned on mid-call to peers that already exist', () => {
-    const { mesh } = startedMesh();
+  it('publishes a camera turned on mid-call to peers that already exist', async () => {
+    const { mesh } = await startedMesh();
     const pc = FakePc.instances[0];
     expect(pc?.addedTracks).toHaveLength(0);
 
@@ -270,24 +311,27 @@ describe('CallMesh', () => {
     expect(mesh.localTrack('cam')?.id).toBe('cam-local');
   });
 
-  it('replays local tracks to a subscriber that arrives after them', () => {
-    const { mesh } = startedMesh();
+  it('replays local tracks to a subscriber that arrives after them', async () => {
+    const { mesh } = await startedMesh();
     mesh.setLocalTrack('cam', track('cam-local', 'video'));
     const seen: Array<[string, string | null]> = [];
     mesh.onLocalTrack((role, t) => seen.push([role, t?.id ?? null]));
     expect(seen).toEqual([['cam', 'cam-local']]);
   });
 
-  it('removes the camera sender when the camera is turned off', () => {
-    const { mesh } = startedMesh();
-    mesh.setLocalTrack('cam', track('cam-local', 'video'));
-    mesh.setLocalTrack('cam', null);
-    expect(FakePc.instances[0]?.removedSenders).toHaveLength(1);
-    expect(mesh.localTrack('cam')).toBeNull();
-  });
+  // DELETED: 'removes the camera sender when the camera is turned off'.
+  // It pinned `removeTrack` on camera-off, which is the behaviour that caused
+  // the reported bug — retiring the transceiver disturbed the sendrecv
+  // m-line's RECEIVE direction, so turning your own camera off stopped the
+  // remote one, and turning it back on queued a second renegotiation behind
+  // the first so the camera needed two toggles. MeshManager now calls
+  // `replaceTrack(null)` (removeTrack survives only as the fallback for
+  // platforms without it). The whole test goes rather than its assertions:
+  // the replacement is packages/p2p/test/camera-toggle.test.ts, which covers
+  // the same MeshManager this wrapper delegates to, in four cases.
 
-  it('connects to a peer who joins the room after the mesh started', () => {
-    const { mesh, conn } = startedMesh({});
+  it('connects to a peer who joins the room after the mesh started', async () => {
+    const { mesh, conn } = await startedMesh({});
     expect(FakePc.instances).toHaveLength(0);
     mesh.setLocalTrack('mic', track('mic-local', 'audio'));
 
@@ -307,5 +351,209 @@ describe('CallMesh', () => {
     created.push(second);
     expect(second).not.toBe(first);
     expect(second.closed).toBe(false);
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Credentials before peers
+   ──────────────────────────────────────────────────────────────────────────── */
+
+describe('CallMesh credential gate', () => {
+  const created: CallMesh[] = [];
+
+  beforeEach(() => {
+    FakePc.reset();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    turnStub.fetch = () => Promise.reject(new Error('offline'));
+  });
+
+  afterEach(() => {
+    for (const mesh of created.splice(0)) mesh.close();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+  });
+
+  const start = (): { mesh: CallMesh; conn: FakeConnection } => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    return { mesh, conn };
+  };
+
+  it('builds no peer connection until the first credential fetch settles', async () => {
+    let resolveTurn: (res: TurnCredentialsResponse) => void = () => undefined;
+    turnStub.fetch = () =>
+      new Promise<TurnCredentialsResponse>((resolve) => {
+        resolveTurn = resolve;
+      });
+
+    start();
+    await settle();
+
+    // The peer that gets built here is the one that never connects across
+    // networks: WebRTC reads iceServers ONCE, at construction.
+    expect(FakePc.instances).toHaveLength(0);
+
+    resolveTurn(CREDENTIALS);
+    await settle();
+
+    expect(FakePc.instances).toHaveLength(1);
+    expect(FakePc.instances[0]?.config?.iceServers).toEqual(CREDENTIALS.iceServers);
+  });
+
+  it('connects anyway when the credential fetch fails — degraded, never stuck', async () => {
+    turnStub.fetch = () => Promise.reject(new Error('offline'));
+
+    start();
+    await settle();
+
+    // Whatever the manager yields when it has nothing (the mesh's own public
+    // STUN fallback) is what the peer gets. Degraded is a call; hung is not.
+    expect(FakePc.instances).toHaveLength(1);
+    const urls = (FakePc.instances[0]?.config?.iceServers ?? []).flatMap((s) =>
+      Array.isArray((s as { urls?: unknown }).urls) ? ((s as { urls: string[] }).urls) : [],
+    );
+    expect(urls.some((u) => u.startsWith('turn:'))).toBe(false);
+    expect(urls.length).toBeGreaterThan(0);
+  });
+
+  it('stops waiting for a credential fetch that never answers', async () => {
+    vi.useFakeTimers();
+    try {
+      turnStub.fetch = () => new Promise<TurnCredentialsResponse>(() => undefined);
+
+      start();
+      await settle();
+      expect(FakePc.instances).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(CREDENTIAL_WAIT_MS);
+
+      expect(FakePc.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hands late credentials to the peers that were built without them', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      turnStub.fetch = () => {
+        attempt += 1;
+        return attempt === 1 ? Promise.reject(new Error('offline')) : Promise.resolve(CREDENTIALS);
+      };
+
+      start();
+      await settle();
+      // Built on the fallback list, because waiting longer helps nobody.
+      expect(FakePc.instances).toHaveLength(1);
+      expect(FakePc.instances[0]?.configured).toEqual([]);
+
+      // The manager's own retry lands; the call repairs without a rejoin —
+      // on the credential tick (CallMesh's onUpdate) or on MeshManager's own
+      // repair poll, whichever gets there first. Both layers are wired here
+      // deliberately: this asserts the guarantee, not one implementation.
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(FakePc.instances[0]?.configured).toEqual([CREDENTIALS.iceServers]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconciles presence that changed while the credentials were in flight', async () => {
+    let resolveTurn: (res: TurnCredentialsResponse) => void = () => undefined;
+    turnStub.fetch = () =>
+      new Promise<TurnCredentialsResponse>((resolve) => {
+        resolveTurn = resolve;
+      });
+
+    const { conn } = start();
+    await settle();
+    conn.setPresence({}); // everyone left while we waited
+    resolveTurn(CREDENTIALS);
+    await settle();
+
+    expect(FakePc.instances).toHaveLength(0);
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Failures the owner can read
+   ──────────────────────────────────────────────────────────────────────────── */
+
+describe('CallMesh failure reporting', () => {
+  const created: CallMesh[] = [];
+
+  beforeEach(() => {
+    FakePc.reset();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+  });
+
+  afterEach(() => {
+    for (const mesh of created.splice(0)) mesh.close();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+  });
+
+  const startedMesh = async (): Promise<{ mesh: CallMesh; notes: string[] }> => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    const notes: string[] = [];
+    mesh.onError((note) => notes.push(note));
+    mesh.start();
+    await settle();
+    return { mesh, notes };
+  };
+
+  it('says one plain sentence, once, when a peer link fails under live media', async () => {
+    const { mesh, notes } = await startedMesh();
+    mesh.setLocalTrack('mic', track('mic-local', 'audio'));
+
+    FakePc.instances[0]?.setConnectionState('failed');
+    expect(notes).toEqual([CALL_PEER_NOTE]);
+
+    // Retries and flaps must not turn one broken link into a toast storm.
+    FakePc.instances[0]?.setConnectionState('failed');
+    expect(notes).toEqual([CALL_PEER_NOTE]);
+  });
+
+  it('stays quiet about a link nobody is using for media', async () => {
+    const { notes } = await startedMesh();
+    FakePc.instances[0]?.setConnectionState('failed');
+    expect(notes).toEqual([]);
+  });
+
+  it('reports a failed credential fetch when media is actually at stake', async () => {
+    turnStub.fetch = () => Promise.reject(new Error('offline'));
+    const { mesh, notes } = await startedMesh();
+
+    // Nothing to say yet: the room opened, nobody is calling.
+    expect(notes).toEqual([]);
+
+    mesh.setLocalTrack('mic', track('mic-local', 'audio'));
+
+    expect(notes).toEqual([CALL_SETUP_NOTE]);
+  });
+
+  it('exposes per-peer connection state to the UI as it changes', async () => {
+    const { mesh } = await startedMesh();
+    const seen: Array<[UserId, string]> = [];
+    const off = mesh.onConnectionState((peerId, state) => seen.push([peerId, state]));
+
+    FakePc.instances[0]?.setConnectionState('connected');
+    FakePc.instances[0]?.setConnectionState('disconnected');
+    off();
+    FakePc.instances[0]?.setConnectionState('connected');
+
+    expect(seen).toEqual([
+      // Replayed on subscribe, like tracks: a pane that mounts late still
+      // knows where every link stands.
+      [PEER, 'new'],
+      [PEER, 'connected'],
+      [PEER, 'disconnected'],
+    ]);
+    expect(mesh.connectionStates().get(PEER)).toBe('connected');
   });
 });

@@ -2,18 +2,22 @@
 
 /**
  * QueuePane — the collaborative queue: add by URL (YouTube/SoundCloud/Vimeo/
- * embeds/direct/HLS) or from your uploaded library, reorder by dragging the
+ * embeds/direct/HLS, or ANY other https page — providers.ts has no gate left,
+ * only better paths for the sites it knows), reorder by dragging the
  * grabber (native HTML5 drag-and-drop, arrow keys as the keyboard path, a
  * pointer-drag fallback for touch), delete on hover, vote-to-skip with the
  * room's configured threshold, and click a row to play it via sync.setTrack.
  * Server-authoritative queue.state drives everything — sends are
  * fire-and-forget and the UI only moves when the snapshot comes back.
+ *
+ * The second button used to be "Library" — your uploads, from services/media.
+ * That service was deleted, so the dialog fetched a 404 and showed an empty
+ * box to everyone, forever. In its place: what this room has actually played,
+ * with one click to queue it again (components/queue/HistoryDialog.tsx).
  */
 import { useCallback, useMemo, useState } from 'react';
 import type { DragEvent, KeyboardEvent, PointerEvent } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import type { MediaRef, QueueItem, QueueItemId, RoomId } from '@gather/contracts';
-import { api } from '@/lib/api';
 import { canAct, formatMs } from '@/lib/permissions';
 import { mediaKindFor } from '@/lib/media-kind';
 import { parseProviderUrl } from '@/lib/providers';
@@ -22,13 +26,7 @@ import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Skeleton } from '@/components/ui/skeleton';
+import { RecentlyPlayed } from '@/components/queue/HistoryDialog';
 import {
   FilmIcon,
   GripVerticalIcon,
@@ -72,58 +70,6 @@ interface DragState {
 function edgeAt(element: Element, clientY: number): DropEdge {
   const rect = element.getBoundingClientRect();
   return clientY - rect.top < rect.height / 2 ? 'above' : 'below';
-}
-
-/** Add-from-library: ready HLS assets become queue items. */
-function LibraryPicker({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
-  const connection = useRoomConnection();
-  const libraryQuery = useQuery({
-    queryKey: ['library'],
-    queryFn: () => api.media.listLibrary({ limit: 50 }),
-    enabled: open,
-  });
-  const ready = (libraryQuery.data?.items ?? []).filter(
-    (a) => a.status === 'ready' && a.hlsUrl !== null,
-  );
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent aria-label="Add from your library">
-        <DialogTitle>Add from your library</DialogTitle>
-        <DialogDescription>
-          Your uploads appear here once they finish processing. If this list is empty,
-          paste a direct media link instead.
-        </DialogDescription>
-        <div className="mt-3 flex max-h-80 flex-col gap-1 overflow-y-auto">
-          {libraryQuery.isPending && <Skeleton className="h-10 w-full" />}
-          {libraryQuery.isSuccess && ready.length === 0 && (
-            <p className="py-6 text-center text-sm text-low">No processed media yet.</p>
-          )}
-          {ready.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              className="rounded-ctl border border-border-glass bg-glass px-3 py-2 text-left hover:bg-raised"
-              onClick={() => {
-                connection.queueAdd({
-                  mediaRef: { kind: 'hls', assetId: a.id, url: a.hlsUrl ?? '' },
-                  title: a.filename,
-                  durationMs: a.durationMs,
-                  artworkUrl: a.thumbnailUrl,
-                });
-                onOpenChange(false);
-              }}
-            >
-              <span className="block truncate text-sm text-hi">{a.filename}</span>
-              <span className="text-xs text-low">
-                {a.durationMs !== null ? formatMs(a.durationMs) : 'unknown length'}
-              </span>
-            </button>
-          ))}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 function QueueRow({
@@ -393,7 +339,7 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
   const reducedMotion = useReducedMotion();
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [announcement, setAnnouncement] = useState('');
 
@@ -404,7 +350,10 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
   const add = (): void => {
     const parsed = parseProviderUrl(draft);
     if (parsed === null) {
-      setError('Paste a link from a supported service, or a direct video or audio link');
+      // The registry is no longer a gate, so the only thing left to refuse is
+      // something that is not an https web address at all. Say that, and stop
+      // implying there is a list the link failed to be on.
+      setError('Paste a web address — it has to start with https://');
       return;
     }
     if (parsed.ref === null) {
@@ -473,34 +422,38 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
 
   return (
     <section aria-label="Queue" data-room={roomId} className="flex h-full min-h-0 flex-col">
-      {canQueue && (
-        <div className="flex flex-col gap-1 border-b border-border-glass p-2">
-          <div className="flex gap-2">
-            <Input
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value);
-                setError(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') add();
-              }}
-              placeholder="Add YouTube, SoundCloud, Vimeo, Spotify…"
-              aria-label="Add to queue"
-            />
-            <Button size="sm" onClick={add}>Add</Button>
-            <Button size="sm" variant="secondary" onClick={() => setLibraryOpen(true)}>
-              Library
-            </Button>
-          </div>
-          {parsedPreview !== null && (
-            <p className="px-1 text-[10px] text-low">
-              {parsedPreview.provider.icon} {parsedPreview.provider.name} ·{' '}
-              {parsedPreview.provider.note}
-            </p>
+      {/* The header always renders: what the room has played is readable by
+          everyone in it, whether or not the room's policy lets them queue. */}
+      <div className="flex flex-col gap-1 border-b border-border-glass p-2">
+        <div className="flex gap-2">
+          {canQueue && (
+            <>
+              <Input
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  setError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') add();
+                }}
+                placeholder="Paste any link — YouTube, Spotify, or any page"
+                aria-label="Add to queue"
+              />
+              <Button size="sm" onClick={add}>Add</Button>
+            </>
           )}
+          <Button size="sm" variant="secondary" onClick={() => setHistoryOpen(true)}>
+            History
+          </Button>
         </div>
-      )}
+        {canQueue && parsedPreview !== null && (
+          <p className="px-1 text-[10px] text-low">
+            {parsedPreview.provider.icon} {parsedPreview.provider.name} ·{' '}
+            {parsedPreview.provider.note}
+          </p>
+        )}
+      </div>
       {error !== null && <p className="px-3 pt-1 text-xs text-warn">{error}</p>}
 
       <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
@@ -533,7 +486,7 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
         {announcement}
       </p>
 
-      <LibraryPicker open={libraryOpen} onOpenChange={setLibraryOpen} />
+      <RecentlyPlayed roomId={roomId} open={historyOpen} onOpenChange={setHistoryOpen} />
     </section>
   );
 }

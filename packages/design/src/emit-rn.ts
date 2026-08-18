@@ -15,10 +15,37 @@
  */
 
 import type { ColorTokenName, FillTokenName, ThemeName } from './tokens';
-import type { FontFamily, Layout, Motion, RadiusName, SpacingName, TypeStepName } from './scales';
-import { COLOR_TOKEN_NAMES, FILL_TOKENS, inkOn, resolveColorToken } from './tokens';
+import type {
+  ControlSize,
+  ControlSizeName,
+  ElevationName,
+  FontFamily,
+  Layout,
+  Motion,
+  RadiusName,
+  SpacingName,
+  TypeStepName,
+} from './scales';
+import {
+  COLOR_TOKEN_NAMES,
+  FILL_TOKENS,
+  INKS,
+  inkOn,
+  inkOnGradient,
+  resolveColorToken,
+} from './tokens';
 import { formatRgba } from './emit-css';
-import { fontFamily, layout, motion, radii, spacing, typeRamp } from './scales';
+import {
+  ELEVATION_NAMES,
+  controlSizes,
+  elevation,
+  fontFamily,
+  layout,
+  motion,
+  radii,
+  spacing,
+  typeRamp,
+} from './scales';
 
 /** Every token as a colour string RN understands: `#rrggbb` or `rgba(r,g,b,a)`. */
 export type RnPalette = Readonly<Record<ColorTokenName, string>>;
@@ -62,14 +89,35 @@ export interface RnGlow {
   readonly elevation: number;
 }
 
+/**
+ * A neutral drop shadow for one elevation level, in RN's shape.
+ *
+ * RN has no multi-layer shadow and no spread, so the two authored layers are
+ * folded into one: the ambient layer decides the offset and radius (it is what
+ * you actually see), and the alphas are combined the way source-over does.
+ */
+export interface RnElevation {
+  readonly shadowColor: string;
+  readonly shadowOpacity: number;
+  readonly shadowRadius: number;
+  readonly shadowOffset: { readonly width: number; readonly height: number };
+  /** Android has no shadow colour control; `elevation` is the closest it gets. */
+  readonly elevation: number;
+}
+
 export interface RnTheme {
   readonly name: ThemeName;
   readonly palette: RnPalette;
   readonly inkOn: RnInkOnFill;
+  /** One ink for a label crossing all three aurora stops. */
+  readonly inkOnGradient: string;
   readonly auroraGradient: RnAuroraGradient;
   readonly glow: RnGlow;
+  /** Neutral elevation. Use this for menus and sheets; `glow` is for signature moments. */
+  readonly elevation: Readonly<Record<ElevationName, RnElevation>>;
   readonly type: RnTypeRamp;
   readonly radii: Readonly<Record<RadiusName, number>>;
+  readonly controlSizes: Readonly<Record<ControlSizeName, ControlSize>>;
   readonly spacing: Readonly<Record<SpacingName, number>>;
   readonly motion: Motion;
   readonly layout: Layout;
@@ -148,16 +196,49 @@ export function emitRnGlow(theme: ThemeName): RnGlow {
   };
 }
 
+/**
+ * The neutral elevation ladder in RN units.
+ *
+ * Theme-independent by construction — the ink is the absolute black, exactly as
+ * in the CSS emitter, so a shadow does not invert when the palette does.
+ * Android's `elevation` is stepped 2/6/12 to match the three levels' apparent
+ * distance from the page.
+ */
+export function emitRnElevation(): Readonly<Record<ElevationName, RnElevation>> {
+  const androidElevation: Readonly<Record<ElevationName, number>> = { e1: 2, e2: 6, e3: 12 };
+  const out = {} as Record<ElevationName, RnElevation>;
+  for (const name of ELEVATION_NAMES) {
+    const layers = elevation[name];
+    // The ambient (last) layer is the one a viewer reads as the shadow; the
+    // contact layer only survives as extra opacity, composited source-over.
+    const ambient = layers[layers.length - 1] as (typeof layers)[number];
+    const combined = layers.reduce((acc, layer) => acc + layer.alpha * (1 - acc), 0);
+    out[name] = {
+      shadowColor: INKS.inkBlack.hex,
+      shadowOpacity: Number(combined.toFixed(3)),
+      // RN's radius is roughly half the CSS blur, and the negative spread is
+      // folded in by shrinking it further.
+      shadowRadius: Math.round((ambient.blur + ambient.spread) / 2),
+      shadowOffset: { width: 0, height: ambient.y },
+      elevation: androidElevation[name],
+    };
+  }
+  return out;
+}
+
 /** One fully resolved theme, ready to hand to a React context. */
 export function emitRnTheme(theme: ThemeName): RnTheme {
   return {
     name: theme,
     palette: emitRnPalette(theme),
     inkOn: emitRnInkOnFill(theme),
+    inkOnGradient: inkOnGradient(theme).hex,
     auroraGradient: emitRnAuroraGradient(theme),
     glow: emitRnGlow(theme),
+    elevation: emitRnElevation(),
     type: emitRnTypeRamp(),
     radii,
+    controlSizes,
     spacing,
     motion,
     layout,

@@ -1,20 +1,23 @@
 /**
  * Rooms domain logic: room lifecycle, membership and role hierarchy
- * (host > moderator > member > guest), invites, policy updates with
- * entitlement caps, and theater mode. Pure logic over Deps — no Fastify types
- * in this file, so it is directly unit-testable.
+ * (host > moderator > member > guest), invites, policy updates, and theater
+ * mode. Pure logic over Deps — no Fastify types in this file, so it is
+ * directly unit-testable.
  *
  * Every room.updated / member.updated emission passes through
  * serializeRoom/serializeMember (never leak server-only fields) and uses
- * deps.events.emit (persisted, seq-ordered). Contracts have no member.removed
- * event — after kick/ban/leave the target's sockets are closed and an
- * ephemeral presence.diff is broadcast; clients refetch the member list.
+ * deps.events.emit (persisted, seq-ordered). Departures go the other way:
+ * removeFromRoom closes the target's sockets and broadcasts member.removed
+ * plus a presence.diff, both EPHEMERAL (seq 0) — see the member.removed
+ * contract for why a persisted seq would strand older clients in replay.
  */
 import { randomInt } from 'node:crypto';
-import { normalizeInviteCode } from '@gather/contracts';
+import { MEMBER_REMOVAL_CLOSE_TEXT, normalizeInviteCode } from '@gather/contracts';
 import type {
   InviteCode,
+  MemberRemovalReason,
   MemberRole,
+  RoomHistoryEntry,
   RoomId,
   RoomKind,
   RoomPolicies,
@@ -26,8 +29,9 @@ import { newId } from '../../lib/tokens';
 import { cursorDocId, memberDocId } from '../../adapters/ports';
 import type { InviteDoc, MemberDoc, RoomDoc, UserDoc } from '../../adapters/ports';
 import type { Deps } from '../types';
-import { getEntitlementsPort, roomCtlChannel } from './deps';
+import { roomCtlChannel } from './deps';
 import type { RoomCtlMessage } from './deps';
+import { deleteRoomHistory, readRoomHistory, serializeHistoryEntry } from './history';
 import { serializeMember, serializeRoom } from './serialize';
 
 /** This instance's origin id for RoomCtlMessage.from (loopback skipping). */
@@ -38,8 +42,11 @@ const INVITE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 /** 12 chars (displayed XXXX-XXXX-XXXX); legacy 8-char codes still join. */
 const INVITE_CODE_LENGTH = 12;
 
-/** Free-plan room lifetime; activity resets it. Premium rooms persist. */
-export const FREE_ROOM_TTL_MS = 4 * 60 * 60 * 1000;
+/** How long a room may sit COMPLETELY EMPTY — no members at all — before the
+ *  sweeper reclaims it and its history. Rooms never expire while anyone is in
+ *  them (or merely belongs to them): this is storage housekeeping for
+ *  abandoned rooms, not a session limit. */
+export const IDLE_ROOM_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function newInviteCode(): string {
   let code = '';
@@ -112,12 +119,31 @@ export class RoomsService {
     return last[0]?.seq ?? 0;
   }
 
-  /** Close the user's sockets in the room (all instances, via the ctl bus)
-   *  and broadcast an ephemeral presence removal. */
-  private async removeFromRoom(roomId: string, userId: string, reason: string): Promise<void> {
-    this.deps.hub.disconnectUser(roomId as RoomId, userId as UserId, 4403, reason);
+  /** The one chokepoint every departure passes through — kick, non-host and
+   *  host leave, ban, room delete. Closes the user's sockets in the room (all
+   *  instances, via the ctl bus), then tells everyone still here that the
+   *  roster changed: member.removed (the People list refetches) plus the
+   *  ephemeral presence removal. Both are seq 0 on purpose — presence.diff
+   *  because it is ephemeral by nature, member.removed because an older
+   *  client cannot parse the type and would read a persisted seq as a
+   *  permanent gap. */
+  private async removeFromRoom(
+    roomId: string,
+    userId: string,
+    reason: MemberRemovalReason,
+  ): Promise<void> {
+    this.deps.hub.disconnectUser(
+      roomId as RoomId,
+      userId as UserId,
+      4403,
+      MEMBER_REMOVAL_CLOSE_TEXT[reason],
+    );
     const message: RoomCtlMessage = { kind: 'kick', roomId, userId, from: CTL_ORIGIN };
     await this.deps.bus.publish(roomCtlChannel(roomId), message);
+    this.deps.events.emitEphemeral(roomId as RoomId, 'member.removed', {
+      userId: userId as UserId,
+      reason,
+    });
     this.deps.events.emitEphemeral(roomId as RoomId, 'presence.diff', {
       upserts: [],
       removed: [userId as UserId],
@@ -134,10 +160,6 @@ export class RoomsService {
   ): Promise<{ room: RoomDoc; member: MemberDoc }> {
     const { store } = this.deps;
     const now = this.now();
-    // Free plan: rooms expire after FREE_ROOM_TTL_MS of inactivity; premium
-    // rooms (and their history) persist.
-    const entitlements = await getEntitlementsPort(this.deps).getFor(ownerId);
-    const expiresAt = entitlements.plan === 'free' ? now + FREE_ROOM_TTL_MS : null;
     const room = await this.insertWithFreshCode((code) =>
       store.rooms.insertOne({
         id: newId() as RoomId,
@@ -159,7 +181,11 @@ export class RoomsService {
         queue: { items: [], version: 0 },
         restream: null,
         master: null,
-        expiresAt,
+        // Rooms never expire on a clock. expiresAt stays null forever (the
+        // field is kept only for stored docs and old clients); the sweeper
+        // works off lastActivityAt + emptiness instead.
+        expiresAt: null,
+        lastActivityAt: now,
         createdAt: now,
       }),
     );
@@ -276,6 +302,9 @@ export class RoomsService {
     await store.members.deleteOne({ id: member.id });
     await this.removeFromRoom(roomId, userId, 'left');
 
+    // The roster broadcast sits ABOVE this early return on purpose: everything
+    // below is host-succession only, and a plain member walking out has to be
+    // visible to everyone still in the room.
     if (member.role !== 'host') {
       return;
     }
@@ -322,8 +351,23 @@ export class RoomsService {
     return out;
   }
 
-  /** Merge a policies patch (host/mods). maxPublishers may not exceed the
-   *  caller's plan cap. */
+  /** One page of the room's playback history, newest first. Members only —
+   *  what a room watched is as private as what it said, so this runs the same
+   *  membership gate as the message history. */
+  async listHistory(
+    roomId: string,
+    userId: string,
+    opts: { before?: number | undefined; limit: number },
+  ): Promise<{ entries: RoomHistoryEntry[]; nextBefore: number | null }> {
+    await this.requireRoom(roomId);
+    await this.requireMember(roomId, userId);
+    const page = await readRoomHistory(this.deps, roomId, opts);
+    return { entries: page.entries.map(serializeHistoryEntry), nextBefore: page.nextBefore };
+  }
+
+  /** Merge a policies patch (host/mods). maxPublishers is bounded by the
+   *  contract (1..12) and nothing else — 12 is where a WebRTC mesh stops
+   *  working, so it is the same ceiling for every room. */
   async updatePolicies(
     roomId: string,
     callerId: string,
@@ -332,13 +376,6 @@ export class RoomsService {
     const room = await this.requireRoom(roomId);
     const caller = await this.requireMember(roomId, callerId);
     this.requireRole(caller, 'host', 'moderator');
-    if (patch.maxPublishers !== undefined) {
-      const ent = await getEntitlementsPort(this.deps).getFor(callerId);
-      if (patch.maxPublishers > ent.maxPublishers) {
-        // Plan cap, not a room policy: 402 so the client offers an upgrade.
-        throw new AppError('PAYMENT_REQUIRED', 'maxPublishers exceeds plan limit');
-      }
-    }
     // Strip undefined fields so exactOptionalPropertyTypes never writes an
     // explicit undefined over an existing value.
     const policies: RoomPolicies = {
@@ -496,23 +533,16 @@ export class RoomsService {
     );
   }
 
-  /** Toggle theater layout; enabling requires relay (premium) entitlement.
-   *  The plan gate is PAYMENT_REQUIRED (402), not FORBIDDEN — clients show an
-   *  upgrade prompt for 402 and a permission refusal for 403. */
+  /** Toggle theater layout (host/mods). Theater is PURELY A LAYOUT: it puts
+   *  the shared media front and centre and says nothing about how media is
+   *  transported, so relayMode is deliberately left alone. Writing 'cf-sfu'
+   *  here used to hand the client a join path it cannot complete — the
+   *  transport is a separate decision, not a side effect of a view toggle. */
   async setTheater(roomId: string, callerId: string, enabled: boolean): Promise<RoomDoc> {
     const room = await this.requireRoom(roomId);
     const caller = await this.requireMember(roomId, callerId);
     this.requireRole(caller, 'host', 'moderator');
-    if (enabled) {
-      const ent = await getEntitlementsPort(this.deps).getFor(callerId);
-      if (!ent.relayAllowed) {
-        throw new AppError('PAYMENT_REQUIRED', 'theater mode requires a premium plan');
-      }
-    }
-    const updated = await this.deps.store.rooms.updateOne(
-      { id: room.id },
-      { theater: enabled, relayMode: enabled ? 'cf-sfu' : 'mesh' },
-    );
+    const updated = await this.deps.store.rooms.updateOne({ id: room.id }, { theater: enabled });
     if (updated === null) {
       throw new AppError('NOT_FOUND', 'room not found');
     }
@@ -556,51 +586,80 @@ export class RoomsService {
 
     const members = await this.deps.store.members.findMany({ roomId: rid });
     for (const m of members) {
-      await this.removeFromRoom(roomId, m.userId, 'room deleted');
+      await this.removeFromRoom(roomId, m.userId, 'roomDeleted');
       await this.deps.store.members.deleteOne({ id: m.id });
     }
     await this.deps.store.invites.deleteMany({ roomId: rid });
     await this.deps.store.messages.deleteMany({ roomId: rid });
     await this.deps.store.events.deleteMany({ roomId: rid });
     await this.deps.store.cursors.deleteMany({ roomId: rid });
+    await deleteRoomHistory(this.deps, rid);
     await this.deps.store.rooms.deleteOne({ id: room.id });
   }
 }
 
-/** Sweep expired rooms (free-plan TTL). Returns the deleted room ids. */
-export async function sweepExpiredRooms(deps: Deps, now: number): Promise<string[]> {
-  const expired = await deps.store.rooms.findMany({ expiresAt: { $lte: now } });
+/** Rooms examined per sweep pass, so one pass over a large collection stays
+ *  bounded; the next tick picks up where this one left off. */
+const IDLE_SWEEP_BATCH = 200;
+
+/**
+ * Reclaim ABANDONED rooms: those with no members at all whose last activity is
+ * older than IDLE_ROOM_TTL_MS. Nothing here can interrupt a live session — a
+ * room anyone still belongs to is skipped before any delete, so no one is ever
+ * disconnected by this sweep. Returns the deleted room ids.
+ *
+ * Candidates are drawn by createdAt (present on every doc, including rooms
+ * stored before lastActivityAt existed) since a room created after the cutoff
+ * cannot possibly have been idle since it; the real idleness test runs
+ * per-room below.
+ */
+export async function sweepIdleRooms(deps: Deps, now: number): Promise<string[]> {
+  const cutoff = now - IDLE_ROOM_TTL_MS;
+  const candidates = await deps.store.rooms.findMany(
+    { createdAt: { $lte: cutoff } },
+    { sort: [['createdAt', 1]], limit: IDLE_SWEEP_BATCH },
+  );
   const deleted: string[] = [];
-  for (const room of expired) {
+  for (const room of candidates) {
     try {
-      const members = await deps.store.members.findMany({ roomId: room.id });
-      for (const m of members) {
-        deps.hub.disconnectUser(room.id, m.userId, 4403, 'room expired');
-        await deps.store.members.deleteOne({ id: m.id });
+      // Anyone in the room — connected right now or simply still a member —
+      // keeps it alive, however long the room has been quiet. Banned rows are
+      // not "anyone": they must not pin a dead room forever.
+      const memberCount = await deps.store.members.count({ roomId: room.id, banned: false });
+      if (memberCount > 0) {
+        continue;
       }
+      // Legacy docs predate lastActivityAt; createdAt is the honest floor.
+      const lastActivityAt = room.lastActivityAt ?? room.createdAt;
+      if (lastActivityAt > cutoff) {
+        continue;
+      }
+      await deps.store.members.deleteMany({ roomId: room.id });
       await deps.store.invites.deleteMany({ roomId: room.id });
       await deps.store.messages.deleteMany({ roomId: room.id });
       await deps.store.events.deleteMany({ roomId: room.id });
       await deps.store.cursors.deleteMany({ roomId: room.id });
+      await deleteRoomHistory(deps, room.id);
       await deps.store.rooms.deleteOne({ id: room.id });
       deleted.push(room.id);
     } catch (err) {
-      deps.log.warn({ err, roomId: room.id }, 'room expiry sweep failed for room');
+      deps.log.warn({ err, roomId: room.id }, 'idle room sweep failed for room');
     }
   }
   return deleted;
 }
 
-export const ROOM_EXPIRY_SWEEP_INTERVAL_MS = 60 * 1000;
+/** Hourly: the idle window is 30 days, so minute precision buys nothing. */
+export const IDLE_ROOM_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
-/** Start the unref'd room-expiry sweeper; the returned stop function is
+/** Start the unref'd idle-room sweeper; the returned stop function is
  *  idempotent (same lifecycle contract as the compliance purge sweeper). */
-export function startRoomExpirySweeper(deps: Deps): () => void {
+export function startIdleRoomSweeper(deps: Deps): () => void {
   const timer = setInterval(() => {
-    sweepExpiredRooms(deps, Date.now()).catch((err: unknown) => {
-      deps.log.warn({ err }, 'room expiry sweep failed');
+    sweepIdleRooms(deps, Date.now()).catch((err: unknown) => {
+      deps.log.warn({ err }, 'idle room sweep failed');
     });
-  }, ROOM_EXPIRY_SWEEP_INTERVAL_MS);
+  }, IDLE_ROOM_SWEEP_INTERVAL_MS);
   timer.unref();
   let stopped = false;
   return () => {

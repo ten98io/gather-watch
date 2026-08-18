@@ -95,8 +95,12 @@ export function DropdownMenuContent({
   return (
     <div
       role="menu"
+      // Solid, not glass: a menu opens over static ground, and DESIGN.md §4
+      // reserves glass for surfaces floating over moving video. `shadow-e2`,
+      // not `shadow-glow`: an aurora halo under a context menu is the product
+      // shouting about a list of words.
       className={cn(
-        'glass-panel absolute z-[60] mt-2 min-w-44 p-1.5 shadow-glow',
+        'absolute z-[60] mt-1.5 min-w-44 rounded-card border border-hairline bg-surface-2 p-1 shadow-e2',
         align === 'end' ? 'right-0' : 'left-0',
         className,
       )}
@@ -127,8 +131,8 @@ export function DropdownMenuItem({
         setOpen(false);
       }}
       className={cn(
-        'flex w-full items-center gap-2 rounded-ctl px-3 py-2 text-left text-sm transition-colors duration-150',
-        destructive ? 'text-danger hover:bg-glass' : 'text-mid hover:bg-glass hover:text-hi',
+        'flex min-h-ctl-sm w-full items-center gap-2 rounded-sm px-2.5 py-1 text-left text-label transition-colors duration-150',
+        destructive ? 'text-danger hover:bg-surface-3' : 'text-mid hover:bg-surface-3 hover:text-hi',
         className,
       )}
     >

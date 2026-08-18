@@ -9,11 +9,15 @@ import type Hls from 'hls.js';
 import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
 import { isHlsRef } from './adapter';
+import { VolumeMixer } from './ducking';
 
 export class NativeAdapter implements PlayerAdapter {
   readonly kind = 'native' as const;
 
   private readonly el: HTMLMediaElement;
+  /** The user's volume and the duck gain, kept apart (lib/player/ducking.ts).
+   *  Mute is the element's own `muted`, so no duck gain can undo it. */
+  private readonly mixer = new VolumeMixer();
   private readonly listeners = new Map<AdapterEvent, Set<() => void>>();
   private hls: Hls | null = null;
   private hlsGeneration = 0;
@@ -114,7 +118,17 @@ export class NativeAdapter implements PlayerAdapter {
   }
 
   setVolume(volume: number): void {
-    this.el.volume = Math.min(1, Math.max(0, volume));
+    this.mixer.setUserVolume(volume);
+    this.applyVolume();
+  }
+
+  setDuck(gain: number): void {
+    this.mixer.setDuck(gain);
+    this.applyVolume();
+  }
+
+  private applyVolume(): void {
+    this.el.volume = this.mixer.effective();
   }
 
   on(evt: AdapterEvent, cb: () => void): () => void {

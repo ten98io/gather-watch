@@ -50,8 +50,10 @@ export type {
   ThemeName,
 } from './tokens';
 export {
+  AURORA_GRADIENT_STOPS,
   COLOR_TOKEN_NAMES,
   FILL_TOKENS,
+  INK_ON_GRADIENT_CSS_VAR,
   INKS,
   OVERLAY_SURFACES,
   STANDALONE_UI_TOKENS,
@@ -65,23 +67,32 @@ export {
   inkForFill,
   inkOn,
   inkOnCssVarName,
+  inkOnGradient,
   resolveAlias,
   resolveColorToken,
 } from './tokens';
 
 export type {
+  ControlSize,
+  ControlSizeName,
+  ElevationName,
   FontFamily,
   FontWeight,
   Layout,
   Motion,
   RadiusName,
+  ShadowLayer,
   SpacingName,
   Spring,
   TypeStep,
   TypeStepName,
 } from './scales';
 export {
+  CONTROL_SIZE_NAMES,
+  ELEVATION_NAMES,
   SPACING_RAMP,
+  controlSizes,
+  elevation,
   fontFamily,
   layout,
   motion,
@@ -98,17 +109,20 @@ export type {
 } from './emit-css';
 export {
   emitCssBlock,
+  emitCssControlMetrics,
   emitCssScaleVariables,
   emitCssThemes,
   emitCssVariables,
   emitShadowRootCss,
   formatColorToken,
+  formatElevation,
   formatOklch,
   formatRgba,
 } from './emit-css';
 
 export type {
   RnAuroraGradient,
+  RnElevation,
   RnGlow,
   RnInkOnFill,
   RnPalette,
@@ -118,6 +132,7 @@ export type {
 } from './emit-rn';
 export {
   emitRnAuroraGradient,
+  emitRnElevation,
   emitRnGlow,
   emitRnInkOnFill,
   emitRnPalette,

@@ -1,17 +1,28 @@
-# Gather — Cast relay: the Mode B share on TVs (decided 2026-08-17)
+# Gather — Cast relay: the screen share on TVs (decided 2026-08-17)
 
 Doctrine (owner, 2026-08-17, binding): **client-side wherever possible.** The
 user's own devices do the computing; a server enters the media path only where
-no client-side mechanism exists at all, and then only as a premium option that
-justifies itself with verified arithmetic. "Defer" and "cut" are legitimate
-verdicts below, and one of them is used.
+no client-side mechanism exists at all, and then only when verified arithmetic
+justifies it. "Defer" and "cut" are legitimate verdicts below, and one of them
+is used.
 
-Scope: this doc decides how the host's **Mode B screen share** becomes
-watchable on a TV. Everything else already has its answer: library/direct
-files cast device-native today (Default Media Receiver / AirPlay via
-`apps/web/lib/cast.ts`), and Mode A provider content casts through the site's
-own button, which the extension clicks — provider/DRM relay is permanently out
-of scope (ToS + output protection; docs/EXTENSION_FIRST.md Part 3).
+Scope: this doc decides how the host's **screen share** — internally "Mode B",
+one member's tab/screen re-streamed to the room over the mesh — becomes
+watchable on a TV. Everything else already has its answer: an item that is a
+**real fetchable URL** (a direct `{ kind: 'url' }` or `{ kind: 'hls' }`
+MediaRef) casts device-native today, because the page has a real
+`HTMLMediaElement` for the picker to act on — Default Media Receiver /
+AirPlay via `apps/web/lib/cast.ts`. Synced-source provider content ("Mode A")
+casts through the site's own button, which the extension clicks. Provider/DRM
+relay is permanently out of scope (ToS + output protection;
+docs/EXTENSION_FIRST.md Part 3).
+
+There is no "library" anywhere in this product — nobody uploads a stream and
+nothing transcodes. Wherever an older draft said "library items", read "items
+with a real URL".
+
+Costs below are operator costs, not prices. Gather has one tier: there is no
+plan to buy, so nothing here gates a feature behind payment.
 
 Every external claim was verified against official pages on 2026-08-16/17 and
 carries its source. Unpublished figures are marked as such. Do not promote an
@@ -74,8 +85,8 @@ Chromium-based Cast runtime. Two consequences:
 2. **Older hardware is written off now.** Gen 1–3 Chromecasts run a
    constrained legacy runtime; no document suggests WebRTC there and we will
    not claim it. Copy for those devices: *"This Chromecast is too old for
-   live shares. Library items still cast normally."* Their working routes are
-   Chrome's own **Cast tab** menu item — user-menu only, no web API can
+   live shares. Direct video links still cast normally."* Their working
+   routes are Chrome's own **Cast tab** menu item — user-menu only, no web API can
    trigger tab mirroring (support.google.com/chromecast/answer/3228332;
    macOS 15+ additionally requires granting Chrome Screen Recording
    permission) — and the Presentation API fallback.
@@ -102,16 +113,19 @@ URLs; it is only `cast:APPID` presentation URLs that cannot message back
 
 ### The TV is a seat, not a free rider
 
-- **Free mesh:** one more (N−1) leg at ~1.5 Mbps of the **sharer's** uplink.
-  The mainstream ~10 Mbps uplink crosses the ceiling at N=6
-  (docs/COST_MODEL.md) — a TV takes one of the six chairs: **five humans plus
-  the TV and the room is full.** The seat-count UI must count it and say so
-  ("Your TV counts as a viewer"). The TV peer is subject to the same
-  TURN-relay risk and pre-share ICE check as any free-tier peer.
-- **Premium SFU:** one more subscriber at the verified $0.05/GB Realtime
-  egress after the shared 1,000 GB/mo pool ≈ **$0.0371/TV-hour**
-  (docs/COST_MODEL.md; developers.cloudflare.com/realtime/sfu/pricing/).
-  Deterministic and cheap; no special-casing.
+- **On the mesh (every room today):** one more (N−1) leg at ~1.5 Mbps of the
+  **sharer's** uplink. The mainstream ~10 Mbps uplink crosses the ceiling at
+  N=6 (docs/COST_MODEL.md) — a TV takes one of the six chairs: **five humans
+  plus the TV and the room is full.** That ceiling is the host's broadband, not
+  a plan limit, which is exactly why the seat-count UI must count the TV and
+  say so ("Your TV counts as a viewer"): there is nothing to upgrade to, so the
+  honest number is the whole mitigation. The TV peer carries the same
+  TURN-relay risk and pre-share ICE check as any other peer.
+- **If the room is ever moved to the SFU:** one more subscriber at the verified
+  $0.05/GB Realtime egress after the shared 1,000 GB/mo pool ≈
+  **$0.0371/TV-hour** (docs/COST_MODEL.md;
+  developers.cloudflare.com/realtime/sfu/pricing/). Deterministic and cheap; no
+  special-casing. Nothing selects the SFU today.
 
 ---
 
@@ -125,7 +139,7 @@ installs (developer.apple.com/documentation/devicemanagement/start_airplay_mirro
 The web surface Apple does expose is per-`<video>`-element and requires a
 URL-addressable source — "an mp4, mpeg-ts, or HTTP Live Streaming (HLS)" URL;
 MSE/blob sources "by nature, are not compatible with AirPlay"
-(webkit.org/blog/15036). The Mode B share is a WebRTC `MediaStream` on
+(webkit.org/blog/15036). The screen share is a WebRTC `MediaStream` on
 `srcObject` — a blob source by construction. Per-element AirPlay of the share
 is therefore impossible in any browser at this layer, permanently. What every
 Apple user already has is OS mirroring, which shows the share, the room,
@@ -136,13 +150,13 @@ entire client-side AirPlay feature:
 
 - **Where it lives:** rows inside the always-visible cast control popover
   (shipped 2026-08-17 in `apps/web/components/stage/PlayerControls.tsx`),
-  shown only while a Mode B share is on stage, keyed by platform.
+  shown only while a screen share is on stage, keyed by platform.
 - **macOS copy:** *"To put this on your TV: menu bar → Control Center →
   Screen Mirroring."*
 - **iPhone/iPad copy:** *"To put this on your TV: Control Center (swipe down
   from the top-right) → Screen Mirroring."*
 
-Safari + library/direct media is unchanged: those sources are real URLs, so
+Safari + a direct/HLS URL is unchanged: those sources are real URLs, so
 the genuine AirPlay picker keeps working through the existing machinery
 (`webkitShowPlaybackTargetPicker` / `remote.prompt()` in
 `apps/web/lib/cast.ts`).
@@ -197,7 +211,10 @@ out … you will not be able to … start new live streams"), and
 worse-than-mirroring latency we cannot even put a number on. Revisit on
 either trigger:
 
-- a paying user asks for it, or
+- users actually ask for it (there are no paying users to ask — this trigger
+  used to read "a paying user asks", which was the plan-tier version of the
+  same test; the test is demand, and demand is now measured in support
+  tickets), or
 - Cloudflare ships WHIP-in → HLS-out (their "coming soon"), which deletes the
   transcoder from the design entirely: the sharer's browser WHIPs directly
   (H.264 constrained-baseline is in Stream's WebRTC codec list), Stream mints
@@ -209,7 +226,7 @@ either trigger:
 ## 4. The durable AirPlay fix is the native iOS app
 
 The roadmap iOS app closes this gap properly: `AVRoutePickerView` gives a
-real, in-app AirPlay button; library/direct items play through a real
+real, in-app AirPlay button; direct/HLS items play through a real
 `AVPlayer` on an HLS/mp4 URL and AirPlay as first-class video; and the app
 sits above Safari's per-element restrictions, so whatever share-to-TV path is
 built there is judged against native APIs, not the web ceiling. That is why
@@ -223,7 +240,7 @@ does later.
 
 | Not built | Why — permanent |
 |---|---|
-| Provider relay (proxying or re-streaming YouTube/Netflix/Spotify content) | Content never traverses our infra — ToS and the entire point of Mode A |
+| Provider relay (proxying or re-streaming YouTube/Netflix/Spotify content) | Content never traverses our infra — ToS, and the entire point of synced-source playback |
 | DRM anything (capture, decrypt, re-encode, cast of protected surfaces) | Output protection blacks it out by design; also the law |
 | Programmatic mirroring (tab or screen, any OS) | No API exists for anyone: Chrome's "Cast tab" is user-menu only; AirPlay mirroring is Control-Center only; the sole programmatic hook is an enterprise MDM command |
 | Always-on transcode service | A server in the media path with a standing bill, for outcomes clients already get; §3's deferral is the only door, and it stays shut until a trigger fires |
@@ -240,7 +257,7 @@ does later.
    `apps/web/app/tv/page.tsx` (+ `tv-client.tsx`): view-only join over the
    existing stack — `apps/web/lib/room-connection.ts`,
    `apps/web/lib/call-mesh.ts` — with the share render path lifted from
-   `apps/web/components/stage/ModeBStage.tsx` (render only, no controls).
+   `apps/web/components/stage/ScreenShareStage.tsx` (render only, no controls).
 3. **`role: "tv"` participant.** `packages/contracts` (participant role) and
    room state, so seat counting and labels are honest; mesh accounting counts
    the TV as a full leg (§1).
@@ -249,7 +266,7 @@ does later.
    `{roomCode, guestToken}` from `urn:x-cast:watch.gather.tv`; sender-side
    session helpers in `apps/web/lib/cast.ts` — the on-demand `cast_sender.js`
    loader already exists there; add our receiver app ID beside
-   `DEFAULT_MEDIA_RECEIVER_APP_ID`, which library items keep using unchanged.
+   `DEFAULT_MEDIA_RECEIVER_APP_ID`, which direct-URL items keep using unchanged.
 5. **Player-bar cast UI.** The live-triage wave (shipped 2026-08-17) made
    the cast control always-visible with honest states; this slice **extends
    that control, it does not duplicate it**: a "Watch on Chromecast" action

@@ -10,13 +10,13 @@ would be expensive.
 
 ---
 
-## Part 1 — Elastic sync
+## Part 1 — Elastic sync — **SHIPPED**
 
-### What already exists
+### The problem this replaced
 
-`packages/sync-core/src/drift.ts` is a competent controller: deadband,
-hysteresis, proportional rate-nudging, hard-seek escape. Its defaults are the
-problem, not its design:
+`packages/sync-core/src/drift.ts` was already a competent controller —
+deadband, hysteresis, proportional rate-nudging, hard-seek escape. Its
+*defaults* were the problem, not its design:
 
 ```
 deadbandMs: 60      seekThresholdMs: 2000     rate clamp: 0.95–1.05
@@ -26,33 +26,43 @@ deadbandMs: 60      seekThresholdMs: 2000     rate clamp: 0.95–1.05
 and a seek is precisely what wrecks perceived quality (SoundCloud restarts
 buffering; DRM players may renegotiate a licence and stall for seconds).
 
-### The change: an offset-aware controller
+Those numbers still exist, but only as an explicitly-named preset,
+`STRICT_SYNC`, for the one case they are right for: a single device driving
+two of its own players. Nothing in a room uses it.
 
-Drift is currently `expectedMs − actualMs` against the room's projected
-position. Add a learned per-viewer anchor:
+### The change, as built: an offset-aware controller
+
+Drift used to be `expectedMs − actualMs` against the room's projected
+position. It is now measured against a learned per-viewer anchor:
 
 ```
 drift = (expectedMs − anchorOffsetMs) − actualMs
 ```
 
-- `anchorOffsetMs` is **learned, not configured**. It is established when a
-  track starts or after a buffering event: if the viewer settles at a stable
-  lag, adopt it instead of fighting it.
-- It decays slowly toward 0 while conditions are good (so a viewer who fell
-  behind on a bad connection quietly catches up over minutes, imperceptibly),
-  and is hard-capped (≈15s).
-- Re-anchor on: track change, host seek, tab wake, network recovery.
+- `anchorOffsetMs` is **learned, not configured** (`anchorEnabled`,
+  `anchorAdoptAfterMs` 3 s, `anchorStabilityMs` 400 ms). It is established
+  when a track starts or after a buffering event: if the viewer settles at a
+  stable lag, adopt it instead of fighting it.
+- It decays slowly toward 0 while conditions are good — 20 ms/s for video,
+  10 ms/s for music, so an 8 s anchor evaporates over ~6.7 minutes,
+  imperceptibly — and is hard-capped at `anchorMaxMs` 15 s.
+- Re-anchor on track change, host seek, tab wake, network recovery
+  (`anchorRearmAfterMs` 8 s).
 
 ### Retuned bands
 
 Bands follow the **playing item's media kind** (video vs music — rooms are
-adaptive; there is no watch/listen room split):
+adaptive; there is no watch/listen room split). The two presets are
+`WATCH_ELASTIC` and `LISTEN_ELASTIC`; the names are historical, they are
+selected per item.
 
-| Setting | Video | Music | Why |
+| Setting | Video (`WATCH_ELASTIC`) | Music (`LISTEN_ELASTIC`) | Why |
 |---|---|---|---|
 | deadband | 2000ms | 1500ms | below this, do nothing at all |
+| release (hysteresis) | 500ms | 400ms | leaving the band is stickier than entering it |
 | seek threshold | 12000ms | 8000ms | seek only when genuinely lost |
 | rate clamp | 0.97–1.03 | 0.99–1.01 | see below |
+| anchor decay | 20 ms/s | 10 ms/s | every ms music sheds is paid for in audible rate |
 
 **Rate-nudging is much more audible in music than video.** A 5% rate change
 shifts pitch by nearly a semitone — unacceptable while music plays, barely
@@ -64,7 +74,7 @@ absorbs the difference and no correction is attempted at all.
 Host **intent** events (play, pause, seek, track change) are never subject to
 the comfort band — they apply immediately. The band governs *drift only*.
 
-### Consequence A: chat must be anchored to media time
+### Consequence A: chat must be anchored to media time — **NOT BUILT**
 
 Decision taken: messages and reactions carry the sender's playback position,
 and render for you when **your** playback reaches that position. Spoilers
@@ -72,6 +82,12 @@ become structurally impossible and the offset stops being visible. Requires:
 a `mediaPositionMs` field on chat messages, client-side hold-and-release
 keyed on local position, and an "N messages ahead" affordance so nothing is
 silently withheld. Text, reactions and emotes only.
+
+**Status: none of it exists.** `grep -rn mediaPositionMs packages/contracts
+services/api apps/web` is empty — `Message` carries no position, so there is
+nothing for a client to hold on. It is on the backlog (HANDOFF). The server
+half is the gate: without the field on the wire, the client behaviour cannot
+even be prototyped honestly.
 
 ### Consequence B — THE CORRECTION: live call audio does not share the content's path
 
@@ -95,14 +111,18 @@ conversation with several seconds of one-way delay is not a conversation —
 people talk over each other continuously. Anything past roughly 400ms
 round-trip degrades turn-taking badly.
 
-**Therefore the comfort band must be adaptive:**
+**Therefore the comfort band must be adaptive — and it is (SHIPPED):**
 
-- **Nobody on mic** → full elasticity (up to the ~10s cap). Smoothness wins;
-  chat is anchored, so nothing spoils.
-- **A call is live with people actually speaking** → converge tighter
-  (target ≤1s) while voice is active, using rate-nudging only, never seeks.
-  Reactions in a live call are inherently real-time; the content has to be
-  close enough for them to make sense.
+- **Nobody on mic** → full elasticity (up to the ~10s cap). Smoothness wins.
+  (Chat is *not* yet anchored — see Consequence A — so this is the state where
+  a spoiler can still reach you by text. That is a real gap, not a design
+  choice.)
+- **A call is live with people actually speaking** → converge tighter while
+  voice is active, using rate-nudging only, never seeks. The controller carries
+  a `voiceActive` input and blends toward the tight band rather than switching
+  (`blend` in `packages/sync-core/src/drift.ts`), so the transition itself is
+  not audible. Reactions in a live call are inherently real-time; the content
+  has to be close enough for them to make sense.
 - Show this honestly in the UI as a room state ("Talking — staying in step"),
   not as a technical readout.
 
@@ -142,8 +162,12 @@ is a single-window experience, and it is what "browse-here-like" implies.
 
 ### One contract, three implementations
 
-Define `PlaybackDriver` once (in `packages/contracts` or a new
-`packages/playback`), implemented by:
+`PlaybackDriver` is **defined, but not yet shared**: it lives in
+`apps/extension/src/driver.ts` (with the elastic corrector beside it), not in
+`packages/contracts` or a `packages/playback`. So the interface exists and the
+extension implements it; web and mobile satisfy the same shape by hand. Lifting
+it into a package is the honest completion of this section and has not
+happened. The three implementations:
 
 1. **Web adapters** (existing YouTube/HLS/SoundCloud/Vimeo/native) — for
    content the web can play directly. Keeps a room link working instantly
@@ -176,10 +200,17 @@ tree (2026-08-17) except item 6:
    `chrome.storage.session`; alarms keep-alive re-arms the drive timer.
 5. ~~No Shadow DOM traversal / SPA handling~~ — shadow-root traversal in
    `content.ts`, SPA navigation watch in `spaWatch.ts`.
-6. **Still open:** divergent provider registries (web `capability` tiers vs
-   extension `api|drm|generic` tiers) plus the contracts embed enum — adding
-   a service still means editing more than one place. Unification is
-   `docs/WEB_SLIMMING.md` step 5, gated with the deletions.
+6. **Still open:** the provider registry is written down **three** times —
+   `apps/web/lib/providers.ts`, `apps/extension/src/providers.ts`, and the
+   `embed` provider enum in `packages/contracts/src/entities.ts`. The two
+   registries have since converged on the same 17 ids plus a `generic`
+   fallback and the same `capability` vocabulary (`full-sync | approximate |
+   extension | generic`); the extension's is the superset, carrying host
+   regexes, DRM flags, cast descriptors and a derived `tier`
+   (`api | drm | generic`, from `tierFor()`). So the *vocabularies* no longer
+   diverge — the duplication does, and adding a service still means editing
+   more than one place. Unification is `docs/WEB_SLIMMING.md` step 5, gated
+   with the deletions.
 
 ---
 
@@ -188,16 +219,19 @@ tree (2026-08-17) except item 6:
 > Owner: *"cast any media, any input and any output is the philosophy"* and
 > *"share my screen actually just starts Mode B, not casting."*
 
-The second point is correct and is a naming bug: **Share screen** starts a
+The second point is correct and was a naming bug: **Share screen** starts a
 Mode B re-stream *to room members*. It has nothing to do with sending video
-to a TV. It will be renamed so it reads as share-to-room.
+to a TV. The copy now says so — the dialog is titled "Share your screen with
+the room" (`apps/web/components/stage/ScreenShareStage.tsx`) — and casting is
+a separate, always-visible control. Getting a share onto an actual TV is
+`docs/CAST_RELAY.md`, and it is a different mechanism entirely.
 
 The first point runs into a hard limit that no amount of engineering removes:
 
-- **Chromecast/AirPlay receive a URL** (or a mirrored tab). They work for
-  direct MP4/HLS and for your own uploads — which is why the current buttons
-  appear only for real `<video>` elements and silently vanish for YouTube,
-  embeds and DRM.
+- **Chromecast/AirPlay receive a URL** (or a mirrored tab). They work for a
+  direct MP4/HLS source — a real URL a receiver can fetch on its own — which
+  is why the current buttons appear only for real `<video>` elements and
+  silently vanish for YouTube, embeds and DRM.
 - **DRM content cannot be cast by a third party.** Widevine/FairPlay licences
   are bound to the playback session; output protection blacks out mirrored or
   captured protected surfaces by design. This is the same wall as Mode B.

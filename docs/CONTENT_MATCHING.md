@@ -9,12 +9,18 @@ ID, a different cut, or different ad load. This doc fixes the design stance.
 **We never move the content — we move the clock.** Every member plays their
 *own* licensed copy, through their *own* authenticated session, from their
 *own* region's CDN, with their *own* DRM license. The room synchronizes only
-the control plane: play/pause/seek/position (sync-core, ≤150ms drift). This is
-exactly what Mode A + the extension already implement, and it is the same
-model Teleparty/Prime Watch Party use. DRM is never decrypted, proxied,
-re-streamed, or region-spoofed — that line is legal (DMCA §1201 /
-EU InfoSoc art. 6), contractual (every platform ToS), and technical
-(EME/CDM output protection blacks out any capture of a protected surface).
+the control plane: play/pause/seek/position. This is exactly what Mode A + the
+extension already implement, and it is the same model Teleparty/Prime Watch
+Party use. DRM is never decrypted, proxied, re-streamed, or region-spoofed —
+that line is legal (DMCA §1201 / EU InfoSoc art. 6), contractual (every
+platform ToS), and technical (EME/CDM output protection blacks out any capture
+of a protected surface).
+
+Note the tolerance this design assumes is **not** frame-lock. Sync is elastic
+(`packages/sync-core`): a 2 s deadband for video, 1.5 s for music, a learned
+per-viewer anchor up to 15 s, and a hard seek only past 12 s / 8 s. Any
+matching rule below that depends on sub-second agreement is asking for
+something the room does not provide — see `docs/EXTENSION_FIRST.md` Part 1.
 
 Consequence: "sharing DRM content cross-region" reduces to a **content
 resolution problem** — given what the host queued, find the equivalent
@@ -68,7 +74,37 @@ local equivalent's timeline.
 
 ## Status
 
-Implemented today: per-member local playback (Mode A adapters + extension
-driver), paused backdrop, drift-corrected sync, non-DRM-only Mode B.
-This doc adds the target design for: canonical IDs + external-ID enrichment,
-the availability probe, metadata fallback, and the readiness handshake.
+**Implemented today**: per-member local playback (web Mode A adapters +
+the extension driver, which is preferred whenever it is installed), paused
+backdrop, elastic drift-corrected sync, non-DRM-only Mode B. A `MediaRef` is
+already an identity rather than a bare URL for the provider tiers that have one
+(`youtube` videoId, `vimeo` videoId, `embed` provider + url) — the long tail
+falls back to `{ kind: 'page', url }`, which is a URL and nothing more.
+
+**Rung 1 is half-built; rungs 2–4 are not built at all.**
+
+- **Rung 1 (canonical identity + metadata)** — the server-side resolver exists:
+  `POST /media/resolve` (`services/api/src/modules/metadata/`) turns a pasted
+  link or a `MediaRef` into `ResolvedMedia { title, artworkUrl, durationMs,
+  providerId, providerName, authorName, canonicalId, canonicalUrl, source }`,
+  via keyless oEmbed with an Open Graph fallback, through the hardened fetcher.
+  So `(platform, canonicalId)`, duration and artwork are already on the wire.
+  What is **missing** is external-ID enrichment: nothing resolves IMDb, TMDB,
+  EIDR, ISRC or UPC, so the cross-platform match in rung 4 has no key to match
+  on.
+- **Rungs 2–4 (availability probe, metadata fallback search, cross-platform
+  fallback)** — nothing. No client reports "can I play this here?", no search
+  runs, and the ±2 s / ±90 s duration check is not applied anywhere.
+- **The readiness handshake** — nothing. No `canPlay | fallbackMatched |
+  unavailable` report exists on the wire, so the host cannot see who would be
+  left out before pressing play.
+- **Ad-break signalling** — nothing. No `adBreak` client event exists.
+- **Rung 5 (graceful non-participation)** — partly real. A member with no
+  playable source sees an honest stage panel rather than a broken player, and
+  chat/call/queue/presence all keep working. The *reason* shown is generic; it
+  is not "not available in your region on X", because nothing has established
+  that fact.
+
+This doc is the **target design** for the rest. The gate is external-ID
+enrichment on `ResolvedMedia` — without a shared key, none of rungs 2–4 can be
+built honestly.

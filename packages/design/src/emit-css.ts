@@ -29,14 +29,27 @@ import { hexToRgb, oklchToHex } from './oklch';
 import {
   COLOR_TOKEN_NAMES,
   FILL_TOKENS,
+  INK_ON_GRADIENT_CSS_VAR,
   INKS,
   colorTokens,
   cssVarName,
   inkCssVarName,
   inkOn,
   inkOnCssVarName,
+  inkOnGradient,
 } from './tokens';
-import { fontFamily, layout, motion, radii, spacing, typeRamp } from './scales';
+import {
+  CONTROL_SIZE_NAMES,
+  ELEVATION_NAMES,
+  controlSizes,
+  elevation,
+  fontFamily,
+  layout,
+  motion,
+  radii,
+  spacing,
+  typeRamp,
+} from './scales';
 
 /** `oklch(…)` keeps the authored colour; `hex` renders it for older targets. */
 export type CssColorFormat = 'oklch' | 'hex';
@@ -185,6 +198,13 @@ function inkDeclarations(theme: ThemeName, format: CssColorFormat): Declaration[
       value: `var(${inkCssVarName(inkOn(theme, fill).name)})`,
     });
   }
+  // The gradient is three fills under one label, so it needs its own ink — the
+  // one whose worst stop is best. See `inkOnGradient`.
+  declarations.push({
+    property: INK_ON_GRADIENT_CSS_VAR,
+    value: `var(${inkCssVarName(inkOnGradient(theme).name)})`,
+    note: 'a label crossing all three aurora stops takes one ink',
+  });
   return declarations;
 }
 
@@ -215,12 +235,34 @@ export function emitCssBlock(
 }
 
 /**
- * Theme-independent geometry, type and motion as custom properties.
+ * One elevation level as a `box-shadow` value.
+ *
+ * The alpha is a wash of `--ink-black` rather than a theme token on purpose: a
+ * shadow is an absence of light and must not invert when the palette does. The
+ * `var()` indirection (rather than a literal `oklch(0 0 0 / …)`) keeps every
+ * colour in the emitted stylesheet addressable by name, which is the rule the
+ * rest of this file follows.
+ */
+export function formatElevation(name: (typeof ELEVATION_NAMES)[number]): string {
+  return elevation[name]
+    .map(
+      (layer) =>
+        `0 ${layer.y}px ${layer.blur}px ${layer.spread}px ` +
+        `color-mix(in oklch, var(${inkCssVarName('inkBlack')}) ${formatNumber(
+          layer.alpha * 100,
+        )}%, transparent)`,
+    )
+    .join(', ');
+}
+
+/**
+ * Theme-independent geometry, type, elevation and motion as custom properties.
  *
  * The web app reads most of these through Tailwind instead, but a shadow root
  * has no Tailwind and an email/canvas target has no build step, so they are
  * available as variables too. Names mirror the token names: `--space-lg`,
- * `--radius-panel`, `--text-body-size`, `--dur-micro`, `--layout-rail`.
+ * `--radius-panel`, `--text-body-size`, `--elevation-e2`, `--dur-micro`,
+ * `--layout-rail`.
  */
 export function emitCssScaleVariables(options: CssEmitOptions = {}): string {
   const declarations: Declaration[] = [];
@@ -248,6 +290,9 @@ export function emitCssScaleVariables(options: CssEmitOptions = {}): string {
       value: step.letterSpacing === 0 ? '0' : `${formatNumber(step.letterSpacing)}em`,
     });
   }
+  for (const name of ELEVATION_NAMES) {
+    declarations.push({ property: `--elevation-${name}`, value: formatElevation(name) });
+  }
   declarations.push({ property: '--dur-micro', value: `${motion.microMs}ms` });
   declarations.push({ property: '--dur-panel', value: `${motion.panelMs}ms` });
   declarations.push({ property: '--dur-max', value: `${motion.maxMs}ms` });
@@ -260,6 +305,57 @@ export function emitCssScaleVariables(options: CssEmitOptions = {}): string {
     });
   }
   return renderDeclarations(declarations, options.indent ?? '  ', options.includeComments ?? true);
+}
+
+/**
+ * Control geometry, as the ONE thing in the system that has to be a runtime CSS
+ * variable rather than a build-time constant.
+ *
+ * Every other scale can be inlined by Tailwind or by RN, because it is the same
+ * number everywhere. A control's height is not: it is 32px where there is a
+ * mouse and 44px where there is a finger, and which of those is true is a
+ * property of the device, not of the build. `@media (pointer: coarse)` is the
+ * browser answering that question directly — no breakpoint guess, no user-agent
+ * sniff, no JS, and correct for the cases a width breakpoint gets wrong in both
+ * directions (a desktop window dragged narrow keeps its mouse; a 1024px tablet
+ * does not have one).
+ *
+ * Emitted as `--control-h-md`, `--control-px-md`, `--control-gap-md`. Only the
+ * heights move under coarse pointers — padding and gap are proportions of the
+ * label, not of the target.
+ */
+export function emitCssControlMetrics(
+  selector: string = ':root',
+  options: CssEmitOptions = {},
+): string {
+  const indent = options.indent ?? '  ';
+  const comments = options.includeComments ?? true;
+
+  const base: Declaration[] = [];
+  for (const name of CONTROL_SIZE_NAMES) {
+    const size = controlSizes[name];
+    base.push({ property: `--control-h-${name}`, value: `${size.height}px` });
+    base.push({ property: `--control-px-${name}`, value: `${size.paddingX}px` });
+    base.push({ property: `--control-gap-${name}`, value: `${size.gap}px` });
+  }
+
+  const touch: Declaration[] = CONTROL_SIZE_NAMES.map((name) => ({
+    property: `--control-h-${name}`,
+    value: `${controlSizes[name].touchHeight}px`,
+  }));
+
+  const head = comments
+    ? `${indent}/* Desktop density. The coarse-pointer block below is the touch answer. */\n`
+    : '';
+  const coarseHead = comments
+    ? `${indent}/* A finger, not a mouse: every control goes back to a ${layout.tap}px target. */\n`
+    : '';
+
+  return (
+    `${selector} {\n${head}${renderDeclarations(base, indent, comments)}\n}\n\n` +
+    `@media (pointer: coarse) {\n${coarseHead}${indent}${selector} {\n` +
+    `${renderDeclarations(touch, `${indent}${indent}`, comments)}\n${indent}}\n}`
+  );
 }
 
 const GENERATED_BANNER =
@@ -279,6 +375,7 @@ export function emitCssThemes(options: CssThemeBlockOptions = {}): string {
   ];
   if (options.includeScales === true) {
     parts.push(`:root {\n${emitCssScaleVariables(options)}\n}`);
+    parts.push(emitCssControlMetrics(':root', options));
   }
   return `${parts.join('\n\n')}\n`;
 }
@@ -302,6 +399,7 @@ export function emitShadowRootCss(options: ShadowRootCssOptions = {}): string {
     ? `${emitCssVariables('dark', options)}\n\n${emitCssScaleVariables(options)}`
     : emitCssVariables('dark', options);
   parts.push(`${host} {\n${dark}\n}`);
+  if (scales) parts.push(emitCssControlMetrics(host, options));
   parts.push(`${host}([data-theme='light']) {\n${emitCssVariables('light', options)}\n}`);
 
   if (options.followSystemTheme ?? true) {

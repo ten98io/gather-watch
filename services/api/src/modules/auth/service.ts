@@ -16,6 +16,7 @@ import type {
   UserDoc,
 } from '../../adapters/ports';
 import type { Deps } from '../types';
+import { serializeMember } from '../rooms/serialize';
 
 const DEFAULT_ACCENT = '#8b5cf6';
 
@@ -319,6 +320,12 @@ export class AuthService {
       muted: false,
     });
     const { session, refreshToken } = await this.createSession(user.id, device);
+    // Announce the arrival the same way RoomsService.joinByInvite does, or
+    // nobody already in the room sees the guest until they refresh. It MUST
+    // land before the tip read below: the joiner's own lastEventSeq has to
+    // include this event, otherwise their socket opens behind the stream and
+    // burns a replay on connect.
+    await this.deps.events.emit(room.id, 'member.updated', serializeMember(member));
     const last = await store.events.findMany(
       { roomId: room.id },
       { sort: [['seq', -1]], limit: 1 },

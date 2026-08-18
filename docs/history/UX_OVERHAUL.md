@@ -1,8 +1,19 @@
-> **HISTORICAL (moved 2026-08-17).** This overhaul is executed. Its surviving
-> decisions — the locked-decision table and the ≤3-step budget — now live in
-> `DESIGN.md` §11–12, which is the binding copy. Note D3 evolved: the listen
-> composition is now driven per playing item (`mediaKindFor`), not by a room
-> kind, which no longer exists as a user choice.
+> **HISTORICAL (moved 2026-08-17; re-annotated 2026-08-18). DO NOT BUILD FROM
+> THIS FILE.** This overhaul is executed. Its surviving decisions — the
+> locked-decision table and the ≤3-step budget — now live in `DESIGN.md`
+> §11–12, which is the binding copy; the copy below is the superseded draft.
+> Three things in it are dead:
+>
+> - **D3 evolved.** The listen composition is driven per playing item
+>   (`mediaKindFor`), not by a room kind, which no longer exists as a user
+>   choice.
+> - **"Room CRUD + 4h free-plan expiry"** in §0's ground-truth table. There is
+>   no free plan and no expiry: rooms are created `expiresAt: null` and never
+>   expire. `FREE_ROOM_TTL_MS` is deleted; the only sweep removes rooms that are
+>   *empty* and 30 days quiet (`IDLE_ROOM_TTL_MS`).
+> - **The step budget's "Upgrade to Premium" row and its "Stripe checkout"
+>   exception.** There is nothing to upgrade to and no checkout. `DESIGN.md`
+>   §12 is the current table and has neither.
 
 # UX overhaul spec (supersedes the raw feedback list)
 

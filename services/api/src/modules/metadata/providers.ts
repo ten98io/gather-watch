@@ -23,7 +23,7 @@ export interface OEmbedEndpoint {
 }
 
 export interface ProviderDescriptor {
-  /** Stable provider key ('youtube', 'spotify', 'library', 'link'…). */
+  /** Stable provider key ('youtube', 'spotify', 'stream', 'link'…). */
   id: string;
   /** Display name ('YouTube', 'Apple Music', or a bare hostname). */
   name: string;
@@ -32,7 +32,7 @@ export interface ProviderDescriptor {
   /** Provider-native id when the link carries one. */
   canonicalId: string | null;
   oembed: OEmbedEndpoint | null;
-  /** Read the page's OG tags (false for raw media bytes and library assets). */
+  /** Read the page's OG tags (false for raw media bytes and stream manifests). */
   ogFallback: boolean;
   /** Title derived from the link itself — used only when nothing was fetched. */
   fallbackTitle: string | null;
@@ -268,13 +268,15 @@ export function describeUrl(raw: string): ProviderDescriptor | null {
 }
 
 /**
- * Classify a MediaRef. `hls` (library uploads) keeps whatever the asset
- * pipeline already produced — nothing is fetched for it.
+ * Classify a MediaRef. `hls` keeps whatever metadata the row already carries —
+ * nothing is fetched for a playlist manifest. No surface produces an `hls` ref
+ * since services/media (the library) was deleted; only rows stored before then
+ * still reach this arm.
  */
 export function describeMediaRef(ref: MediaRef): ProviderDescriptor {
   switch (ref.kind) {
     case 'hls':
-      return descriptor({ id: 'library', name: 'Library', canonicalId: ref.assetId });
+      return descriptor({ id: 'stream', name: 'Stream', canonicalId: ref.assetId });
     case 'youtube':
       return descriptor({
         id: 'youtube',
@@ -299,6 +301,16 @@ export function describeMediaRef(ref: MediaRef): ProviderDescriptor {
       return describeUrl(ref.url) ?? descriptor({ id: 'direct', name: 'Direct link' });
     case 'embed':
       return describeUrl(ref.embedUrl) ?? embedFallback(ref.provider);
+    // An arbitrary web page: the same classification a raw link gets, because
+    // that is all this ref ever was. describeUrl resolves a recognised host to
+    // its real provider descriptor and any other to the generic 'link' tier;
+    // the ?? arm is unreachable for a stored ref (HttpsUrl already parsed) and
+    // exists so a hand-built ref cannot return undefined.
+    case 'page':
+      return (
+        describeUrl(ref.url) ??
+        descriptor({ id: 'link', name: 'Web page', pageUrl: ref.url, ogFallback: true, genericName: true })
+      );
   }
 }
 

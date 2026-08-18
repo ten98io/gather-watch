@@ -93,30 +93,6 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  # ── Media pipeline worker (ffmpeg → HLS → MinIO) ──────────────────────────
-  media:
-    build:
-      context: ..
-      dockerfile: services/media/Dockerfile
-    restart: unless-stopped
-    env_file:
-      - ../.env
-    environment:
-      NODE_ENV: production
-      MONGO_URL: mongodb://mongo:27017/gather
-      REDIS_URL: redis://redis:6379
-      S3_ENDPOINT: http://minio:9000
-      MEDIA_PORT: "4500" # minimal health endpoint only — not proxied
-    depends_on:
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-
   # ── Data stores ────────────────────────────────────────────────────────────
   mongo:
     image: mongo:7
@@ -171,9 +147,13 @@ services:
       retries: 5
       start_period: 10s
 
-  # One-shot bucket bootstrap: creates the bucket and makes the public/ prefix
-  # anonymously downloadable (HLS segments, avatars). Everything else stays
-  # private behind presigned URLs.
+  # One-shot bucket bootstrap: creates the bucket, then makes the public/
+  # prefix anonymously downloadable. NOTE: nothing writes that prefix any
+  # more. The API's only object key is chat/<roomId>/<assetId>/<filename>
+  # (services/api/src/modules/chat/attachments.ts) and it is always served
+  # through a presigned GET redirect, so the whole bucket is private in
+  # practice; the prefix policy is left applied for buckets that still hold
+  # objects from the deleted services/media.
   minio-init:
     image: minio/mc:latest
     restart: "no"

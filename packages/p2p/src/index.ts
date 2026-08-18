@@ -55,8 +55,8 @@ export type { BeaconFollowerOptions, BeaconSenderOptions, BeaconState } from './
 export { TurnCredentialManager } from './turn';
 export type { TurnCredentialManagerOptions } from './turn';
 
-export { MeshManager } from './mesh';
-export type { MeshConnectionState, MeshManagerOptions } from './mesh';
+export { MESH_LANES, MeshManager } from './mesh';
+export type { MeshConnectionState, MeshLane, MeshManagerOptions } from './mesh';
 
 export { classifyLinkStats } from './linkstate';
 export type { MeshLinkState } from './linkstate';
@@ -73,4 +73,11 @@ export { applyMaxBitrate, BitrateGovernor, clearMaxBitrate, LinkAdaptor } from '
 export type { BitrateGovernorOptions, LinkAdaptorOptions, LinkSample } from './adaptation';
 
 export { CfSfuProvider, MeshProvider, RelayError } from './relay';
-export type { CfSfuProviderOptions, RelayAuth, RelayKind, RelayProvider } from './relay';
+export type {
+  CfSfuProviderOptions,
+  PublishableTrack,
+  RelayAuth,
+  RelayKind,
+  RelayProvider,
+  RoledTrack,
+} from './relay';

@@ -9,7 +9,7 @@
  * reference, which is exactly what a real database gives you for free.
  */
 import { AppError } from '../lib/errors';
-import { UNIQUE_INDEXES } from './ports';
+import { indexKeyOf, UNIQUE_INDEXES } from './ports';
 import type {
   AssetDoc,
   AuthTokenDoc,
@@ -22,13 +22,14 @@ import type {
   InviteDoc,
   MemberDoc,
   MessageDoc,
+  PlaybackHistoryDoc,
   PlaylistDoc,
   PushSubDoc,
   ReportDoc,
   RoomDoc,
   SessionDoc,
   StorePort,
-  SubscriptionDoc,
+  UniqueIndexSpec,
   UsageDoc,
   UserDoc,
 } from './ports';
@@ -125,8 +126,6 @@ function compareValues(a: unknown, b: unknown): number {
   return 0;
 }
 
-type UniqueSpec = { keys: readonly string[]; sparse?: boolean };
-
 /**
  * One Map-backed collection enforcing duplicate-id and the collection's
  * UNIQUE_INDEXES entries. Exported so tests can exercise the DSL directly.
@@ -134,21 +133,29 @@ type UniqueSpec = { keys: readonly string[]; sparse?: boolean };
 export class MemoryCollection<T extends { id: string }> implements DocCollection<T> {
   private readonly docs = new Map<string, T>();
 
-  constructor(private readonly uniqueSpecs: ReadonlyArray<UniqueSpec> = []) {}
+  constructor(private readonly uniqueSpecs: ReadonlyArray<UniqueIndexSpec> = []) {}
 
   private clone(doc: T): T {
     return structuredClone(doc);
   }
 
+  /**
+   * Uniqueness by Mongo's rule, not by whatever is convenient in a Map: which
+   * documents an index covers, and what key they contribute, is decided by the
+   * shared indexKeyOf() so this adapter cannot drift from the real one. A doc
+   * with no index entry (null key) collides with nothing — including with
+   * other docs that also have no entry.
+   */
   private checkUnique(candidate: T, excludeId?: string): void {
     const record = candidate as Record<string, unknown>;
     for (const spec of this.uniqueSpecs) {
-      // Sparse indexes skip docs whose key fields are all null/missing.
-      if (spec.sparse === true && spec.keys.every((key) => record[key] == null)) continue;
+      const key = indexKeyOf(spec, record);
+      if (key === null) continue;
       for (const other of this.docs.values()) {
         if (excludeId !== undefined && other.id === excludeId) continue;
-        const otherRecord = other as Record<string, unknown>;
-        if (spec.keys.every((key) => deepEqual(record[key], otherRecord[key]))) {
+        const otherKey = indexKeyOf(spec, other as Record<string, unknown>);
+        if (otherKey === null) continue;
+        if (key.every((value, index) => deepEqual(value, otherKey[index]))) {
           throw new AppError(
             'CONFLICT',
             `Unique index violation on (${spec.keys.join(', ')})`,
@@ -273,10 +280,12 @@ export class MemoryStore implements StorePort {
   readonly invites = new MemoryCollection<InviteDoc>(UNIQUE_INDEXES['invites'] ?? []);
   readonly messages = new MemoryCollection<MessageDoc>();
   readonly events = new MemoryCollection<EventDoc>(UNIQUE_INDEXES['events'] ?? []);
+  readonly playbackHistory = new MemoryCollection<PlaybackHistoryDoc>(
+    UNIQUE_INDEXES['playbackHistory'] ?? [],
+  );
   readonly cursors = new MemoryCollection<CursorDoc>(UNIQUE_INDEXES['cursors'] ?? []);
   readonly playlists = new MemoryCollection<PlaylistDoc>();
   readonly assets = new MemoryCollection<AssetDoc>();
-  readonly subscriptions = new MemoryCollection<SubscriptionDoc>();
   readonly reports = new MemoryCollection<ReportDoc>();
   readonly usage = new MemoryCollection<UsageDoc>();
   readonly pushSubs = new MemoryCollection<PushSubDoc>(UNIQUE_INDEXES['pushSubs'] ?? []);

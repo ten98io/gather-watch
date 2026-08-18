@@ -1,12 +1,14 @@
 import { z } from 'zod';
 
 /**
- * PAYMENT_REQUIRED is deliberately distinct from FORBIDDEN: a plan gate is
- * not a permission refusal, and clients branch on its 402 to offer an
- * upgrade instead of "you don't have permission".
+ * Every refusal this API can express. There is no payment code: Gather is
+ * free for everyone, so nothing a client hits can be resolved by paying, and
+ * a code that implies otherwise would only tempt the next gate into existing.
+ * QUOTA_EXCEEDED covers the limits that remain — the ones physics and abuse
+ * impose, which no amount of money would lift.
  */
 export const ERROR_CODES = [
-  'UNAUTHORIZED', 'FORBIDDEN', 'PAYMENT_REQUIRED', 'NOT_FOUND', 'RATE_LIMITED',
+  'UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND', 'RATE_LIMITED',
   'ROOM_POLICY', 'VALIDATION', 'QUOTA_EXCEEDED', 'CONFLICT', 'INTERNAL',
 ] as const;
 

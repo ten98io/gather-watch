@@ -21,9 +21,6 @@ import {
   ReadCursor,
   DeliveredCursor,
   RelayMode,
-  Plan,
-  Entitlements,
-  Subscription,
   PresenceEntry,
   Invite,
   Session,
@@ -101,10 +98,6 @@ import {
   ReplayEventsQuery,
   ReplayEventsResponse,
   TurnCredentialsResponse,
-  CreateCheckoutSessionBody,
-  CreateCheckoutSessionResponse,
-  CreatePortalSessionResponse,
-  GetEntitlementsResponse,
   PushSubscribeBody,
   SetRoomMuteBody,
   ReportBody,
@@ -163,6 +156,15 @@ const member = {
 const hlsRef = { kind: 'hls', assetId: 'asset_1', url: 'https://cdn.example.com/v/master.m3u8' };
 const youtubeRef = { kind: 'youtube', videoId: 'abc' };
 const urlRef = { kind: 'url', url: 'https://cdn.example.com/a.mp3', mime: 'audio/mpeg' };
+const pageRef = { kind: 'page', url: 'https://blog.example.com/the-film' };
+const soundcloudRef = { kind: 'soundcloud', url: 'https://soundcloud.com/artist/track' };
+const vimeoRef = { kind: 'vimeo', videoId: '123456' };
+const embedRef = {
+  kind: 'embed',
+  provider: 'spotify',
+  embedUrl: 'https://open.spotify.com/embed/track/4uLU6hMCjMI75M1A2tKUQC',
+  title: null,
+};
 
 const playbackState = {
   mediaRef: youtubeRef,
@@ -256,22 +258,6 @@ const message = {
 const readCursor = { roomId: 'room_1', userId: 'user_1', lastReadSeq: 7, at: TS };
 
 const deliveredCursor = { roomId: 'room_1', userId: 'user_1', lastDeliveredSeq: 6, at: TS };
-
-const entitlements = {
-  plan: 'premium',
-  maxPublishers: 12,
-  maxShareViewers: 20,
-  relayAllowed: true,
-  turnCapGbMonth: 500,
-  uploadQuotaGb: 100,
-  attachmentMaxMb: 50,
-};
-
-const subscription = {
-  status: 'active',
-  stripeCustomerId: 'cus_123',
-  currentPeriodEnd: '2026-09-01T00:00:00.000Z',
-};
 
 const presenceEntry = {
   userId: 'user_1',
@@ -382,16 +368,38 @@ describe('entities', () => {
     expect(Member.safeParse({ ...member, role: 'admin' }).success).toBe(false);
   });
 
+  // Every kind the union names. The table used to stop at four, which is how
+  // `embed` reached production with an unpinned embedUrl and no roundtrip test
+  // to notice; a kind absent here is a kind nothing asserts anything about.
   it.each([
     ['hls', hlsRef],
     ['youtube', youtubeRef],
     ['url', urlRef],
+    ['soundcloud', soundcloudRef],
+    ['vimeo', vimeoRef],
+    ['embed', embedRef],
+    ['page', pageRef],
   ] as const)('MediaRef roundtrips kind %s', (_kind, ref) => {
     expect(MediaRef.parse(ref)).toEqual(ref);
   });
 
   it("MediaRef rejects unknown kind 'spotify'", () => {
     expect(MediaRef.safeParse({ kind: 'spotify' }).success).toBe(false);
+  });
+
+  // A page ref is the ONE MediaRef whose url is handed to the browser as a
+  // link to follow, so the scheme is part of the contract rather than a check
+  // some call site is trusted to remember. z.string().url() accepts all four
+  // of these.
+  it.each(['javascript:alert(1)', 'data:text/html,<script>x</script>', 'file:///etc/passwd', 'http://blog.example.com/x'])(
+    'MediaRef rejects a page url with scheme %s',
+    (url) => {
+      expect(MediaRef.safeParse({ kind: 'page', url }).success).toBe(false);
+    },
+  );
+
+  it('MediaRef rejects a page missing its url', () => {
+    expect(MediaRef.safeParse({ kind: 'page' }).success).toBe(false);
   });
 
   it('MediaRef rejects hls missing url', () => {
@@ -488,41 +496,6 @@ describe('entities', () => {
 
   it('DeliveredCursor rejects negative lastDeliveredSeq', () => {
     expect(DeliveredCursor.safeParse({ ...deliveredCursor, lastDeliveredSeq: -1 }).success).toBe(false);
-  });
-
-  it("Plan accepts 'free' and 'premium' and rejects 'gold'", () => {
-    expect(Plan.parse('free')).toBe('free');
-    expect(Plan.parse('premium')).toBe('premium');
-    expect(Plan.safeParse('gold').success).toBe(false);
-  });
-
-  it('Entitlements roundtrips', () => {
-    expect(Entitlements.parse(entitlements)).toEqual(entitlements);
-  });
-
-  it('Entitlements accepts turnCapGbMonth: null (unmetered)', () => {
-    const unmetered = { ...entitlements, turnCapGbMonth: null };
-    expect(Entitlements.parse(unmetered)).toEqual(unmetered);
-  });
-
-  it('Entitlements rejects Infinity turnCapGbMonth and negative uploadQuotaGb', () => {
-    expect(Entitlements.safeParse({ ...entitlements, turnCapGbMonth: Infinity }).success).toBe(false);
-    expect(Entitlements.safeParse({ ...entitlements, uploadQuotaGb: -1 }).success).toBe(false);
-    expect(Entitlements.safeParse({ ...entitlements, maxPublishers: 1.5 }).success).toBe(false);
-  });
-
-  it('Subscription roundtrips', () => {
-    expect(Subscription.parse(subscription)).toEqual(subscription);
-  });
-
-  it('Subscription accepts a none status with null fields', () => {
-    const none = { status: 'none', stripeCustomerId: null, currentPeriodEnd: null };
-    expect(Subscription.parse(none)).toEqual(none);
-  });
-
-  it("Subscription rejects status 'trialing' and a non-ISO currentPeriodEnd", () => {
-    expect(Subscription.safeParse({ ...subscription, status: 'trialing' }).success).toBe(false);
-    expect(Subscription.safeParse({ ...subscription, currentPeriodEnd: 'next tuesday' }).success).toBe(false);
   });
 
   it('PresenceEntry roundtrips', () => {
@@ -1401,38 +1374,6 @@ describe('rest.rtc', () => {
     const base = { iceServers: [{ urls: ['stun:stun.example.com'] }], ttlSeconds: 3600, fairUseRemainingGb: 1 };
     expect(TurnCredentialsResponse.safeParse({ ...base, ttlSeconds: -1 }).success).toBe(false);
     expect(TurnCredentialsResponse.safeParse({ ...base, fairUseRemainingGb: Infinity }).success).toBe(false);
-  });
-});
-
-describe('rest.billing', () => {
-  it("CreateCheckoutSessionBody accepts { plan: 'premium' }", () => {
-    const body = { plan: 'premium' };
-    expect(CreateCheckoutSessionBody.parse(body)).toEqual(body);
-  });
-
-  it("CreateCheckoutSessionBody rejects { plan: 'free' }", () => {
-    expect(CreateCheckoutSessionBody.safeParse({ plan: 'free' }).success).toBe(false);
-  });
-
-  it('CreateCheckoutSessionResponse roundtrips and rejects a bad url', () => {
-    const res = { url: 'https://checkout.stripe.com/c/pay/cs_test_123' };
-    expect(CreateCheckoutSessionResponse.parse(res)).toEqual(res);
-    expect(CreateCheckoutSessionResponse.safeParse({ url: 'nope' }).success).toBe(false);
-  });
-
-  it('CreatePortalSessionResponse roundtrips', () => {
-    const res = { url: 'https://billing.stripe.com/p/session/xyz' };
-    expect(CreatePortalSessionResponse.parse(res)).toEqual(res);
-  });
-
-  it('GetEntitlementsResponse roundtrips', () => {
-    const res = { entitlements, subscription };
-    expect(GetEntitlementsResponse.parse(res)).toEqual(res);
-  });
-
-  it('GetEntitlementsResponse rejects a bogus subscription status', () => {
-    const res = { entitlements, subscription: { ...subscription, status: 'trial' } };
-    expect(GetEntitlementsResponse.safeParse(res).success).toBe(false);
   });
 });
 

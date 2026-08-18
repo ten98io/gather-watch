@@ -32,9 +32,10 @@ import {
   contrastRatio,
   cssVarName,
   emitShadowRootCss,
+  inkOn,
   resolveColorToken,
 } from '@gather/design';
-import type { ColorTokenName, ThemeName } from '@gather/design';
+import type { ColorTokenName, FillTokenName, ThemeName } from '@gather/design';
 
 import { OVERLAY_CSS } from '../src/overlay/styles';
 import { TOKEN_CSS } from '../src/overlay/tokens.generated';
@@ -144,14 +145,33 @@ describe('styles.ts holds no colour of its own', () => {
   });
 });
 
+/**
+ * A foreground, either as a palette token or as "whatever ink the package
+ * measures for this fill".
+ *
+ * The second form exists because `.handle` and `.send` are accent FILLS, and
+ * their label used to name `--bg-void` — a hand-measured answer that happened
+ * to hold at 4.85:1 in light. It stopped holding the moment light `--aurora-1`
+ * moved for the primary button's gradient (it fell to 4.06:1, and this guard is
+ * what caught it). `--ink-on-accent` is the package computing that answer, so
+ * it cannot drift out from under a palette change again.
+ */
+type Foreground = ColorTokenName | { readonly inkOn: FillTokenName };
+
 interface Pairing {
   /** The rule in styles.ts this pair comes from. */
   readonly rule: string;
-  readonly fg: ColorTokenName;
+  readonly fg: Foreground;
   readonly bg: ColorTokenName;
   /** Non-text bar only where the token IS the affordance (the focus ring). */
   readonly bar: number;
 }
+
+const foregroundHex = (theme: ThemeName, fg: Foreground): string =>
+  typeof fg === 'string' ? resolveColorToken(theme, fg).hex : inkOn(theme, fg.inkOn).hex;
+
+const foregroundLabel = (fg: Foreground): string =>
+  typeof fg === 'string' ? fg : `ink-on-${fg.inkOn}`;
 
 /**
  * Every foreground/background the overlay composes, and the rule it comes
@@ -166,8 +186,12 @@ const PAIRINGS: readonly Pairing[] = [
   { rule: '.status on .head', fg: 'textMid', bg: 'surface2', bar: WCAG_AA_TEXT },
   { rule: '.section-title', fg: 'textLow', bg: 'surface1', bar: WCAG_AA_TEXT },
   { rule: '.person-note on .person', fg: 'textLow', bg: 'surface2', bar: WCAG_AA_TEXT },
-  { rule: ".msg[data-mine='true'] .msg-author", fg: 'accent', bg: 'surface1', bar: WCAG_AA_TEXT },
-  { rule: '.handle / .send label', fg: 'bgVoid', bg: 'accent', bar: WCAG_AA_TEXT },
+  // A 3px edge, not an author name in accent — see the rule's comment in
+  // styles.ts. As a graphic the bar is 1.4.11's 3:1, and the bar it USED to be
+  // held to (4.5:1, as text) is one --accent cannot meet while also being a
+  // gradient stop that black sits on.
+  { rule: ".msg[data-mine='true'] edge", fg: 'accent', bg: 'surface1', bar: WCAG_AA_NON_TEXT },
+  { rule: '.handle / .send label', fg: { inkOn: 'accent' }, bg: 'accent', bar: WCAG_AA_TEXT },
   { rule: ':focus-visible over .panel', fg: 'focusRing', bg: 'surface1', bar: WCAG_AA_NON_TEXT },
   { rule: ':focus-visible over .head', fg: 'focusRing', bg: 'surface2', bar: WCAG_AA_NON_TEXT },
 ];
@@ -177,15 +201,15 @@ const THEMES: readonly ThemeName[] = ['dark', 'light'];
 describe('every pair the overlay draws is legible', () => {
   for (const theme of THEMES) {
     for (const pairing of PAIRINGS) {
-      it(`${theme}: ${pairing.rule} — ${pairing.fg} on ${pairing.bg}`, () => {
-        const fg = resolveColorToken(theme, pairing.fg).hex;
+      it(`${theme}: ${pairing.rule} — ${foregroundLabel(pairing.fg)} on ${pairing.bg}`, () => {
+        const fg = foregroundHex(theme, pairing.fg);
         const bg = resolveColorToken(theme, pairing.bg).hex;
         const ratio = contrastRatio(fg, bg);
         // The message carries the measurement, so a regression in the package
         // says how far it fell rather than only that it did.
         expect(
           ratio,
-          `${pairing.fg} (${fg}) on ${pairing.bg} (${bg}) is ${ratio.toFixed(2)}:1`,
+          `${foregroundLabel(pairing.fg)} (${fg}) on ${pairing.bg} (${bg}) is ${ratio.toFixed(2)}:1`,
         ).toBeGreaterThanOrEqual(pairing.bar);
       });
     }

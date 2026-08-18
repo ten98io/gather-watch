@@ -93,8 +93,9 @@ export class MockWebSocket implements WebSocketLike {
     this.onmessage?.({ data: JSON.stringify(obj) });
   }
 
-  end(): void {
-    this.onclose?.({ code: 1006 });
+  /** Closes from the server side; `code` defaults to an abnormal 1006. */
+  end(code = 1006, reason?: string): void {
+    this.onclose?.({ code, ...(reason !== undefined ? { reason } : {}) });
   }
 
   fail(): void {

@@ -43,11 +43,17 @@
   ::selection {
     background: color-mix(in oklch, var(--aurora-1) 35%, transparent);
   }
-  /* Every interactive element gets a visible aurora focus ring (DESIGN.md §9). */
+  /* Every interactive element gets a visible aurora focus ring (DESIGN.md §9).
+
+     No `border-radius` here. It used to set 4px, which is not a focus style at
+     all — `border-radius` on a universal :focus-visible rule RESHAPES the
+     focused element, so every button in the product snapped from its own corner
+     to a 4px one the instant it took keyboard focus, and the ring traced the
+     wrong shape on the way. Modern engines follow the element's own radius for
+     the outline; there is nothing to declare. */
   :focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
-    border-radius: 4px;
   }
   * {
     scrollbar-width: thin;
@@ -70,20 +76,33 @@
   /* Glass is RESERVED for surfaces that float over moving video: the transport
      bar, modals/sheets, the theater-mode call overlay, toasts (DESIGN.md §4).
      Everything else uses the solid .surface-1/2/3 steps below. Never stack two
-     glass layers. */
+     glass layers.
+
+     Two corrections here, both about restraint:
+
+     · The radius is `var(--radius-panel)` / `var(--radius-control)`, not a
+       hard-coded 20px / 12px. Those numbers WERE the radius ladder, written a
+       second time, and they are exactly the kind of copy that goes stale — the
+       ladder tightened and this file would not have noticed.
+     · `saturate(1.3)` is gone. Pushing chroma 30% on whatever happens to be
+       behind the glass is what made panels read as candy: it does not make the
+       surface more legible, it makes the video under it more lurid. 1.08 keeps
+       the faint life that stops the blur looking grey, and nothing more. The
+       blur comes down 20 → 16px with it, because a softer blur no longer has to
+       fight the saturation for the same "this is a surface" reading. */
   .glass-panel {
     background: var(--surface-glass);
-    -webkit-backdrop-filter: blur(20px) saturate(1.3);
-    backdrop-filter: blur(20px) saturate(1.3);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+    backdrop-filter: blur(16px) saturate(1.08);
     border: 1px solid var(--border-glass);
-    border-radius: 20px;
+    border-radius: var(--radius-panel);
   }
   .glass-raised {
     background: var(--surface-raised);
-    -webkit-backdrop-filter: blur(20px) saturate(1.3);
-    backdrop-filter: blur(20px) saturate(1.3);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+    backdrop-filter: blur(16px) saturate(1.08);
     border: 1px solid var(--border-glass);
-    border-radius: 12px;
+    border-radius: var(--radius-control);
   }
   /* The elevation ladder. Background step only — add a border ONLY where two
      same-step surfaces meet, and then only `border-hairline`. */
@@ -96,18 +115,34 @@
   .surface-3 {
     background-color: var(--surface-3);
   }
-  /* The ONLY gradient in the system: aurora 135deg, primary actions + brand. */
+  /* The ONLY gradient in the system: aurora 135deg, primary actions + brand.
+
+     It carries its own ink. A label here crosses all three stops, so the
+     colour that has to serve it is the one whose WORST stop is best —
+     `--ink-on-aurora-gradient`, measured by @gather/design's guard. What used
+     to be written at each call site was `text-accent-ink`, a near-white in both
+     themes, which floored at 1.79:1 against dark `--aurora-3` and 2.57:1 in
+     light. Setting it here means no call site can get it wrong again, and a
+     call site that genuinely needs a different colour still just says so. */
   .aurora-gradient {
     background-image: linear-gradient(135deg, var(--aurora-1), var(--aurora-2), var(--aurora-3));
+    color: var(--ink-on-aurora-gradient);
   }
-  /* Elevation is glow, not shadow. */
+  /* Glow is a SIGNATURE moment (DESIGN.md §5), not a depth cue: the listen-room
+     hero artwork and the playing indicator. Chrome that merely floats — menus,
+     tooltips, toasts, dialogs — takes `--elevation-e1/e2/e3` instead, which is
+     neutral and directional. Reaching for .glow to say "this is raised" is what
+     put a 40px aurora halo under the context menu. */
   .glow {
     box-shadow: 0 0 40px -12px color-mix(in oklch, var(--aurora-1) 22%, transparent);
   }
   /* Range inputs (seek + volume). `appearance: none` makes the browser ignore
      `accent-color`, so the whole widget is drawn here: a 4px rounded track
-     filled to `--slider-fill` (set by components/ui/slider.tsx) and a 12px
-     accent thumb that grows on hover/focus. The accent is `--accent`, which is
+     filled to `--slider-fill` (set by components/ui/slider.tsx) and a 10px
+     accent thumb that grows to 12px on hover/focus. (It was 12 → 14 with a 4px
+     halo; on a 4px track that is a bead, not a scrubber. Shrinking it costs no
+     hit area — the <input> itself is 24px tall and that is what the pointer
+     actually targets.) The accent is `--accent`, which is
      `--aurora-1` by default and is rebound per-track in listen rooms, so the
      seek bar retints with the artwork for free. Both vendor syntaxes are required —
      WebKit/Blink ignore the -moz- rules and vice versa, and a single combined
@@ -130,9 +165,9 @@
   .slider-aurora::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
-    margin-top: -4px; /* centres the thumb on the 4px track */
+    width: 10px;
+    height: 10px;
+    margin-top: -3px; /* centres the thumb on the 4px track */
     border: none;
     border-radius: 999px;
     background: var(--accent);
@@ -144,10 +179,10 @@
   }
   .slider-aurora:hover::-webkit-slider-thumb,
   .slider-aurora:focus-visible::-webkit-slider-thumb {
-    width: 14px;
-    height: 14px;
-    margin-top: -5px;
-    box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 20%, transparent);
+    width: 12px;
+    height: 12px;
+    margin-top: -4px;
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
   }
   .slider-aurora::-moz-range-track {
     height: 4px;
@@ -161,8 +196,8 @@
     background: var(--accent);
   }
   .slider-aurora::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
     border: none;
     border-radius: 999px;
     background: var(--accent);
@@ -173,9 +208,9 @@
   }
   .slider-aurora:hover::-moz-range-thumb,
   .slider-aurora:focus-visible::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
-    box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 20%, transparent);
+    width: 12px;
+    height: 12px;
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
   }
   /* Disabled: no accent, no grow — it reads as chrome, not as a control. */
   .slider-aurora:disabled::-webkit-slider-runnable-track {
@@ -184,9 +219,9 @@
   .slider-aurora:disabled::-webkit-slider-thumb {
     background: var(--text-low);
     box-shadow: none;
-    width: 12px;
-    height: 12px;
-    margin-top: -4px;
+    width: 10px;
+    height: 10px;
+    margin-top: -3px;
   }
   .slider-aurora:disabled::-moz-range-progress {
     background: color-mix(in oklch, var(--text-low) 30%, transparent);
@@ -194,8 +229,8 @@
   .slider-aurora:disabled::-moz-range-thumb {
     background: var(--text-low);
     box-shadow: none;
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
   }
   .skeleton-shimmer {
     background: linear-gradient(

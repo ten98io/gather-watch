@@ -1,0 +1,20 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    // MV3 inlines these into the bundle, so they are INPUTS to it. Without
+    // them in the hash, turbo replays a cached localhost dev build for
+    // `GATHER_API_URL=https://… build` and hands back an artifact that talks
+    // to nobody — a cache hit that ships as an outage.
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "env": ["GATHER_API_URL", "GATHER_WEB_ORIGINS", "GATHER_BUILD"]
+    },
+    "build:prod": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "env": ["GATHER_API_URL", "GATHER_WEB_ORIGINS", "GATHER_BUILD"]
+    }
+  }
+}

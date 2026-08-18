@@ -22,6 +22,7 @@ import type {
 } from '@gather/contracts';
 import { AppError, isAppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
+import { resolveMessageAttachment } from './attachments';
 import { cursorDocId, memberDocId } from '../../adapters/ports';
 import type { CursorDoc, Filter, MemberDoc, RoomDoc } from '../../adapters/ports';
 import type { AuthContext, Deps } from '../types';
@@ -180,6 +181,15 @@ export class ChatService {
       }
     }
 
+    // The client's attachment is a CLAIM until the asset backs it: ownership,
+    // upload state and the url all come from the stored asset, never from the
+    // wire. Resolved BEFORE the seq is minted so a refused attachment does not
+    // burn a message number.
+    const attachment =
+      payload.attachment === null
+        ? null
+        : await resolveMessageAttachment(this.deps, auth.userId, payload.attachment);
+
     const candidates = await this.mentionCandidates(roomId);
     const mentions = extractMentions(payload.body, payload.mentions, candidates);
 
@@ -191,7 +201,7 @@ export class ChatService {
       kind: payload.kind,
       body: payload.body, // markdown-lite stored RAW — sanitizing is a client concern
       gifUrl: payload.gifUrl,
-      attachment: payload.attachment,
+      attachment,
       replyTo: payload.replyTo,
       mentions,
       reactions: {},

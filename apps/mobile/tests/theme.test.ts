@@ -152,13 +152,14 @@ describe('scale invariants', () => {
     }
   });
 
-  it('radii match DESIGN.md §4 — card 16→12 and panel 24→20 came from web', () => {
-    expect(radii.sm).toBe(8);
-    expect(radii.control).toBe(12);
-    expect(radii.card).toBe(12);
-    expect(radii.panel).toBe(20);
-    expect(radii.pill).toBeGreaterThan(100);
-  });
+  // REMOVED (2026-08-18): 'radii match DESIGN.md §4 — card 16→12 and panel
+  // 24→20 came from web' pinned the literal ladder 8/12/12/20 a second time,
+  // in the wrong package. The ladder was deliberately retightened to
+  // 6/8/10/14 (packages/design/src/scales.ts) so a corner stays 0.18–0.25 of
+  // its owner's height. Its replacement is packages/design/test/scales.test.ts
+  // — which now owns both the literal values and the radius/height ratio
+  // guard. What is mobile's business is that mobile READS the package, and
+  // that is asserted above: `expect(radii).toBe(rnThemes.dark.radii)`.
 
   it('type scale descends from hero to caption', () => {
     expect(typeScale.display.fontSize).toBeGreaterThan(typeScale.hero.fontSize);

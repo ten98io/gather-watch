@@ -1,6 +1,6 @@
 /**
  * SyncService: server-side playback authority. Every playback mutation is
- * gated on room policy OR current-master status, computed from the persisted
+ * gated on the room's playbackControl policy, computed from the persisted
  * PlaybackState snapshot (positions projected with @gather/sync-core), stamped
  * with a dedicated per-room playback seq, persisted on the room doc, and
  * emitted as `sync.state` so late joiners and WS-fallback clients converge via
@@ -9,13 +9,21 @@
  *
  * Pure logic over Deps — the module's wsHandlers are a thin dispatch layer.
  */
-import type { ClientSyncSetTrack, PlaybackState, RoomId, UserId } from '@gather/contracts';
+import type {
+  ClientSyncSetTrack,
+  PlaybackState,
+  QueueItem,
+  RoomId,
+  UserId,
+} from '@gather/contracts';
 import { expectedPositionMs } from '@gather/sync-core';
 import { memberDocId } from '../../adapters/ports';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { Deps } from '../types';
+import { recordPlayback } from '../rooms/history';
+import { getRoomsRuntime } from '../rooms/runtime';
 import { policyAllows } from './policy';
 import { serializeRoom } from './serialize';
 
@@ -71,11 +79,23 @@ export class SyncService {
   }
 
   /**
-   * The mesh elects; the server arbitrates. Any non-banned member may take a
-   * DEAD master's seat (re-election is the whole point of the mesh protocol),
-   * but displacing a still-connected master requires the room's
-   * playbackControl policy — the master seat drives playback unconditionally,
-   * so an ungated claim would be a trivial bypass of that policy.
+   * The mesh elects; the server arbitrates.
+   *
+   * WHO MAY CLAIM: exactly the members the room's `playbackControl` policy
+   * admits, and nobody else — the same gate `sync.play`/`pause`/`seek` pass.
+   * The seat used to be ungated whenever it was EMPTY (which is how every room
+   * starts) and the holder then drove playback unconditionally, so one
+   * `sync.claimMaster` bought a plain member the control a 'host' room had
+   * explicitly denied them. Tying the claim to the policy makes the seat
+   * useless as a bypass while leaving it fully usable: under 'everyone' — what
+   * a room wanting client-driven auto-advance sets — every member is eligible,
+   * so mesh re-election works exactly as designed, and under 'host'/'mods' the
+   * eligible set is precisely the people who were always allowed to drive.
+   *
+   * WHAT IT GRANTS: coordination, not authority. The seat names who is
+   * responsible for advancing the room; it never widens what its holder may
+   * do, so tightening the policy takes control back from a sitting master
+   * immediately (see assertPlaybackControl).
    *
    * The claimed epoch must be newer than the stored one, but the SERVER owns
    * the stored value: the seat advances to stored+1 via compare-and-set on
@@ -86,20 +106,28 @@ export class SyncService {
    */
   async claimMaster(roomId: RoomId, userId: UserId, epoch: number): Promise<void> {
     const { room, member } = await this.loadContext(roomId, userId);
+    // THE SEAT AND THE DRIVE SHARE ONE PREDICATE — deliberately the same call,
+    // not two copies of the same idea.
+    //
+    // The client makes the seat holder the SOLE advancer and every other tab
+    // stands down. So a seat held by someone the policy forbids to drive is
+    // strictly worse than an empty seat: their setTrack is refused and NOBODY
+    // else tries. That is exactly what happened when these two were allowed to
+    // drift apart — the claim was ungated while the drive stayed policy-gated,
+    // and in a default 'host' room the first guest to mount won the seat and
+    // the queue never moved again.
+    //
+    // Gating on `mayDrive` keeps the seat fillable in the case that motivated
+    // un-gating it (a host on a phone, or gone: privilegedHolderAbsent opens
+    // it to everyone) while making "holds the seat" and "may advance" the same
+    // question by construction.
+    if (!(await this.mayDrive(room, member))) {
+      throw new AppError('ROOM_POLICY', 'playback control not allowed');
+    }
     const stored = room.master;
     const storedEpoch = stored?.epoch ?? 0;
     if (stored !== null && epoch <= storedEpoch) {
       throw new AppError('CONFLICT', 'stale master epoch');
-    }
-    // Liveness approximation: this instance's sockets (same source
-    // prunedBuffering trusts). A master connected elsewhere in a multi-
-    // instance deploy re-wins the seat via a newer-epoch re-claim.
-    const masterConnected =
-      stored !== null &&
-      stored.userId !== userId &&
-      this.deps.hub.localUserIds(roomId).includes(stored.userId as UserId);
-    if (masterConnected && !policyAllows(room.policies.playbackControl, member.role)) {
-      throw new AppError('ROOM_POLICY', 'cannot displace a connected master');
     }
     const next = { userId, epoch: storedEpoch + 1 };
     const updated = await this.deps.store.rooms.updateOne(
@@ -183,11 +211,60 @@ export class SyncService {
     return { room, member };
   }
 
-  /** The current master always drives; everyone else needs the policy. */
-  private assertPlaybackControl(room: RoomDoc, member: MemberDoc): void {
-    if (room.master?.userId === member.userId) return;
-    if (policyAllows(room.policies.playbackControl, member.role)) return;
+  /**
+   * The policy is the ONLY gate. Holding the master seat deliberately grants
+   * nothing extra: only policy-holders can take the seat in the first place
+   * (see claimMaster), and a stored master row must not outlive the policy
+   * that made it claimable — otherwise a host who tightens playbackControl
+   * mid-session finds the previous master still driving, and a role demotion
+   * silently keeps its old powers.
+   */
+  /**
+   * Who may drive playback. The policy decides — except that a policy naming
+   * people who are NOT HERE would freeze the room forever: a 'host' room whose
+   * host is on a phone or has closed their tab can never advance, seek or
+   * pause again, and the queue sits on a finished item for everyone.
+   *
+   * So the privileged set falls back while it is absent, exactly as an absent
+   * host's screen share becomes takeable (see restream's releaseIfHostGone —
+   * same reasoning, same presence source). Nothing is granted permanently: the
+   * moment a privileged member is present again the fallback stops applying,
+   * which is why this is re-evaluated per mutation rather than cached.
+   */
+  private async assertPlaybackControl(room: RoomDoc, member: MemberDoc): Promise<void> {
+    if (await this.mayDrive(room, member)) return;
     throw new AppError('ROOM_POLICY', 'playback control not allowed');
+  }
+
+  /** The ONE predicate for "may this member drive the room". Both the drive
+   *  gate and the master claim call it, so the seat can never name a client
+   *  whose setTrack would be refused. */
+  private async mayDrive(room: RoomDoc, member: MemberDoc): Promise<boolean> {
+    if (policyAllows(room.policies.playbackControl, member.role)) return true;
+    return this.privilegedHolderAbsent(room);
+  }
+
+  /**
+   * True when NOBODY the policy names is present. Deliberately false when the
+   * room looks empty (no presence entries at all): that is a presence outage
+   * or a cold read, not evidence the host left, and opening control on it
+   * would hand the room away every time presence hiccuped.
+   */
+  private async privilegedHolderAbsent(room: RoomDoc): Promise<boolean> {
+    const present = new Set(
+      getRoomsRuntime(this.deps)
+        .presence.entries(room.id)
+        .filter((entry) => entry.state !== 'offline')
+        .map((entry) => entry.userId),
+    );
+    if (present.size === 0) return false;
+    const members = await this.deps.store.members.findMany({ roomId: room.id });
+    return !members.some(
+      (m) =>
+        present.has(m.userId) &&
+        !m.banned &&
+        policyAllows(room.policies.playbackControl, m.role),
+    );
   }
 
   private async mutate(
@@ -197,7 +274,7 @@ export class SyncService {
     payload: MutationPayload,
   ): Promise<void> {
     const { room, member } = await this.loadContext(roomId, userId);
-    this.assertPlaybackControl(room, member);
+    await this.assertPlaybackControl(room, member);
 
     const now = Date.now();
     const prev = room.playback;
@@ -208,6 +285,9 @@ export class SyncService {
     let rate = prev?.rate ?? 1;
     let playing = prev?.playing ?? false;
     let queueIndex = prev?.queueIndex ?? null;
+    // The queue row this setTrack named, when it named one — the only place
+    // the server ever learns a track's title and who queued it.
+    let started: QueueItem | null = null;
 
     switch (kind) {
       case 'play':
@@ -236,6 +316,7 @@ export class SyncService {
           }
           mediaRef = item.mediaRef;
           queueIndex = payload.track.queueIndex;
+          started = item;
         }
         positionMs = 0;
         break;
@@ -257,6 +338,8 @@ export class SyncService {
     await this.deps.store.rooms.updateOne({ id: roomId }, { playback: state });
 
     // Playback history for GDPR export — rate changes are not transitions.
+    // Separate row, separate question: this one is per-USER and per-account
+    // lifetime, and is read only by compliance/export.ts.
     if (kind !== 'rate') {
       await this.deps.store.usage.insertOne({
         id: newId(),
@@ -271,6 +354,29 @@ export class SyncService {
     }
 
     await this.deps.events.emit(roomId, 'sync.state', state);
+
+    // The room's own playback history (rooms/history.ts owns retention and
+    // the read). Only a TRACK CHANGE goes in: play/pause/seek move the
+    // playhead, they do not answer "what did we watch".
+    //
+    // AFTER the broadcast on purpose: the emit is what actually switches
+    // everyone's player, and no viewer should wait on a log entry to see the
+    // next track start. recordPlayback swallows its own failures and drops a
+    // repeat of the same media, so this can neither fail a play nor spam the
+    // panel.
+    if (kind === 'setTrack' && mediaRef !== null) {
+      await recordPlayback(this.deps, {
+        roomId,
+        mediaRef,
+        title: started?.title ?? 'Untitled',
+        artworkUrl: started?.artworkUrl ?? null,
+        durationMs: started?.durationMs ?? null,
+        // No queue row means nobody queued it — the person who set it is the
+        // honest answer, not a blank.
+        queuedBy: started?.addedBy ?? userId,
+        startedBy: userId,
+      });
+    }
   }
 
   /** The room's buffering reporters, minus anyone without a live local socket. */

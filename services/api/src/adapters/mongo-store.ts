@@ -5,7 +5,7 @@
  * behavioral reference; keep the two in lockstep.
  */
 import { MongoClient, MongoServerError } from 'mongodb';
-import type { Collection, Document } from 'mongodb';
+import type { Collection, CreateIndexesOptions, Db, Document } from 'mongodb';
 import { AppError } from '../lib/errors';
 import { UNIQUE_INDEXES } from './ports';
 import type {
@@ -19,13 +19,14 @@ import type {
   InviteDoc,
   MemberDoc,
   MessageDoc,
+  PlaybackHistoryDoc,
   PlaylistDoc,
   PushSubDoc,
   ReportDoc,
   RoomDoc,
   SessionDoc,
   StorePort,
-  SubscriptionDoc,
+  UniqueIndexSpec,
   UsageDoc,
   UserDoc,
 } from './ports';
@@ -161,6 +162,106 @@ function dbNameFromUrl(url: string): string {
   }
 }
 
+// ── Index management ─────────────────────────────────────────────────────────
+
+/** A Mongo index key pattern: field → direction, or an index type for the
+ *  non-btree kinds ('text'). */
+type IndexKeyPattern = Record<string, 1 | -1 | 'text'>;
+
+/** "Index already exists with different options" (85) and "…with a different
+ *  key spec" (86) — the two ways createIndex refuses to redefine in place. */
+const INDEX_CONFLICT_CODES: ReadonlySet<number> = new Set([85, 86]);
+
+/**
+ * The key pattern and driver options for one unique index.
+ *
+ * `sparse` is deliberately NEVER emitted. It omits a document only when the
+ * field is ABSENT, so a field present with BSON null still gets an index entry
+ * (key value null) and the second row written that way collides — which is
+ * every guest after the first. See UniqueIndexSpec in ports.ts.
+ *
+ * Exported because this object is the only part of the Mongo half a test can
+ * check without a running mongod: it pins WHAT WE ASK MONGO FOR.
+ */
+export function uniqueIndexDefinition(spec: UniqueIndexSpec): {
+  keys: IndexKeyPattern;
+  options: CreateIndexesOptions;
+} {
+  const keys: IndexKeyPattern = Object.fromEntries(spec.keys.map((key) => [key, 1] as const));
+  if (spec.partialOnString !== true) {
+    return { keys, options: { unique: true } };
+  }
+  return {
+    keys,
+    options: {
+      unique: true,
+      // `$type: 'string'` and not `$exists: true`: an explicitly-null field DOES
+      // exist, so $exists would index it and put back the collision this index
+      // is here to remove. Lookups that use this index compare against a string
+      // (`findOne({ email })`), which implies the filter, so the planner can
+      // still serve them from it.
+      partialFilterExpression: { [spec.keys[0]]: { $type: 'string' } },
+    },
+  };
+}
+
+/** Same fields, same order, same directions ⇒ Mongo considers it the same
+ *  index and will not redefine it. Note that a TEXT index reports its key as
+ *  `{ _fts: 'text', _ftsx: 1 }` rather than the fields it was built from, so it
+ *  never matches here: a conflicting text index is re-thrown with Mongo's own
+ *  message instead of being silently replaced, which for the one text index we
+ *  have is the behavior worth keeping. */
+function sameKeyPattern(existing: Document, wanted: IndexKeyPattern): boolean {
+  const existingEntries = Object.entries(existing);
+  const wantedEntries = Object.entries(wanted);
+  return (
+    existingEntries.length === wantedEntries.length &&
+    existingEntries.every(([field, direction], position) => {
+      const want = wantedEntries[position];
+      return want !== undefined && want[0] === field && want[1] === direction;
+    })
+  );
+}
+
+/**
+ * createIndex, but able to REPLACE an index whose options changed.
+ *
+ * Mongo will not redefine an index in place — same keys, different options is
+ * error 85/86 and it throws. Every database created before the sparse→partial
+ * fix carries the old sparse index, so a plain createIndex would crash init()
+ * on boot and the fix would reach only the deployments that never needed it.
+ * Drop the conflicting index and recreate instead, matched by KEY PATTERN
+ * because the old one was created without a name and carries the driver's
+ * generated default.
+ *
+ * The recreate cannot fail on existing data: the partial index covers a SUBSET
+ * of the rows the sparse one covered (strings only, versus strings plus every
+ * explicit null), so anything the old index accepted the new one accepts too.
+ */
+async function ensureIndex(
+  db: Db,
+  collectionName: string,
+  keys: IndexKeyPattern,
+  options: CreateIndexesOptions = {},
+): Promise<void> {
+  const collection = db.collection(collectionName);
+  try {
+    await collection.createIndex(keys, options);
+    return;
+  } catch (err) {
+    if (!(err instanceof MongoServerError) || !INDEX_CONFLICT_CODES.has(Number(err.code))) {
+      throw err;
+    }
+  }
+  for (const existing of await collection.listIndexes().toArray()) {
+    // Never the primary key, whatever its options claim.
+    if (existing['name'] !== '_id_' && sameKeyPattern(existing['key'] as Document, keys)) {
+      await collection.dropIndex(String(existing['name']));
+    }
+  }
+  await collection.createIndex(keys, options);
+}
+
 export class MongoStore implements StorePort {
   private readonly client: MongoClient;
   private readonly dbName: string;
@@ -173,10 +274,10 @@ export class MongoStore implements StorePort {
   readonly invites: DocCollection<InviteDoc>;
   readonly messages: DocCollection<MessageDoc>;
   readonly events: DocCollection<EventDoc>;
+  readonly playbackHistory: DocCollection<PlaybackHistoryDoc>;
   readonly cursors: DocCollection<CursorDoc>;
   readonly playlists: DocCollection<PlaylistDoc>;
   readonly assets: DocCollection<AssetDoc>;
-  readonly subscriptions: DocCollection<SubscriptionDoc>;
   readonly reports: DocCollection<ReportDoc>;
   readonly usage: DocCollection<UsageDoc>;
   readonly pushSubs: DocCollection<PushSubDoc>;
@@ -196,10 +297,10 @@ export class MongoStore implements StorePort {
     this.invites = wrap<InviteDoc>('invites');
     this.messages = wrap<MessageDoc>('messages');
     this.events = wrap<EventDoc>('events');
+    this.playbackHistory = wrap<PlaybackHistoryDoc>('playbackHistory');
     this.cursors = wrap<CursorDoc>('cursors');
     this.playlists = wrap<PlaylistDoc>('playlists');
     this.assets = wrap<AssetDoc>('assets');
-    this.subscriptions = wrap<SubscriptionDoc>('subscriptions');
     this.reports = wrap<ReportDoc>('reports');
     this.usage = wrap<UsageDoc>('usage');
     this.pushSubs = wrap<PushSubDoc>('pushSubs');
@@ -210,26 +311,35 @@ export class MongoStore implements StorePort {
     const db = this.client.db(this.dbName);
 
     // Unique indexes shared with MemoryStore (UNIQUE_INDEXES is the spec).
+    // Everything goes through ensureIndex so a changed option is a REPLACEMENT
+    // rather than a boot crash on any database that predates the change.
     for (const [name, specs] of Object.entries(UNIQUE_INDEXES)) {
       for (const spec of specs) {
-        await db
-          .collection(name)
-          .createIndex(Object.fromEntries(spec.keys.map((key) => [key, 1])), {
-            unique: true,
-            ...(spec.sparse === true ? { sparse: true } : {}),
-          });
+        const { keys, options } = uniqueIndexDefinition(spec);
+        await ensureIndex(db, name, keys, options);
       }
     }
 
-    // Non-unique secondaries for the hot query paths.
-    await db.collection('messages').createIndex({ roomId: 1, seq: -1 });
-    await db.collection('messages').createIndex({ body: 'text' });
-    await db.collection('members').createIndex({ userId: 1 });
-    await db.collection('sessions').createIndex({ userId: 1 });
-    // TTL: mongo deletes auth tokens as they expire.
-    await db.collection('authTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-    await db.collection('assets').createIndex({ ownerId: 1 });
-    await db.collection('usage').createIndex({ userId: 1, at: -1 });
+    // Non-unique secondaries for the hot query paths. Duplicate keys are fine
+    // in all of these, so a null key costs nothing but a wasted entry.
+    await ensureIndex(db, 'messages', { roomId: 1, seq: -1 });
+    await ensureIndex(db, 'messages', { body: 'text' });
+    await ensureIndex(db, 'members', { userId: 1 });
+    // Drives the idle-room sweep's candidate scan (oldest rooms first).
+    await ensureIndex(db, 'rooms', { createdAt: 1 });
+    await ensureIndex(db, 'sessions', { userId: 1 });
+    // NOT a working TTL, despite the option. Mongo's TTL monitor only deletes
+    // documents whose indexed field is a BSON Date (or an array of them), and
+    // AuthTokenDoc.expiresAt is an epoch NUMBER — so nothing is ever expired
+    // and used magic-link tokens accumulate forever. Kept, rather than quietly
+    // dropped, because the index is right and only the stored TYPE is wrong;
+    // making the sweep real means giving the doc a Date field, which belongs to
+    // the auth module and not to this adapter.
+    await ensureIndex(db, 'authTokens', { expiresAt: 1 }, { expireAfterSeconds: 0 });
+    await ensureIndex(db, 'assets', { ownerId: 1 });
+    await ensureIndex(db, 'usage', { userId: 1, at: -1 });
+    // Drives the room-history read (newest first) and its per-room prune.
+    await ensureIndex(db, 'playbackHistory', { roomId: 1, seq: -1 });
   }
 
   async close(): Promise<void> {

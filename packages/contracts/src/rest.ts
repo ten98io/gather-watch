@@ -2,7 +2,6 @@ import { z } from 'zod';
 import {
   AccentColor,
   AssetId,
-  Entitlements,
   Invite,
   InviteCode,
   MediaAsset,
@@ -18,10 +17,11 @@ import {
   RoomKind,
   RoomPolicies,
   Session,
-  Subscription,
   Timestamp,
   User,
   UserId,
+  WebUrl,
+  HttpsUrl,
 } from './entities';
 import { ServerEvent } from './ws';
 
@@ -66,7 +66,12 @@ export type MeResponse = z.infer<typeof MeResponse>;
 
 export const UpdateProfileBody = z.object({
   displayName: z.string().min(1).max(80).optional(),
-  avatarUrl: z.string().url().nullable().optional(),
+  // MUST stay in lockstep with User.avatarUrl (WebUrl). A write schema looser
+  // than the schema that reads the field back lets anyone persist a value that
+  // then fails validation for EVERY reader: one `data:` URI accepted here made
+  // GET /rooms/:id/members unparseable for every member of a room the writer
+  // had merely joined, and locked the writer out of the web app entirely.
+  avatarUrl: WebUrl.nullable().optional(),
   accentColor: AccentColor.optional(),
 });
 export type UpdateProfileBody = z.infer<typeof UpdateProfileBody>;
@@ -231,6 +236,48 @@ export type UpdateRoomResponse = z.infer<typeof UpdateRoomResponse>;
 export const DeleteRoomResponse = Ok;
 export type DeleteRoomResponse = z.infer<typeof DeleteRoomResponse>;
 
+/**
+ * One thing the room actually played. A history entry is written on a TRACK
+ * CHANGE, never on play/pause/seek — "what did we watch" is a different
+ * question from "where is the playhead", and only the first is worth keeping.
+ *
+ * `mediaRef` + `title` are here so a row can be put straight back in the
+ * queue: history that cannot re-queue is a receipt, not a feature.
+ */
+export const RoomHistoryEntry = z.object({
+  id: z.string().min(1),
+  roomId: RoomId,
+  /** Per-room monotonic counter. Doubles as the `before` page cursor — a
+   *  timestamp cannot, because two tracks can start in the same millisecond. */
+  seq: z.number().int().positive(),
+  mediaRef: MediaRef,
+  title: z.string().min(1).max(300),
+  artworkUrl: WebUrl.nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  /** Who put it in the queue. For a track set directly (no queue row), this
+   *  is whoever set it — the honest answer, not a guess. */
+  queuedBy: UserId,
+  /** Who started it playing for the room. */
+  startedBy: UserId,
+  playedAt: Timestamp,
+});
+export type RoomHistoryEntry = z.infer<typeof RoomHistoryEntry>;
+
+export const RoomHistoryQuery = z.object({
+  /** Entries with a seq strictly BELOW this — the previous page's nextBefore. */
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type RoomHistoryQuery = z.infer<typeof RoomHistoryQuery>;
+
+export const RoomHistoryResponse = z.object({
+  /** Newest first. */
+  entries: z.array(RoomHistoryEntry),
+  /** Pass as `before` to fetch the next (older) page; null when exhausted. */
+  nextBefore: z.number().int().positive().nullable(),
+});
+export type RoomHistoryResponse = z.infer<typeof RoomHistoryResponse>;
+
 // ---------- messages ----------
 
 export const ListMessagesQuery = z.object({
@@ -257,7 +304,7 @@ export type PinMessageBody = z.infer<typeof PinMessageBody>;
 export const PinMessageResponse = z.object({ message: Message });
 export type PinMessageResponse = z.infer<typeof PinMessageResponse>;
 
-export const UnfurlBody = z.object({ url: z.string().url() });
+export const UnfurlBody = z.object({ url: WebUrl });
 export type UnfurlBody = z.infer<typeof UnfurlBody>;
 
 export const UnfurlResponse = z.object({
@@ -270,6 +317,16 @@ export const UnfurlResponse = z.object({
 export type UnfurlResponse = z.infer<typeof UnfurlResponse>;
 
 // ---------- media ----------
+//
+// THE LIBRARY IS GONE — the per-user asset browser and its backend
+// (services/media) were deleted, so nothing answers /media/library,
+// /media/assets/:id or /media/uploads any more, and the room's own playback
+// history (RoomHistoryEntry, above) is what replaced it.
+//
+// What is left here belongs to CHAT ATTACHMENTS, which are live: the
+// CreateUpload/CompleteUpload pair is served room-scoped, on
+// POST /rooms/:roomId/attachments[/complete]. An attachment is also a
+// MediaAsset, so the asset vocabulary stays — it is not library residue.
 
 export const CreateUploadBody = z.object({
   filename: z.string().min(1),
@@ -325,9 +382,9 @@ export type CompleteUploadResponse = z.infer<typeof CompleteUploadResponse>;
  */
 export const ResolvedMedia = z.object({
   title: z.string().min(1).max(300).nullable(),
-  artworkUrl: z.string().url().nullable(),
+  artworkUrl: WebUrl.nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
-  /** Stable provider key ('youtube', 'spotify', 'library', 'link'…). */
+  /** Stable provider key ('youtube', 'spotify', 'stream', 'link'…). */
   providerId: z.string().min(1).max(40),
   /** Display name for that provider ('YouTube', 'Apple Music'…). */
   providerName: z.string().min(1).max(80),
@@ -354,38 +411,6 @@ export type ResolveMediaBody = z.infer<typeof ResolveMediaBody>;
 
 export const ResolveMediaResponse = z.object({ media: ResolvedMedia });
 export type ResolveMediaResponse = z.infer<typeof ResolveMediaResponse>;
-
-/**
- * Re-presign the part URLs of an in-flight ('uploading') multipart session
- * (POST /uploads/:id/parts). Presigned part URLs are short-lived by design;
- * uploads that outlive the TTL refresh their remaining URLs here instead of
- * the server minting day-long signatures up front.
- */
-export const RefreshUploadPartsBody = z.object({ uploadId: z.string().min(1) });
-export type RefreshUploadPartsBody = z.infer<typeof RefreshUploadPartsBody>;
-
-export const RefreshUploadPartsResponse = z.object({
-  parts: CreateUploadResponse.shape.parts,
-});
-export type RefreshUploadPartsResponse = z.infer<typeof RefreshUploadPartsResponse>;
-
-export const ListLibraryQuery = z.object({
-  cursor: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-});
-export type ListLibraryQuery = z.infer<typeof ListLibraryQuery>;
-
-export const ListLibraryResponse = paginated(MediaAsset);
-export type ListLibraryResponse = z.infer<typeof ListLibraryResponse>;
-
-export const DeleteAssetResponse = Ok;
-export type DeleteAssetResponse = z.infer<typeof DeleteAssetResponse>;
-
-export const RenameAssetBody = z.object({ filename: z.string().min(1) });
-export type RenameAssetBody = z.infer<typeof RenameAssetBody>;
-
-export const RenameAssetResponse = z.object({ asset: MediaAsset });
-export type RenameAssetResponse = z.infer<typeof RenameAssetResponse>;
 
 // ---------- playlists ----------
 
@@ -448,29 +473,18 @@ export const TurnCredentialsResponse = z.object({
 });
 export type TurnCredentialsResponse = z.infer<typeof TurnCredentialsResponse>;
 
-// ---------- billing ----------
-
-export const CreateCheckoutSessionBody = z.object({ plan: z.literal('premium') });
-export type CreateCheckoutSessionBody = z.infer<typeof CreateCheckoutSessionBody>;
-
-export const CreateCheckoutSessionResponse = z.object({ url: z.string().url() });
-export type CreateCheckoutSessionResponse = z.infer<typeof CreateCheckoutSessionResponse>;
-
-export const CreatePortalSessionResponse = z.object({ url: z.string().url() });
-export type CreatePortalSessionResponse = z.infer<typeof CreatePortalSessionResponse>;
-
-export const GetEntitlementsResponse = z.object({
-  entitlements: Entitlements,
-  subscription: Subscription,
-});
-export type GetEntitlementsResponse = z.infer<typeof GetEntitlementsResponse>;
-
 // ---------- push ----------
+
+/** The VAPID application-server key a browser needs before it can call
+ *  `pushManager.subscribe`. Server-only config, so the web app has to ask for
+ *  it; null means this deployment has no keys and push is off. */
+export const PushPublicKeyResponse = z.object({ publicKey: z.string().nullable() });
+export type PushPublicKeyResponse = z.infer<typeof PushPublicKeyResponse>;
 
 export const PushSubscribeBody = z.discriminatedUnion('platform', [
   z.object({
     platform: z.literal('web'),
-    endpoint: z.string().url(),
+    endpoint: HttpsUrl,
     keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }),
   }),
   z.object({ platform: z.literal('expo'), expoPushToken: z.string().min(1) }),
@@ -481,7 +495,7 @@ export const PushSubscribeResponse = Ok;
 export type PushSubscribeResponse = z.infer<typeof PushSubscribeResponse>;
 
 export const PushUnsubscribeBody = z.discriminatedUnion('platform', [
-  z.object({ platform: z.literal('web'), endpoint: z.string().url() }),
+  z.object({ platform: z.literal('web'), endpoint: HttpsUrl }),
   z.object({ platform: z.literal('expo'), expoPushToken: z.string().min(1) }),
 ]);
 export type PushUnsubscribeBody = z.infer<typeof PushUnsubscribeBody>;
@@ -585,7 +599,6 @@ export const AdminOverviewResponse = z.object({
   features: z.object({
     mediaPipeline: z.boolean(),
     gifs: z.boolean(),
-    stripe: z.boolean(),
     push: z.boolean(),
   }),
 });
@@ -737,6 +750,7 @@ export const rest = {
     setTheater: { body: SetTheaterBody, response: SetTheaterResponse },
     updateRoom: { body: UpdateRoomBody, response: UpdateRoomResponse },
     deleteRoom: { response: DeleteRoomResponse },
+    roomHistory: { query: RoomHistoryQuery, response: RoomHistoryResponse },
   },
   messages: {
     listMessages: { query: ListMessagesQuery, response: ListMessagesResponse },
@@ -747,10 +761,6 @@ export const rest = {
   media: {
     createUpload: { body: CreateUploadBody, response: CreateUploadResponse },
     completeUpload: { body: CompleteUploadBody, response: CompleteUploadResponse },
-    refreshUploadParts: { body: RefreshUploadPartsBody, response: RefreshUploadPartsResponse },
-    listLibrary: { query: ListLibraryQuery, response: ListLibraryResponse },
-    deleteAsset: { response: DeleteAssetResponse },
-    renameAsset: { body: RenameAssetBody, response: RenameAssetResponse },
     resolveMedia: { body: ResolveMediaBody, response: ResolveMediaResponse },
   },
   playlists: {
@@ -767,12 +777,8 @@ export const rest = {
   rtc: {
     turnCredentials: { response: TurnCredentialsResponse },
   },
-  billing: {
-    createCheckoutSession: { body: CreateCheckoutSessionBody, response: CreateCheckoutSessionResponse },
-    createPortalSession: { response: CreatePortalSessionResponse },
-    getEntitlements: { response: GetEntitlementsResponse },
-  },
   push: {
+    publicKey: { response: PushPublicKeyResponse },
     subscribe: { body: PushSubscribeBody, response: PushSubscribeResponse },
     unsubscribe: { body: PushUnsubscribeBody, response: PushUnsubscribeResponse },
     setRoomMute: { body: SetRoomMuteBody, response: SetRoomMuteResponse },

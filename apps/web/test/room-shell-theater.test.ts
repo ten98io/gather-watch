@@ -1,7 +1,18 @@
 /**
- * Theater is a video-stage concept: the header control exists only while the
- * CURRENT item is video — absent for music and for an empty stage — and the
- * room header carries no Watch/Listen badge any more (a room is not a mode).
+ * Theater is OFFERED by the stage and HELD by the user: the header control
+ * exists while the current item is video — absent for music and for an empty
+ * stage — and the room header carries no Watch/Listen badge any more (a room is
+ * not a mode).
+ *
+ * What changed, and why the last case here reads the other way now: the layout
+ * used to be re-derived per item (`room.theater && stageKind === 'video'`), so
+ * a mixed queue hid and re-showed the whole rail as it flowed music → video →
+ * music. That is not a mode, it is a twitch, and it cost a full remount of the
+ * call dock every time (see room-shell-rail.test.tsx). The flag now decides the
+ * layout on its own, and the item decides only whether the control is worth
+ * offering — plus one rule the old shape never needed: while theater is ON the
+ * control stays, whatever is playing, because a switch you can flip one way and
+ * not back is a trap.
  *
  * RoomLayout is SSR-rendered with the same harness as stage-content.test.ts.
  * The server pass takes the mobile branch (`useMediaQuery` is false there),
@@ -61,6 +72,7 @@ describe('theater follows the playing item', () => {
   });
 
   it('hides the theater control while music plays — even in a stored watch room', () => {
+    // Theater OFF: there is no picture to fill, so there is nothing to offer.
     const html = renderLayout(makeRoom('watch'), host, SC_REF);
     expect(html).not.toContain('Turn theater mode');
   });
@@ -75,9 +87,17 @@ describe('theater follows the playing item', () => {
     expect(html).not.toContain('Turn theater mode');
   });
 
-  it('a stored theater flag does not collapse the layout while music plays', () => {
+  it('keeps the way OUT while theater is on and the queue moves to music', () => {
+    // The queue moves on its own. Someone who turned theater on for a film and
+    // then heard a song come on must still be able to turn it back off, so the
+    // control survives the kind change even though nothing would offer it here.
     const html = renderLayout(makeRoom('watch', { theater: true }), host, SC_REF);
-    expect(html).not.toContain('Turn theater mode');
+    expect(html).toContain('Turn theater mode off');
+  });
+
+  it('is still the user’s latch, not the item’s, when nothing plays at all', () => {
+    const html = renderLayout(makeRoom('watch', { theater: true }), host, null);
+    expect(html).toContain('Turn theater mode off');
   });
 });
 

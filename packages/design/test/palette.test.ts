@@ -22,18 +22,23 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AURORA_GRADIENT_STOPS,
   COLOR_TOKEN_NAMES,
   FILL_TOKENS,
   INKS,
+  INK_ON_GRADIENT_CSS_VAR,
+  STANDALONE_UI_TOKENS,
   SURFACE_LADDER,
   TEXT_TOKENS,
   THEME_NAMES,
-  WCAG_AA_LARGE_TEXT,
+  WCAG_AA_NON_TEXT,
   WCAG_AA_TEXT,
   contrastRatio,
   effectiveSurfaces,
+  emitCssThemes,
   inkForFill,
   inkOn,
+  inkOnGradient,
   resolveColorToken,
 } from '../src/index';
 
@@ -135,28 +140,103 @@ describe('every filled control is readable under the ink it gets', () => {
   it('the 135° aurora gradient takes one ink across all three of its stops', () => {
     // The primary button's fill is a gradient (DESIGN.md §2), so its label
     // crosses aurora1 → aurora2 → aurora3 and one ink has to serve all three.
-    // Dark clears AA. LIGHT DOES NOT and is recorded here rather than hidden:
-    // white measures 2.73:1 on light `aurora3` and black 3.96:1 on light
-    // `aurora1`, so the best single ink for the light gradient is 3.96:1 — over
-    // the 3:1 non-text bar, under the 4.5:1 text bar. Fixing it means moving
-    // light `aurora1`/`aurora3`, which is a palette decision, not a test one.
+    //
+    // THIS USED TO BE A RECORDED FAILURE. The light gradient's best single ink
+    // measured 3.96:1 — over the 3:1 non-text bar, under the 4.5:1 text bar —
+    // and this test asserted the weaker bar with a comment saying the fix was
+    // "a palette decision, not a test one". The palette decision was taken
+    // (light aurora1 0.55→0.59, aurora2 0.58→0.60; see src/tokens.ts), so the
+    // bar here is now the real one, in both themes.
     const floor = (theme: 'dark' | 'light', ink: string): number =>
       Math.min(
-        ...(['aurora1', 'aurora2', 'aurora3'] as const).map((stop) =>
+        ...AURORA_GRADIENT_STOPS.map((stop) =>
           contrastRatio(ink, resolveColorToken(theme, stop).hex),
         ),
       );
-    const best = (theme: 'dark' | 'light'): number =>
-      Math.max(floor(theme, INKS.inkBlack.hex), floor(theme, INKS.inkWhite.hex));
-
-    expect(best('dark'), `dark gradient floor ${best('dark').toFixed(2)}:1`).toBeGreaterThanOrEqual(
-      WCAG_AA_TEXT,
-    );
-    expect(
-      best('light'),
-      `light gradient floor ${best('light').toFixed(2)}:1 — below WCAG_AA_TEXT, see comment`,
-    ).toBeGreaterThanOrEqual(WCAG_AA_LARGE_TEXT);
+    for (const theme of THEME_NAMES) {
+      const best = Math.max(floor(theme, INKS.inkBlack.hex), floor(theme, INKS.inkWhite.hex));
+      expect(best, `${theme} gradient floor ${best.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+        WCAG_AA_TEXT,
+      );
+    }
   });
+
+  it('`inkOnGradient` IS that best ink, in both themes', () => {
+    for (const theme of THEME_NAMES) {
+      const ink = inkOnGradient(theme);
+      const worst = Math.min(
+        ...AURORA_GRADIENT_STOPS.map((stop) =>
+          contrastRatio(ink.hex, resolveColorToken(theme, stop).hex),
+        ),
+      );
+      expect(
+        worst,
+        `${theme}: ${ink.name} floors at ${worst.toFixed(2)}:1 across the gradient`,
+      ).toBeGreaterThanOrEqual(WCAG_AA_TEXT);
+    }
+  });
+
+  it('picks the gradient ink by its WORST stop, not by any single one', () => {
+    // The distinction that matters: `inkOn(theme, 'aurora3')` answers about one
+    // stop, and on light `aurora3` white measures 2.73:1. A per-stop pick would
+    // be green on each colour and illegible across the button.
+    for (const theme of THEME_NAMES) {
+      const chosen = inkOnGradient(theme);
+      const other = chosen.name === 'inkBlack' ? INKS.inkWhite : INKS.inkBlack;
+      const floorOf = (hex: string): number =>
+        Math.min(
+          ...AURORA_GRADIENT_STOPS.map((stop) =>
+            contrastRatio(hex, resolveColorToken(theme, stop).hex),
+          ),
+        );
+      expect(floorOf(chosen.hex), theme).toBeGreaterThanOrEqual(floorOf(other.hex));
+    }
+  });
+
+  it('beats what --accent-ink managed on the same gradient, by a lot', () => {
+    // The regression this whole mechanism exists to prevent, measured. Kept as
+    // an assertion because `--accent-ink` is what DESIGN.md §8 still names for
+    // the primary button, so reaching for it again is the obvious edit.
+    for (const theme of THEME_NAMES) {
+      const floorOf = (hex: string): number =>
+        Math.min(
+          ...AURORA_GRADIENT_STOPS.map((stop) =>
+            contrastRatio(hex, resolveColorToken(theme, stop).hex),
+          ),
+        );
+      const old = floorOf(resolveColorToken(theme, 'accentInk').hex);
+      const now = floorOf(inkOnGradient(theme).hex);
+      expect(old, `${theme}: --accent-ink floored at ${old.toFixed(2)}:1`).toBeLessThan(
+        WCAG_AA_TEXT,
+      );
+      expect(now, `${theme}: now ${now.toFixed(2)}:1`).toBeGreaterThan(old);
+    }
+  });
+
+  it('reaches the stylesheet as one variable per theme', () => {
+    const css = emitCssThemes();
+    expect(css.split(`${INK_ON_GRADIENT_CSS_VAR}:`).length - 1).toBe(2);
+  });
+});
+
+describe('a colour that is the whole affordance holds the non-text bar', () => {
+  // This guard did not exist, and its absence is why raising light `aurora1`
+  // for the gradient could have quietly cost the accent edge its legibility:
+  // `--accent` aliases `aurora1`, and a 3px accent edge or a status dot has no
+  // label to fall back on. WCAG 1.4.11 is 3:1 and applies to exactly these.
+  for (const theme of THEME_NAMES) {
+    for (const token of STANDALONE_UI_TOKENS) {
+      it(`${theme}: ${token} holds ${WCAG_AA_NON_TEXT}:1 across the ladder`, () => {
+        const color = resolveColorToken(theme, token);
+        const failures: string[] = [];
+        for (const surface of effectiveSurfaces(theme)) {
+          const ratio = contrastRatio(color.hex, surface.hex);
+          if (ratio < WCAG_AA_NON_TEXT) failures.push(`${surface.label} ${ratio.toFixed(2)}:1`);
+        }
+        expect(failures, `${token} (${color.hex}) fails on: ${failures.join(', ')}`).toEqual([]);
+      });
+    }
+  }
 });
 
 describe('the palette itself is intact', () => {

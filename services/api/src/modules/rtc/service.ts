@@ -1,27 +1,23 @@
 /**
  * RTC domain logic: short-lived TURN credentials with a strategy chain —
- * Cloudflare TURN-keys API when configured, coturn REST (HMAC-SHA1)
- * credentials when a static auth secret is set, and a STUN-only fallback —
- * plus the free-plan fair-use cap on TURN relay traffic. Pure logic over Deps
- * (global fetch injectable via tests stubbing it); no Fastify types here.
+ * Cloudflare TURN-keys API when configured, and a STUN-only fallback when it
+ * is not. Relay is unmetered for everyone. Pure logic over Deps (global fetch
+ * injectable via tests stubbing it); no Fastify types here.
  *
- * Contract conformance note: the fair-use "capped" signal is
- * `fairUseRemainingGb: 0` — the contract has no separate boolean.
+ * Contract conformance note: `fairUseRemainingGb` is always `null`, the
+ * contract's long-standing "unmetered" value — clients (packages/p2p
+ * TurnManager) already treat null as unmetered/unknown and never gate on it,
+ * so the field stays on the wire purely for compatibility.
  */
-import { createHmac } from 'node:crypto';
 import type { TurnCredentialsResponse } from '@gather/contracts';
-import { getEntitlementsPort } from '../rooms/deps';
 import type { AuthContext, Deps } from '../types';
 
-/** coturn/Cloudflare credential lifetime: 6 hours. */
+/** Cloudflare credential lifetime: 6 hours. */
 export const TOKEN_TTL_SECONDS = 6 * 60 * 60;
 
 const CF_TURN_ENDPOINT = 'https://rtc.live.cloudflare.com/v1/turn/keys';
 const CF_FETCH_TIMEOUT_MS = 5000;
 const STUN_ONLY_SERVERS = [{ urls: ['stun:stun.l.google.com:19302'] }];
-/** Usage `unit` for TURN metering; amounts are byte counts. */
-const TURN_USAGE_KIND = 'turn-bytes';
-const BYTES_PER_GB = 1e9;
 
 type IceServer = TurnCredentialsResponse['iceServers'][number];
 
@@ -35,30 +31,13 @@ interface CloudflareCredentialsPayload {
 export class RtcService {
   constructor(private readonly deps: Deps) {}
 
-  private now(): number {
-    return Date.now();
-  }
-
   /**
-   * ICE servers for the caller. Strategy chain: Cloudflare → coturn HMAC →
-   * STUN-only. Free-plan users over the monthly fair-use cap get all
-   * `turn:`/`turns:` relay URLs stripped (STUN kept) and
-   * `fairUseRemainingGb: 0`; premium (active subscription) is unmetered
-   * (`fairUseRemainingGb: null`).
+   * ICE servers for the caller. Strategy chain: Cloudflare → STUN-only.
+   * Relay is unmetered for every account, so `fairUseRemainingGb` is always
+   * `null`.
    */
   async turnCredentials(auth: AuthContext): Promise<TurnCredentialsResponse> {
-    const entitlements = await getEntitlementsPort(this.deps).getFor(auth.userId);
-    const unmetered = entitlements.plan === 'premium';
-
-    const capGb = this.deps.config.freeTurnCapGbPerMonth;
-    const usedGb = unmetered ? 0 : await this.turnUsageGbThisMonth(auth.userId);
-    const remainingGb = unmetered ? null : Math.max(0, capGb - usedGb);
-    const capped = !unmetered && usedGb >= capGb;
-
     let iceServers = await this.iceServersFromStrategies(auth.userId);
-    if (capped) {
-      iceServers = stripRelayUrls(iceServers);
-    }
     if (iceServers.length === 0) {
       iceServers = STUN_ONLY_SERVERS.map((s) => ({ ...s }));
     }
@@ -66,40 +45,13 @@ export class RtcService {
     return {
       iceServers,
       ttlSeconds: TOKEN_TTL_SECONDS,
-      // 3 decimals keeps the signal readable without float noise.
-      fairUseRemainingGb: remainingGb === null ? null : Math.round(remainingGb * 1000) / 1000,
+      fairUseRemainingGb: null,
     };
-  }
-
-  /**
-   * Sum of this user's `turn-bytes` usage in the current UTC calendar month.
-   *
-   * METERING POSTURE (recorded decision): per BUILD_PROMPT's billing section,
-   * fair-use metering is fed by client getStats samples (POST /billing/usage)
-   * — a client that never reports under-counts itself. Two server-side
-   * mitigations exist: (1) Cloudflare credentials are minted with
-   * `customIdentifier: userId`, so relay bytes ARE attributable per user in
-   * Cloudflare's own analytics for out-of-band reconciliation/abuse review;
-   * (2) the ledger is only self-affecting (userId comes from auth — nobody
-   * can inflate another user). True server-side byte attribution requires
-   * polling Cloudflare's usage API — orchestrator-level integration, tracked
-   * in the module report.
-   */
-  private async turnUsageGbThisMonth(userId: string): Promise<number> {
-    const now = new Date(this.now());
-    const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
-    const docs = await this.deps.store.usage.findMany({
-      userId,
-      kind: TURN_USAGE_KIND,
-      at: { $gte: monthStart },
-    });
-    const bytes = docs.reduce((total, doc) => total + doc.amount, 0);
-    return bytes / BYTES_PER_GB;
   }
 
   /** First strategy that yields servers wins; failures fall through. */
   private async iceServersFromStrategies(userId: string): Promise<IceServer[]> {
-    const { cloudflare, turnStaticAuthSecret } = this.deps.config;
+    const { cloudflare } = this.deps.config;
     if (cloudflare.turnKeyId !== null && cloudflare.turnApiToken !== null) {
       const servers = await this.cloudflareIceServers(
         cloudflare.turnKeyId,
@@ -109,9 +61,6 @@ export class RtcService {
       if (servers !== null) {
         return servers;
       }
-    }
-    if (turnStaticAuthSecret !== null) {
-      return this.coturnIceServers(userId, turnStaticAuthSecret);
     }
     return STUN_ONLY_SERVERS.map((s) => ({ ...s }));
   }
@@ -134,8 +83,8 @@ export class RtcService {
           'content-type': 'application/json',
         },
         // customIdentifier tags the credential with the requesting user so
-        // relay usage is attributable per user in Cloudflare analytics (the
-        // server-side check against a client that never self-reports).
+        // relay usage stays attributable per user in Cloudflare analytics —
+        // abuse review only; nothing is metered or capped against it.
         body: JSON.stringify({ ttl: TOKEN_TTL_SECONDS, customIdentifier: userId }),
         signal: AbortSignal.timeout(CF_FETCH_TIMEOUT_MS),
       });
@@ -155,33 +104,6 @@ export class RtcService {
       return null;
     }
   }
-
-  /**
-   * coturn REST credentials: username `<unixExpiry>:<userId>`, credential =
-   * base64 HMAC-SHA1(username, staticAuthSecret). URIs derive their host from
-   * the configured apiUrl (localhost in dev).
-   */
-  private coturnIceServers(userId: string, secret: string): IceServer[] {
-    const expiry = Math.floor(this.now() / 1000) + TOKEN_TTL_SECONDS;
-    const username = `${expiry}:${userId}`;
-    const credential = createHmac('sha1', secret).update(username).digest('base64');
-    return [{ urls: coturnUris(this.deps.config.apiUrl), username, credential }];
-  }
-}
-
-/** turn/turns URIs for the host serving the API (localhost fallback in dev). */
-function coturnUris(apiUrl: string): string[] {
-  let host = 'localhost';
-  try {
-    host = new URL(apiUrl).hostname || 'localhost';
-  } catch {
-    // keep fallback
-  }
-  return [
-    `turn:${host}:3478?transport=udp`,
-    `turn:${host}:3478?transport=tcp`,
-    `turns:${host}:5349?transport=tcp`,
-  ];
 }
 
 /** Map Cloudflare's payload (object or array, urls string or string[]) onto
@@ -206,18 +128,4 @@ function normalizeCloudflareServers(payload: CloudflareCredentialsPayload): IceS
     });
   }
   return servers;
-}
-
-/** Drop every turn:/turns: URL (relay transports) and any server left with no
- *  URLs; STUN entries pass through untouched. */
-function stripRelayUrls(servers: IceServer[]): IceServer[] {
-  const out: IceServer[] = [];
-  for (const server of servers) {
-    const urls = server.urls.filter((u) => !u.startsWith('turn:') && !u.startsWith('turns:'));
-    if (urls.length === 0) {
-      continue;
-    }
-    out.push({ ...server, urls });
-  }
-  return out;
 }

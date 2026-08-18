@@ -14,6 +14,7 @@
  */
 import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
+import { VolumeMixer } from './ducking';
 
 /* Minimal ambient typings for the iframe API surface we use (no @types dep). */
 interface YTPlayer {
@@ -86,6 +87,8 @@ export class YouTubeAdapter implements PlayerAdapter {
   readonly kind = 'youtube' as const;
 
   private readonly container: HTMLElement;
+  /** The user's volume and the duck gain, kept apart (lib/player/ducking.ts). */
+  private readonly mixer = new VolumeMixer();
   private readonly listeners = new Map<AdapterEvent, Set<() => void>>();
   private player: YTPlayer | null = null;
   private ready = false;
@@ -139,6 +142,9 @@ export class YouTubeAdapter implements PlayerAdapter {
             onReady: () => {
               this.ready = true;
               this.hardenIframe();
+              // A volume or duck set before the API existed was written to
+              // nothing; replay the mix now rather than start at 100%.
+              this.applyVolume();
               this.emit('ready');
             },
             onStateChange: (ev) => {
@@ -173,7 +179,15 @@ export class YouTubeAdapter implements PlayerAdapter {
   }
 
   seekTo(ms: number): void {
-    this.player?.seekTo(Math.max(0, ms / 1000), true);
+    const player = this.player;
+    if (player === null) return;
+    // Bounded at BOTH ends. Past the end is not a position: YouTube's seekTo
+    // from a non-paused state plays, so a correction aimed beyond the last
+    // frame lands on it and fires ENDED again. Duration reads 0 until the
+    // player is ready, which is "unknown", not "zero-length".
+    const duration = this.durationMs();
+    const target = duration > 0 ? Math.min(ms, duration) : ms;
+    player.seekTo(Math.max(0, target) / 1000, true);
   }
 
   setRate(rate: number): void {
@@ -201,7 +215,19 @@ export class YouTubeAdapter implements PlayerAdapter {
   }
 
   setVolume(volume: number): void {
-    this.player?.setVolume(Math.round(Math.min(1, Math.max(0, volume)) * 100));
+    this.mixer.setUserVolume(volume);
+    this.applyVolume();
+  }
+
+  setDuck(gain: number): void {
+    this.mixer.setDuck(gain);
+    this.applyVolume();
+  }
+
+  /** The product, and only the product — see lib/player/ducking.ts. Mute is
+   *  the iframe API's own mute()/unMute(), untouched by ducking. */
+  private applyVolume(): void {
+    this.player?.setVolume(Math.round(this.mixer.effective() * 100));
   }
 
   on(evt: AdapterEvent, cb: () => void): () => void {

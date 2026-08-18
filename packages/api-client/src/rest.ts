@@ -14,7 +14,6 @@ import {
   CreateRoomResponse,
   CreateUploadBody,
   CreateUploadResponse,
-  DeleteAssetResponse,
   DeletePlaylistResponse,
   GetPlaylistResponse,
   GetRoomResponse,
@@ -25,7 +24,6 @@ import {
   KickMemberBody,
   KickMemberResponse,
   LeaveRoomResponse,
-  ListLibraryResponse,
   ListMembersResponse,
   ListMessagesResponse,
   ListMyRoomsResponse,
@@ -35,13 +33,12 @@ import {
   MeResponse,
   PinMessageBody,
   PinMessageResponse,
+  PushPublicKeyResponse,
   PushSubscribeBody,
   PushSubscribeResponse,
   PushUnsubscribeBody,
   PushUnsubscribeResponse,
   RefreshResponse,
-  RenameAssetBody,
-  RenameAssetResponse,
   ReplayEventsResponse,
   RequestMagicLinkBody,
   RequestMagicLinkResponse,
@@ -49,8 +46,11 @@ import {
   ResolveMediaResponse,
   RevokeAllSessionsResponse,
   RevokeSessionResponse,
+  RoomHistoryResponse,
   SearchGifsResponse,
   SearchMessagesResponse,
+  SetRoomMuteBody,
+  SetRoomMuteResponse,
   TransferHostBody,
   TransferHostResponse,
   TurnCredentialsResponse,
@@ -67,7 +67,7 @@ import {
   VerifyTokenBody,
   VerifyTokenResponse,
 } from '@gather/contracts';
-import type { AssetId, PlaylistId, RoomId, SessionId } from '@gather/contracts';
+import type { PlaylistId, RoomId, SessionId } from '@gather/contracts';
 import { ApiError, apiErrorFromStatus } from './errors';
 import { defaultFetch } from './types';
 import type { FetchInitLike, FetchLike } from './types';
@@ -129,6 +129,12 @@ export class RestClient {
     kickMember(roomId: RoomId, body: KickMemberBody): Promise<KickMemberResponse>;
     banMember(roomId: RoomId, body: BanMemberBody): Promise<BanMemberResponse>;
     createInvite(roomId: RoomId, body: CreateInviteBody): Promise<CreateInviteResponse>;
+    /** What the room played, newest first. `before` is the previous page's
+     *  `nextBefore`; members only. */
+    getHistory(
+      roomId: RoomId,
+      query?: { before?: number; limit?: number },
+    ): Promise<RoomHistoryResponse>;
   };
   /** Message history and message-adjacent endpoints. */
   readonly messages: {
@@ -143,13 +149,15 @@ export class RestClient {
     pinMessage(roomId: RoomId, body: PinMessageBody): Promise<PinMessageResponse>;
     unfurl(body: UnfurlBody): Promise<UnfurlResponse>;
   };
-  /** Media upload session and library endpoints. */
+  /** Link metadata, plus the multipart upload session ChunkedUploader drives. */
   readonly media: {
+    /** NO SERVER: /media/uploads was services/media, which was deleted. Chat
+     *  attachments do NOT come through here — they use the room-scoped
+     *  POST /rooms/:roomId/attachments (apps/web/lib/attachments.ts) and only
+     *  borrow the schemas. These two exist for ChunkedUploader alone, which
+     *  now has no caller either; they go when it does. */
     createUpload(body: CreateUploadBody): Promise<CreateUploadResponse>;
     completeUpload(body: CompleteUploadBody): Promise<CompleteUploadResponse>;
-    listLibrary(query?: { cursor?: string; limit?: number }): Promise<ListLibraryResponse>;
-    deleteAsset(assetId: AssetId): Promise<DeleteAssetResponse>;
-    renameAsset(assetId: AssetId, body: RenameAssetBody): Promise<RenameAssetResponse>;
     /** Server-side title/artwork/duration lookup for a pasted link or a
      *  MediaRef — the paste-a-link preview and any surface that needs real
      *  metadata before an item exists in a queue. */
@@ -177,8 +185,10 @@ export class RestClient {
   };
   /** Web push subscription endpoints. */
   readonly push: {
+    publicKey(): Promise<PushPublicKeyResponse>;
     subscribe(body: PushSubscribeBody): Promise<PushSubscribeResponse>;
     unsubscribe(body: PushUnsubscribeBody): Promise<PushUnsubscribeResponse>;
+    setRoomMute(body: SetRoomMuteBody): Promise<SetRoomMuteResponse>;
   };
   /** GIF search endpoint. */
   readonly gifs: {
@@ -368,6 +378,14 @@ export class RestClient {
           schema: CreateInviteResponse,
           body,
         }),
+      getHistory: (roomId, query) =>
+        this.request({
+          label: 'rooms.getHistory',
+          method: 'GET',
+          path: `/rooms/${encodeURIComponent(roomId)}/history`,
+          schema: RoomHistoryResponse,
+          query: { before: query?.before, limit: query?.limit },
+        }),
     };
 
     this.messages = {
@@ -420,29 +438,6 @@ export class RestClient {
           method: 'POST',
           path: '/media/uploads/complete',
           schema: CompleteUploadResponse,
-          body,
-        }),
-      listLibrary: (query) =>
-        this.request({
-          label: 'media.listLibrary',
-          method: 'GET',
-          path: '/media/library',
-          schema: ListLibraryResponse,
-          query: { cursor: query?.cursor, limit: query?.limit },
-        }),
-      deleteAsset: (assetId) =>
-        this.request({
-          label: 'media.deleteAsset',
-          method: 'DELETE',
-          path: `/media/assets/${encodeURIComponent(assetId)}`,
-          schema: DeleteAssetResponse,
-        }),
-      renameAsset: (assetId, body) =>
-        this.request({
-          label: 'media.renameAsset',
-          method: 'PATCH',
-          path: `/media/assets/${encodeURIComponent(assetId)}`,
-          schema: RenameAssetResponse,
           body,
         }),
       resolveMedia: (body) =>
@@ -525,6 +520,13 @@ export class RestClient {
     };
 
     this.push = {
+      publicKey: () =>
+        this.request({
+          label: 'push.publicKey',
+          method: 'GET',
+          path: '/push/public-key',
+          schema: PushPublicKeyResponse,
+        }),
       subscribe: (body) =>
         this.request({
           label: 'push.subscribe',
@@ -539,6 +541,14 @@ export class RestClient {
           method: 'POST',
           path: '/push/unsubscribe',
           schema: PushUnsubscribeResponse,
+          body,
+        }),
+      setRoomMute: (body) =>
+        this.request({
+          label: 'push.setRoomMute',
+          method: 'POST',
+          path: '/push/room-mute',
+          schema: SetRoomMuteResponse,
           body,
         }),
     };

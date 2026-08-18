@@ -42,6 +42,7 @@ class FakeAdapter {
     return false;
   }
   setVolume(): void {}
+  setDuck(): void {}
   positionMs(): number {
     return 0;
   }

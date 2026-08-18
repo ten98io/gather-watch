@@ -6,6 +6,7 @@
  */
 import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
+import { VolumeMixer } from './ducking';
 
 interface SCWidget {
   play(): void;
@@ -51,7 +52,11 @@ export class SoundCloudAdapter implements PlayerAdapter {
   private widget: SCWidget | null = null;
   private position = 0;
   private duration = 0;
-  private muted = false;
+  /** The widget has no mute of its own — mute, the user's volume and the duck
+   *  gain all resolve here, and only the product is sent (lib/player/ducking.ts).
+   *  This is also why unmuting no longer jumps to 100%: it restores whatever
+   *  the user had chosen. */
+  private readonly mixer = new VolumeMixer();
   private destroyed = false;
   private buffering = false;
 
@@ -86,6 +91,8 @@ export class SoundCloudAdapter implements PlayerAdapter {
         this.widget = widget;
 
         widget.bind('ready', () => {
+          // Anything set before the widget existed went nowhere; replay it.
+          this.applyVolume();
           // The widget API reports getDuration/getPosition/currentPosition in
           // MILLISECONDS already — no conversion, unlike Vimeo's seconds.
           widget.getDuration((ms) => {
@@ -154,14 +161,22 @@ export class SoundCloudAdapter implements PlayerAdapter {
     return this.duration;
   }
   setMuted(muted: boolean): void {
-    this.muted = muted;
-    this.widget?.setVolume(muted ? 0 : 100);
+    this.mixer.setMuted(muted);
+    this.applyVolume();
   }
   isMuted(): boolean {
-    return this.muted;
+    return this.mixer.isMuted();
   }
   setVolume(volume: number): void {
-    this.widget?.setVolume(Math.round(Math.min(1, Math.max(0, volume)) * 100));
+    this.mixer.setUserVolume(volume);
+    this.applyVolume();
+  }
+  setDuck(gain: number): void {
+    this.mixer.setDuck(gain);
+    this.applyVolume();
+  }
+  private applyVolume(): void {
+    this.widget?.setVolume(Math.round(this.mixer.effective() * 100));
   }
 
   on(evt: AdapterEvent, cb: () => void): () => void {

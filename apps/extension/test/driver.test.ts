@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ElasticDriver,
   INTENT_ECHO_WINDOW_MS,
+  MediaEndDetector,
   MIN_SEEK_INTERVAL_MS,
   OBSERVER_CAPABILITIES,
   SYNC_PRESETS,
@@ -21,6 +22,7 @@ import type {
   DriveReason,
   DriverTelemetry,
   ElasticDirective,
+  ObservedEnd,
   RoomFrame,
 } from '../src/driver';
 import { LEGACY_BANDS, decideDrive } from '../src/mediaDriver';
@@ -43,6 +45,8 @@ interface SimOptions {
   stallTicks?: readonly number[];
   /** The player is paused even though the room is playing. */
   playerPaused?: boolean;
+  /** Which item the room is on throughout. Defaults to a YouTube video. */
+  mediaKey?: string | null;
 }
 
 interface SimResult {
@@ -90,7 +94,7 @@ function simulate(driver: ElasticDriver, opts: SimOptions): SimResult {
       expectedMs: expected,
       playing: true,
       rate: roomRate,
-      mediaKey: 'yt:abc',
+      mediaKey: opts.mediaKey === undefined ? 'yt:abc' : opts.mediaKey,
     };
     const cmd = driver.tick(room, sample, now);
     commands.push(cmd);
@@ -161,6 +165,55 @@ describe('mediaKeyOf', () => {
         title: null,
       }),
     ).toBe('embed:spotify:https://open.spotify.com/embed/track/1');
+  });
+
+  /**
+   * A page ref is the whole point of the generic driver: an arbitrary site
+   * with a <video> in it. Two different pages must not share a key, or moving
+   * between them is invisible to the driver and it keeps the anchor it learned
+   * on the previous item.
+   */
+  it('names a plain web page by its url', () => {
+    expect(mediaKeyOf({ kind: 'page', url: 'https://example.com/watch' })).toBe(
+      'page:https://example.com/watch',
+    );
+    expect(mediaKeyOf({ kind: 'page', url: 'https://example.com/a' })).not.toBe(
+      mediaKeyOf({ kind: 'page', url: 'https://example.com/b' }),
+    );
+  });
+
+  /**
+   * What a shared key costs, concretely. A key change is how the driver learns
+   * that the player in front of it is a NEW one — it then forgets what it
+   * learned about the last one (see noteTrackChange → forgetPlayerBeliefs). A
+   * page with no key of its own kept every page in a room looking like one
+   * endless item, so a site whose player had refused a seek condemned every
+   * page queued after it to be driven as unseekable too.
+   */
+  it('lets the driver see one page ending and another starting', () => {
+    /** Learn on a player that ignores seeks while the room is on `first`, then
+     *  move the room to `second` and report whether seeking is back on. */
+    const seekableAfter = (first: string | null, second: string | null): boolean => {
+      const driver = new ElasticDriver({ profile: 'watch' });
+      simulate(driver, { ticks: 60, lagMs: 30_000, honoursSeek: false, mediaKey: first });
+      expect(driver.state().seekAvailable).toBe(false);
+      const now = START_NOW + 60_000;
+      driver.tick(
+        { expectedMs: 1000, playing: true, rate: 1, mediaKey: second },
+        { positionMs: 1000, durationMs: 60_000, playing: true, rate: 1, atMs: now },
+        now,
+      );
+      return driver.state().seekAvailable;
+    };
+
+    const a = mediaKeyOf({ kind: 'page', url: 'https://a' });
+    const b = mediaKeyOf({ kind: 'page', url: 'https://b' });
+    // A different page is a different player: it gets the benefit of the doubt.
+    expect(seekableAfter(a, b)).toBe(true);
+    // The control, and the exact shape of the defect: pages that key the same
+    // — which is what every page did — inherit the last one's verdict.
+    expect(seekableAfter(a, a)).toBe(false);
+    expect(seekableAfter(null, null)).toBe(false);
   });
 });
 
@@ -535,6 +588,81 @@ describe('ElasticDriver — honest stops', () => {
   });
 });
 
+/**
+ * E9. The room's position keeps being projected forward after the source runs
+ * out, so an unclamped expectation reads as "this viewer is minutes behind"
+ * forever — and the prescription for that is a seek past the end, which is
+ * what starts a finished player again. The controller has a terminal state for
+ * exactly this; the extension is the surface that has to hand it the length.
+ */
+describe('ElasticDriver — the end of an item', () => {
+  const ended = (durationMs: number, atMs: number): DriverTelemetry => ({
+    positionMs: durationMs,
+    durationMs,
+    playing: false,
+    rate: 1,
+    atMs,
+  });
+
+  it('does not chase a room position that has run past the end of the item', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const now = START_NOW;
+    // The room is 30 s past a 100 s item — far outside the 12 s seek band.
+    const cmd = driver.tick(
+      { expectedMs: 130_000, playing: false, rate: 1, mediaKey: 'page:https://x/y' },
+      ended(100_000, now),
+      now,
+    );
+
+    expect(cmd.seekToMs).toBeNull();
+    expect(cmd.driftMs).toBe(0);
+    expect(cmd.idle).toBe(true);
+  });
+
+  it('keeps saying so, tick after tick, instead of oscillating', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    let now = START_NOW;
+    let expected = 130_000;
+    const seeked: number[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      const cmd = driver.tick(
+        { expectedMs: expected, playing: false, rate: 1, mediaKey: 'page:https://x/y' },
+        ended(100_000, now),
+        now,
+      );
+      if (cmd.seekToMs !== null) seeked.push(cmd.seekToMs);
+      now += 1000;
+      expected += 1000;
+    }
+    expect(seeked).toEqual([]);
+  });
+
+  it('still corrects a genuine lag inside the item', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const now = START_NOW;
+    // 40 s in on a 100 s item, room at 90 s: a real 50 s lag, worth a seek.
+    const cmd = driver.tick(
+      { expectedMs: 90_000, playing: true, rate: 1, mediaKey: 'page:https://x/y' },
+      { positionMs: 40_000, durationMs: 100_000, playing: true, rate: 1, atMs: now },
+      now,
+    );
+    expect(cmd.seekToMs).not.toBeNull();
+  });
+
+  it('clamps nothing while the player has not said how long the item is', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const now = START_NOW;
+    // durationMs 0 is every adapter's "not known yet" — pre-metadata, or a
+    // live stream. Guessing an end for it would stop correcting a real lag.
+    const cmd = driver.tick(
+      { expectedMs: 130_000, playing: true, rate: 1, mediaKey: 'page:https://x/y' },
+      { positionMs: 100_000, durationMs: 0, playing: true, rate: 1, atMs: now },
+      now,
+    );
+    expect(cmd.seekToMs).not.toBeNull();
+  });
+});
+
 describe('ElasticDriver — the wire contract with the content script', () => {
   it('gives an old fixed-band content script exactly this decision', () => {
     const driver = new ElasticDriver({ profile: 'watch' });
@@ -747,5 +875,86 @@ describe('syncStatusLabel', () => {
     expect(syncStatusLabel({ ...base, anchorOffsetMs: 8200 })).toBe(
       'Playing smoothly, 8s behind the room',
     );
+  });
+});
+
+/* ── the end of the media: the other half of "arrival, not intent" ── */
+
+describe('MediaEndDetector', () => {
+  const end = (over: Partial<ObservedEnd> = {}): ObservedEnd => ({
+    sourceKey: '1:https://cdn.example.com/feature.m3u8',
+    positionMs: 5_400_000,
+    durationMs: 5_400_000,
+    ended: true,
+    ...over,
+  });
+
+  it('reports arrival at the end, with the duration beside it', () => {
+    expect(new MediaEndDetector().observe(end())).toEqual({
+      positionMs: 5_400_000,
+      durationMs: 5_400_000,
+    });
+  });
+
+  it('reports one end however many times the player says so', () => {
+    const detector = new MediaEndDetector();
+    expect(detector.observe(end())).not.toBeNull();
+    expect(detector.observe(end())).toBeNull();
+    expect(detector.observe(end())).toBeNull();
+  });
+
+  /** The stale end an SPA makes: the event lands after the next item was
+   *  loaded into the same element, which is back at the start. */
+  it('refuses an element that no longer says it ended', () => {
+    expect(new MediaEndDetector().observe(end({ ended: false, positionMs: 0 }))).toBeNull();
+  });
+
+  it('refuses the end of nothing — no duration and no position', () => {
+    expect(new MediaEndDetector().observe(end({ positionMs: 0, durationMs: 0 }))).toBeNull();
+  });
+
+  it('still reports an end whose duration was never known (a live stream)', () => {
+    expect(new MediaEndDetector().observe(end({ durationMs: 0 }))).toEqual({
+      positionMs: 5_400_000,
+      durationMs: 0,
+    });
+  });
+
+  it('reports the next item, in the same player, as its own end', () => {
+    const detector = new MediaEndDetector();
+    expect(detector.observe(end())).not.toBeNull();
+    expect(detector.observe(end({ sourceKey: '1:https://cdn.example.com/next.m3u8' }))).toEqual({
+      positionMs: 5_400_000,
+      durationMs: 5_400_000,
+    });
+  });
+
+  it('ends the same item twice when it is genuinely watched twice', () => {
+    const detector = new MediaEndDetector();
+    expect(detector.observe(end())).not.toBeNull();
+    // The heartbeat finds the player back near the start: they hit replay.
+    detector.notePosition(2_000, 5_400_000);
+    expect(detector.observe(end())).not.toBeNull();
+  });
+
+  it('is not disarmed by the last frame twitching under a paused player', () => {
+    const detector = new MediaEndDetector();
+    expect(detector.observe(end())).not.toBeNull();
+    detector.notePosition(5_399_000, 5_400_000);
+    expect(detector.observe(end())).toBeNull();
+  });
+
+  it('cannot judge a replay it has no duration for, and stays latched', () => {
+    const detector = new MediaEndDetector();
+    expect(detector.observe(end({ durationMs: 0 }))).not.toBeNull();
+    detector.notePosition(0, 0);
+    expect(detector.observe(end({ durationMs: 0 }))).toBeNull();
+  });
+
+  it('forgets the latch when the driven element is replaced', () => {
+    const detector = new MediaEndDetector();
+    expect(detector.observe(end())).not.toBeNull();
+    detector.reset();
+    expect(detector.observe(end())).not.toBeNull();
   });
 });

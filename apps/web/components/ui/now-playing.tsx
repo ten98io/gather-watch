@@ -21,7 +21,7 @@ export interface NowPlayingProps {
   title: string;
   kind: ArtworkKind;
   artworkUrl?: string | null;
-  /** Human provider name — 'YouTube', 'Library'. Never a raw enum value. */
+  /** Human provider name — 'YouTube', 'Web page'. Never a raw enum value. */
   provider?: string | null;
   /** Anything else worth one line: who added it, album, uploader. */
   meta?: ReactNode;

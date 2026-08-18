@@ -11,10 +11,18 @@
  *              renders black by OS design. These ride the browser-extension
  *              content-script path (everyone's own player, everyone's own
  *              account). In the web app they queue as informational rows.
+ *  generic     ANY other https page. Nobody can finish enumerating the web,
+ *              so the named entries below are BETTER paths for the sites they
+ *              know rather than gates on the ones they don't: an unrecognised
+ *              host queues as a `page` MediaRef and each viewer's extension
+ *              drives whatever <video>/<audio> that page mounts on their own
+ *              device. A viewer without the extension just sees the link, and
+ *              the queue note says exactly that.
  */
 import type { MediaRef } from '@gather/contracts';
 
-export type ProviderCapability = 'full-sync' | 'approximate' | 'extension';
+/** Mirrors apps/extension/src/providers.ts — the two registries share tiers. */
+export type ProviderCapability = 'full-sync' | 'approximate' | 'extension' | 'generic';
 
 export interface Provider {
   id: string;
@@ -43,6 +51,10 @@ export const PROVIDERS: readonly Provider[] = [
   { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'Needs the Gather browser extension' },
   { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'Needs the Gather browser extension' },
   { id: 'direct', name: 'Direct link or upload', icon: '🔗', capability: 'full-sync', note: 'Plays in sync for everyone' },
+  // The fallback every unrecognised host lands on. `name` is a placeholder:
+  // parseProviderUrl swaps in the actual host, the way the extension's
+  // UNKNOWN_URL does, so the row names the site instead of a category.
+  { id: 'generic', name: 'Web page', icon: '🌐', capability: 'generic', note: 'Everyone with the Gather browser extension plays it on their own screen — others just see the link' },
 ] as const;
 
 export function providerById(id: string): Provider | undefined {
@@ -61,8 +73,11 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
   const url = raw.trim();
   if (!/^https?:\/\/\S+$/.test(url)) return null;
   let host = '';
+  let secure = false;
   try {
-    host = new URL(url).hostname.replace(/^www\./, '').replace(/^m\./, '');
+    const parsed = new URL(url);
+    host = parsed.hostname.replace(/^www\./, '').replace(/^m\./, '');
+    secure = parsed.protocol === 'https:';
   } catch {
     return null;
   }
@@ -163,6 +178,16 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
           : lower.endsWith('.mp4')
             ? 'video/mp4'
             : null;
-  if (mime === null) return null;
-  return found('direct', { kind: 'url', url, mime }, url.split('/').pop() ?? url);
+  if (mime !== null) {
+    return found('direct', { kind: 'url', url, mime }, url.split('/').pop() ?? url);
+  }
+
+  // Anything else that is a real page. This is the branch that used to be a
+  // bare `return null` — the one that turned every site nobody had written a
+  // parser for into "only supported sites". https only: a page ref is handed
+  // to a browser as a link to open, and the contract (HttpsUrl) refuses the
+  // rest independently, so this is the same rule stated where the user is.
+  if (!secure) return null;
+  const page = found('generic', { kind: 'page', url }, host);
+  return { ...page, provider: { ...page.provider, name: host } };
 }

@@ -2,13 +2,19 @@
  * Sync module tests over real 127.0.0.1 sockets: policy/master gating, stale
  * master epochs, late-joiner replay convergence, setTrack by queue index,
  * waitForAll buffering aggregation, and the playback-history usage log.
+ *
+ * The master-seat AUTHORIZATION rules live in sync-master-authz.test.ts. What
+ * is pinned below is the epoch machinery — CAS, monotonicity, server-owned
+ * numbering — which is why these rooms run an `everyone` playbackControl: a
+ * plain member has to be able to claim the seat legitimately for the epoch
+ * mechanics to be exercised at all.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { FastifyInstance } from 'fastify';
-import type { QueueItem } from '@gather/contracts';
+import type { QueueItem, RoomId } from '@gather/contracts';
 import type { StorePort } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 import { addMember, makeApp, seedRoom, signupUser } from './helpers';
@@ -123,6 +129,15 @@ describe('sync module', () => {
     return { account, sock };
   }
 
+  /** Open playback control to every member — see the header note. */
+  async function openPlaybackToEveryone(roomId: string): Promise<void> {
+    const room = await store.rooms.findById(roomId);
+    await store.rooms.updateOne(
+      { id: roomId as RoomId },
+      { policies: { ...room!.policies, playbackControl: 'everyone' } },
+    );
+  }
+
   // ── policy gating ──────────────────────────────────────────────────────────
 
   it('gates playback mutations on policy; the host mutation persists + broadcasts', async () => {
@@ -161,8 +176,9 @@ describe('sync module', () => {
 
   // ── master election ────────────────────────────────────────────────────────
 
-  it('lets the current master bypass policy and rejects stale epochs', async () => {
+  it('seats the claimant, lets them drive, and rejects stale epochs', async () => {
     const { roomId } = await seedRoom(store);
+    await openPlaybackToEveryone(roomId);
     const host = await join('host@example.com', roomId, 'host');
     const member = await join('member@example.com', roomId, 'member');
 
@@ -172,7 +188,7 @@ describe('sync module', () => {
     const changed = await pChanged;
     expect(changed.payload).toEqual({ masterUserId: member.account.user.id, epoch: 1 });
 
-    // As current master the member can pause despite the 'host' policy.
+    // The seat holder drives — under this room's policy, as everyone may.
     const pState = nextOfType(member.sock, 'sync.state');
     member.sock.send(clientFrame(roomId, 'sync.pause', { positionMs: 1234 }));
     const state = await pState;
@@ -200,6 +216,7 @@ describe('sync module', () => {
 
   it('server owns the epoch: a huge injected epoch cannot lock the seat', async () => {
     const { roomId } = await seedRoom(store);
+    await openPlaybackToEveryone(roomId);
     const host = await join('host@example.com', roomId, 'host');
     const member = await join('member@example.com', roomId, 'member');
 
@@ -227,17 +244,21 @@ describe('sync module', () => {
     });
   });
 
-  it('a plain member cannot displace a CONNECTED master under host playbackControl', async () => {
+  it('a plain member cannot take the seat while the host is present', async () => {
+    // The seat names the SOLE advancer, so it must never go to a client whose
+    // setTrack the policy would refuse — otherwise every other tab stands down
+    // and the queue stops forever. The seat and the drive share one predicate.
     const { roomId } = await seedRoom(store);
     const host = await join('host@example.com', roomId, 'host');
     const member = await join('member@example.com', roomId, 'member');
+    host.sock.send(clientFrame(roomId, 'presence.update', { state: 'watching' }));
+    member.sock.send(clientFrame(roomId, 'presence.update', { state: 'watching' }));
+    await new Promise((r) => setTimeout(r, 50));
 
     const pChanged = nextOfType(member.sock, 'sync.masterChanged');
     host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 1 }));
     await pChanged;
 
-    // The host's socket is live, so the member's grab is a policy violation,
-    // not a re-election.
     const pErr = nextOfType(member.sock, 'error');
     member.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 5 }));
     expect((await pErr).payload.code).toBe('ROOM_POLICY');

@@ -10,6 +10,7 @@
 import type {
   Invite,
   MediaAsset,
+  MediaRef,
   Member,
   Message,
   PlaybackState,
@@ -107,12 +108,19 @@ export interface AuthTokenDoc {
 }
 
 /** Room + persisted realtime snapshots (master-election state, last playback
- *  state for late joiners, shared queue, Mode B state). */
+ *  state for late joiners, shared queue, Mode B state).
+ *
+ *  lastActivityAt is SERVER-ONLY (never serialized to clients): the last time
+ *  a persisted event was written for this room, throttled to one write per
+ *  minute. The idle-room sweeper reads it to find abandoned rooms; it is
+ *  optional because rooms stored before it existed do not carry it, and
+ *  readers fall back to createdAt. */
 export type RoomDoc = Room & {
   playback: PlaybackState | null;
   queue: { items: QueueItem[]; version: number };
   restream: RestreamState | null;
   master: { userId: string; epoch: number } | null;
+  lastActivityAt?: number;
 };
 
 /** id = memberDocId(roomId, userId). `muted` = per-room notification mute. */
@@ -164,24 +172,6 @@ export type AssetDoc = MediaAsset & {
   uploadId: string | null;
 };
 
-/** Billing state per user. id = userId (one subscription per account). */
-export interface SubscriptionDoc {
-  id: string;
-  userId: string;
-  plan: 'free' | 'premium';
-  status: 'active' | 'past_due' | 'canceled' | 'none';
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  /** ISO datetime, mirrors contracts Subscription.currentPeriodEnd. */
-  currentPeriodEnd: string | null;
-  updatedAt: number;
-  /** Stripe `event.created` (epoch SECONDS) of the last applied webhook —
-   *  ordering guard: Stripe does not guarantee delivery order, and a delayed
-   *  retry of subscription.updated(active) must not resurrect a canceled
-   *  plan. Absent on rows written before this guard existed. */
-  lastStripeEventTs?: number;
-}
-
 export interface ReportDoc {
   id: string;
   reporterId: string;
@@ -189,6 +179,45 @@ export interface ReportDoc {
   reason: string;
   createdAt: number;
   resolvedAt: number | null;
+}
+
+/**
+ * One thing a room played, in the room's own history.
+ *
+ * WHY THIS IS NOT A `usage` ROW. The sync module already writes a
+ * `kind: 'playback.history'` sample into `usage`, and reusing it was the
+ * cheaper option — but `usage` is a per-USER metering table and this is a
+ * per-ROOM feature, and the three differences are not cosmetic:
+ *   1. Shape. UsageDoc is (amount, unit, meta) — a title, artwork and the
+ *      person who queued the item would live in an untyped `meta` blob, so
+ *      every read would have to defensively re-parse it and drop rows it
+ *      cannot understand. compliance/export.ts already does exactly that.
+ *      A surface people look at cannot be built on a bag of maybes.
+ *   2. Lifecycle. Metering rows are erased per USER (the GDPR purge runs
+ *      `usage.deleteMany({ userId })`), which would punch holes in a SHARED
+ *      room timeline everyone else can see; room history is erased with the
+ *      ROOM, alongside its messages and events.
+ *   3. Retention. `usage` grows for as long as an account exists. A room's
+ *      history is capped per room (HISTORY_KEEP_PER_ROOM) — a feature people
+ *      scroll has to have a bottom.
+ * The `usage` row stays exactly as it was: it feeds the GDPR export, which is
+ * a different question asked by a different person about a different scope.
+ */
+export interface PlaybackHistoryDoc {
+  id: string;
+  roomId: string;
+  /** Per-room monotonic counter (`store.nextSeq('history:<roomId>')`), so the
+   *  order and the page cursor survive two tracks starting in the same ms. */
+  seq: number;
+  mediaRef: MediaRef;
+  title: string;
+  artworkUrl: string | null;
+  durationMs: number | null;
+  /** Who put it in the queue; the person who started it when there was no
+   *  queue row. */
+  queuedBy: string;
+  startedBy: string;
+  playedAt: number;
 }
 
 /** Metering sample (session-minutes, TURN bytes, getStats aggregates…). */
@@ -221,21 +250,116 @@ export interface PushSubDoc {
 // ── Unique indexes (enforced by BOTH adapters) ───────────────────────────────
 
 /**
- * collection → list of unique key tuples. 'sparse' keys skip docs where the
- * field is null. MongoStore ensures these as real indexes on init();
- * MemoryStore enforces them on insert/update.
+ * One unique index over `keys`.
+ *
+ * `partialOnString` marks an index that must apply only to the rows that
+ * actually HAVE a value, and it exists because Mongo's `sparse` does not mean
+ * that. A sparse index omits a document only when the field is ABSENT; a field
+ * that is present and holds BSON null IS indexed, under the key value null. So
+ * a sparse UNIQUE index over a nullable field rejects the SECOND row ever
+ * written with an explicit null — and every nullable field indexed here is
+ * written exactly that way: `email: null` for every guest and every erased
+ * account, `endpoint: null` for every expo push row, `expoPushToken: null` for
+ * every web push row. On a fresh database that is a 409 for guest number two,
+ * forever.
+ *
+ * A PARTIAL index filtered to `{ $type: 'string' }` is the construct that
+ * actually means "unique among the rows that have a value": absent and null
+ * both fall outside the filter, so neither is indexed and neither can collide.
+ *
+ * Single key only, by type. A compound partial index would have to answer what
+ * happens when one key holds a string and another does not, and no index here
+ * wants that question asked — so the type refuses to express it.
  */
-export const UNIQUE_INDEXES: Record<string, ReadonlyArray<{ keys: readonly string[]; sparse?: boolean }>> = {
-  users: [{ keys: ['email'], sparse: true }],
+export type UniqueIndexSpec =
+  | { readonly keys: readonly string[]; readonly partialOnString?: undefined }
+  | { readonly keys: readonly [string]; readonly partialOnString: true };
+
+/** Keys of `Doc` that may hold null, or be absent entirely. */
+type NullishKeyOf<Doc> = {
+  [K in keyof Doc & string]-?: null extends Doc[K] ? K : undefined extends Doc[K] ? K : never;
+}[keyof Doc & string];
+
+/** Keys of `Doc` that ALWAYS hold a value. Only these are safe unfiltered. */
+type TotalKeyOf<Doc> = Exclude<keyof Doc & string, NullishKeyOf<Doc>>;
+
+/**
+ * The unique indexes one collection may declare, checked against its document
+ * type — so the bug this file exists to prevent cannot be DECLARED again, only
+ * fixed once.
+ *
+ * A plain index may cover TOTAL fields only. Mongo indexes an absent-or-null
+ * field under the key value null, so a nullable field under a plain unique
+ * index rejects the second row that has no value. Nullable fields have to go
+ * through `partialOnString`, which is why that arm accepts any key.
+ *
+ * Adding `{ keys: ['endpoint'] }` to pushSubs is now a type error at this
+ * declaration rather than a 409 in production.
+ */
+export type UniqueIndexSpecFor<Doc> =
+  | { readonly keys: ReadonlyArray<TotalKeyOf<Doc>>; readonly partialOnString?: undefined }
+  | { readonly keys: readonly [keyof Doc & string]; readonly partialOnString: true };
+
+/** Collections with no unique index beyond `id` simply have no entry; the
+ *  index signature is what lets callers look one up by name. */
+interface UniqueIndexTable {
+  readonly users: ReadonlyArray<UniqueIndexSpecFor<UserDoc>>;
+  readonly sessions: ReadonlyArray<UniqueIndexSpecFor<SessionDoc>>;
+  readonly authTokens: ReadonlyArray<UniqueIndexSpecFor<AuthTokenDoc>>;
+  readonly rooms: ReadonlyArray<UniqueIndexSpecFor<RoomDoc>>;
+  readonly members: ReadonlyArray<UniqueIndexSpecFor<MemberDoc>>;
+  readonly events: ReadonlyArray<UniqueIndexSpecFor<EventDoc>>;
+  readonly playbackHistory: ReadonlyArray<UniqueIndexSpecFor<PlaybackHistoryDoc>>;
+  readonly cursors: ReadonlyArray<UniqueIndexSpecFor<CursorDoc>>;
+  readonly invites: ReadonlyArray<UniqueIndexSpecFor<InviteDoc>>;
+  readonly pushSubs: ReadonlyArray<UniqueIndexSpecFor<PushSubDoc>>;
+  readonly [collection: string]: ReadonlyArray<UniqueIndexSpec>;
+}
+
+/**
+ * collection → its unique indexes. MongoStore ensures these as real indexes on
+ * init(); MemoryStore enforces them on insert/update. Both read them through
+ * indexKeyOf(), so there is one rule rather than two that drifted.
+ */
+export const UNIQUE_INDEXES: UniqueIndexTable = {
+  users: [{ keys: ['email'], partialOnString: true }],
   sessions: [{ keys: ['refreshHash'] }],
   authTokens: [{ keys: ['tokenHash'] }],
   rooms: [{ keys: ['inviteCode'] }],
   members: [{ keys: ['roomId', 'userId'] }],
   events: [{ keys: ['roomId', 'seq'] }],
+  playbackHistory: [{ keys: ['roomId', 'seq'] }],
   cursors: [{ keys: ['roomId', 'userId', 'kind'] }],
   invites: [{ keys: ['code'] }],
-  pushSubs: [{ keys: ['endpoint'], sparse: true }, { keys: ['expoPushToken'], sparse: true }],
+  pushSubs: [
+    { keys: ['endpoint'], partialOnString: true },
+    { keys: ['expoPushToken'], partialOnString: true },
+  ],
 };
+
+/**
+ * The key tuple `record` contributes to `spec`'s index, or null when the
+ * document has NO entry in that index and so cannot collide with anything.
+ * This is MongoDB's key-extraction rule written down once:
+ *
+ *   • partialOnString — indexed only while the field HOLDS A STRING. Absent,
+ *     null and any non-string value fall outside the partialFilterExpression
+ *     and produce no entry at all. An EMPTY string is a string: two rows
+ *     holding '' do collide.
+ *   • plain unique — every document is indexed, and an ABSENT field is indexed
+ *     as null. Mongo does not distinguish "missing" from "explicitly null" in
+ *     an index key, so two documents differing only that way DO collide.
+ */
+export function indexKeyOf(
+  spec: UniqueIndexSpec,
+  record: Readonly<Record<string, unknown>>,
+): readonly unknown[] | null {
+  if (spec.partialOnString === true) {
+    const value = record[spec.keys[0]];
+    return typeof value === 'string' ? [value] : null;
+  }
+  return spec.keys.map((key) => (record[key] === undefined ? null : record[key]));
+}
 
 // ── Store port ───────────────────────────────────────────────────────────────
 
@@ -254,10 +378,10 @@ export interface StorePort {
   readonly invites: DocCollection<InviteDoc>;
   readonly messages: DocCollection<MessageDoc>;
   readonly events: DocCollection<EventDoc>;
+  readonly playbackHistory: DocCollection<PlaybackHistoryDoc>;
   readonly cursors: DocCollection<CursorDoc>;
   readonly playlists: DocCollection<PlaylistDoc>;
   readonly assets: DocCollection<AssetDoc>;
-  readonly subscriptions: DocCollection<SubscriptionDoc>;
   readonly reports: DocCollection<ReportDoc>;
   readonly usage: DocCollection<UsageDoc>;
   readonly pushSubs: DocCollection<PushSubDoc>;
@@ -285,9 +409,24 @@ export type BusHandler = (message: unknown) => void;
  * local subscribers) so single-instance dev behaves like multi-instance prod.
  */
 export interface BusPort {
+  /**
+   * Which adapter this actually is. /readyz reports it, and must read it from
+   * the BUS rather than from REDIS_URL: buildApp accepts an injected bus, so a
+   * mode derived from config can name something this process is not running.
+   * 'memory' additionally means "not shared across instances" — whether that
+   * is acceptable is a config question, answered in app.ts.
+   */
+  readonly mode: 'memory' | 'redis';
   publish(channel: string, message: unknown): Promise<void>;
   /** Returns an idempotent async unsubscribe. */
   subscribe(channel: string, handler: BusHandler): Promise<() => Promise<void>>;
+  /**
+   * Bus liveness (drives /readyz alongside StorePort.ping). MUST always
+   * settle — a probe that hangs turns the healthcheck into a hang instead of a
+   * failure — and MUST report reachability only. Whether an in-memory bus is
+   * an ACCEPTABLE choice is a config question, answered in app.ts.
+   */
+  ping(): Promise<boolean>;
   close(): Promise<void>;
 }
 

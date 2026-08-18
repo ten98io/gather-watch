@@ -268,8 +268,16 @@ describe('RoomConnection room-state reducers', () => {
     const types = (sock?.sent ?? []).map(
       (raw) => (JSON.parse(raw) as { type: string }).type,
     );
-    expect(types).toEqual(['chat.send', 'queue.voteSkip', 'sync.seek', 'presence.update']);
-    const first = JSON.parse(sock?.sent[0] ?? '{}') as { payload: { kind: string } };
+    // The connection's own frame leads: every open asks the server for the
+    // room back before the user has done anything (test/refresh-recovery).
+    expect(types).toEqual([
+      'presence.update',
+      'chat.send',
+      'queue.voteSkip',
+      'sync.seek',
+      'presence.update',
+    ]);
+    const first = JSON.parse(sock?.sent[1] ?? '{}') as { payload: { kind: string } };
     expect(first.payload.kind).toBe('text');
     conn.close();
   });

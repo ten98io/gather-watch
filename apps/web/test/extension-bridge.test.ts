@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { MediaRef } from '@gather/contracts';
+
 import {
   DEFAULT_DETECT_TIMEOUT_MS,
   PROTOCOL_CHANNEL,
@@ -9,10 +11,12 @@ import {
   configureExtensionBridge,
   detectExtension,
   eventPortName,
+  extensionMediaKey,
   handoffRoom,
   isExtensionChannelSupported,
   isExtensionId,
   negotiateVersion,
+  onEnded,
   onTelemetry,
   parseExtensionIds,
   queryCapability,
@@ -22,7 +26,7 @@ import {
   resetExtensionBridge,
   stopDriving,
 } from '@/lib/extension-bridge';
-import type { TelemetryPayload } from '@/lib/extension-bridge';
+import type { EndedPayload, TelemetryPayload } from '@/lib/extension-bridge';
 
 const EXT_ID = 'abcdefghijklmnopabcdefghijklmnop'; // 32 chars, a–p
 
@@ -92,6 +96,78 @@ describe('protocol encode/decode', () => {
       payload: { positionMs: 5 },
     });
     expect(ev?.event).toBe('telemetry');
+  });
+
+  // The extension has shipped this event since its MediaEndDetector landed
+  // (apps/extension/src/protocol.ts lists 'ended' in ProtocolEventType, in
+  // readEvent and in EXTENSION_CAPABILITIES). It died HERE: this reader's
+  // allowlist did not name it, so an extension-driven room heard the end of
+  // every item as a foreign message and never advanced.
+  it('reads an ended event — the extension has always sent one', () => {
+    const ev = readEvent({
+      channel: PROTOCOL_CHANNEL,
+      v: 1,
+      event: 'ended',
+      payload: { positionMs: 5, durationMs: 5, mediaKey: 'youtube:abc', at: 1 },
+    });
+    expect(ev?.event).toBe('ended');
+  });
+});
+
+/**
+ * `EndedPayload.mediaKey` is produced by `mediaKeyOf` in
+ * apps/extension/src/driver.ts. These cases are that function's output, spelled
+ * out — if the extension ever changes the format, this is the file that has to
+ * change with it, and this is the test that will say so.
+ */
+describe('extensionMediaKey (mirrors the extension driver)', () => {
+  const cases: Array<[string, MediaRef, string]> = [
+    [
+      'hls',
+      { kind: 'hls', assetId: 'as_1', url: 'https://cdn.example/a.m3u8' } as unknown as MediaRef,
+      'hls:as_1',
+    ],
+    ['youtube', { kind: 'youtube', videoId: 'dQw4w9WgXcQ' }, 'youtube:dQw4w9WgXcQ'],
+    ['vimeo', { kind: 'vimeo', videoId: '76979871' }, 'vimeo:76979871'],
+    [
+      'soundcloud',
+      { kind: 'soundcloud', url: 'https://soundcloud.com/a/b' },
+      'soundcloud:https://soundcloud.com/a/b',
+    ],
+    [
+      'url',
+      { kind: 'url', url: 'https://cdn.example/a.mp4', mime: 'video/mp4' },
+      'url:https://cdn.example/a.mp4',
+    ],
+    [
+      'embed',
+      {
+        kind: 'embed',
+        provider: 'spotify',
+        embedUrl: 'https://open.spotify.com/embed/track/1',
+        title: null,
+      },
+      'embed:spotify:https://open.spotify.com/embed/track/1',
+    ],
+    ['page', { kind: 'page', url: 'https://example.com/watch' }, 'page:https://example.com/watch'],
+  ];
+
+  for (const [name, ref, key] of cases) {
+    it(`keys a ${name} ref as the extension does`, () => {
+      expect(extensionMediaKey(ref)).toBe(key);
+    });
+  }
+
+  it('answers null for no media — which matches no item on any stage', () => {
+    expect(extensionMediaKey(null)).toBeNull();
+  });
+
+  it('ignores the playback epoch entirely', () => {
+    // The whole point: lib/player/adapter.ts's mediaKey appends `seq`, which
+    // every play/pause/seek mints afresh. This one names the ITEM.
+    const ref: MediaRef = { kind: 'youtube', videoId: 'abc' };
+    expect(extensionMediaKey(ref)).toBe('youtube:abc');
+    expect(extensionMediaKey(ref)).not.toContain(':0');
   });
 });
 
@@ -477,6 +553,84 @@ describe('telemetry stream (fake chrome)', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.positionMs).toBe(1234);
     expect(seen[0]?.playing).toBe(true);
+    off();
+  });
+});
+
+/**
+ * THE END OF AN ITEM, crossing from the extension to the page.
+ *
+ * The extension half has always shipped: content.ts posts `mediaEnded`,
+ * background.ts broadcasts an `ended` port event carrying the `mediaKey` of
+ * whatever the room was on. This side had no 'ended' in its event union, no arm
+ * in handleEvent and no `onEnded` at all, so the message was dropped at the
+ * boundary and an extension-driven room stopped dead after one item.
+ */
+describe('ended stream (fake chrome)', () => {
+  afterEach(() => {
+    removeFakeWindow();
+    resetExtensionBridge();
+    configureExtensionBridge({ extensionIds: [] });
+  });
+
+  /** Opens the shared port with an `ended` subscriber attached. */
+  async function withEndedPort(): Promise<{ ports: FakePort[]; seen: EndedPayload[]; off: () => void }> {
+    resetExtensionBridge();
+    const { ports } = installFakeWindow((_id, msg) =>
+      msg['type'] === 'hello' ? helloResponse(msg) : null,
+    );
+    configureExtensionBridge({ extensionIds: [EXT_ID] });
+    const seen: EndedPayload[] = [];
+    const off = onEnded((e) => seen.push(e));
+    await detectExtension();
+    await new Promise((r) => setTimeout(r, 10));
+    return { ports, seen, off };
+  }
+
+  it('opens the port for an ended subscriber alone and forwards the payload', async () => {
+    const { ports, seen, off } = await withEndedPort();
+
+    // An `ended` listener is a listener: it must keep the port open by itself,
+    // with no telemetry subscriber propping it up.
+    expect(ports).toHaveLength(1);
+
+    ports[0]?.emit({
+      channel: PROTOCOL_CHANNEL,
+      v: 1,
+      event: 'ended',
+      payload: { positionMs: 59_000, durationMs: 60_000, mediaKey: 'youtube:abc', at: 42 },
+    });
+
+    expect(seen).toEqual([
+      { positionMs: 59_000, durationMs: 60_000, mediaKey: 'youtube:abc', at: 42 },
+    ]);
+    off();
+  });
+
+  it('normalises a payload with junk fields instead of trusting it', async () => {
+    const { ports, seen, off } = await withEndedPort();
+
+    ports[0]?.emit({
+      channel: PROTOCOL_CHANNEL,
+      v: 1,
+      event: 'ended',
+      payload: { positionMs: 'soon', durationMs: null, mediaKey: 7, at: 'now' },
+    });
+
+    // A mediaKey that is not a usable string becomes null, which can never
+    // match an item on the stage — the safe direction: ignore, not skip.
+    expect(seen[0]?.mediaKey).toBeNull();
+    expect(seen[0]?.positionMs).toBe(0);
+    expect(seen[0]?.durationMs).toBe(0);
+    expect(typeof seen[0]?.at).toBe('number');
+    off();
+  });
+
+  it('does not fire for a foreign or unknown event on the same port', async () => {
+    const { ports, seen, off } = await withEndedPort();
+    ports[0]?.emit({ channel: 'some.other.lib', event: 'ended', payload: { mediaKey: 'x' } });
+    ports[0]?.emit({ channel: PROTOCOL_CHANNEL, v: 1, event: 'finished', payload: {} });
+    expect(seen).toEqual([]);
     off();
   });
 });

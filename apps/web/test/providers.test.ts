@@ -67,7 +67,61 @@ describe('parseProviderUrl', () => {
       mime: 'audio/mpeg',
     });
     expect(parseProviderUrl('not a url')).toBeNull();
-    expect(parseProviderUrl('https://example.com/page.html')).toBeNull();
+  });
+
+  // The owner's ask: "not known sites added to queue creates a message only
+  // supported sites, which raises the question that it is too extensive to add
+  // support for each site". The registry stops being a gate — an unrecognised
+  // https page queues as a page ref and the extension drives it.
+  it('parses any unrecognised https page as a generic page ref', () => {
+    for (const url of [
+      'https://blog.example.com/the-film',
+      'https://some.tiny.site/watch/9?x=1',
+      'https://example.com/page.html',
+    ]) {
+      const parsed = parseProviderUrl(url);
+      expect(parsed, url).not.toBeNull();
+      expect(parsed?.ref).toEqual({ kind: 'page', url });
+      expect(parsed?.provider.capability).toBe('generic');
+    }
+  });
+
+  it('names a page row by its host so the queue never shows a raw url', () => {
+    const parsed = parseProviderUrl('https://www.blog.example.com/the-film');
+    expect(parsed?.provider.name).toBe('blog.example.com');
+    expect(parsed?.titleHint).toBe('blog.example.com');
+  });
+
+  it('refuses schemes that are not https for the page path', () => {
+    // This value is rendered as a link and navigated to.
+    expect(parseProviderUrl('javascript:alert(1)')).toBeNull();
+    expect(parseProviderUrl('data:text/html,<script>x</script>')).toBeNull();
+    expect(parseProviderUrl('file:///etc/passwd')).toBeNull();
+    expect(parseProviderUrl('http://blog.example.com/the-film')).toBeNull();
+  });
+
+  it('keeps every known provider winning over the generic page path', () => {
+    // The 17 registry entries are BETTER paths, not gates: each still parses
+    // to its own provider now that any https link would otherwise fall through.
+    for (const [url, id] of [
+      ['https://www.youtube.com/watch?v=abc123XYZ', 'youtube'],
+      ['https://music.youtube.com/watch?v=abc123XYZ', 'youtubemusic'],
+      ['https://soundcloud.com/a/b', 'soundcloud'],
+      ['https://vimeo.com/123456789', 'vimeo'],
+      ['https://open.spotify.com/track/abc', 'spotify'],
+      ['https://music.apple.com/us/album/x/1', 'applemusic'],
+      ['https://tidal.com/browse/track/123456', 'tidal'],
+      ['https://deezer.com/track/987654', 'deezer'],
+      ['https://www.netflix.com/watch/80123456', 'netflix'],
+      ['https://www.crunchyroll.com/watch/abc', 'crunchyroll'],
+      ['https://cdn.example.com/movie.mp4', 'direct'],
+    ] as const) {
+      expect(parseProviderUrl(url)?.provider.id, url).toBe(id);
+    }
+  });
+
+  it('page refs pass the contracts MediaRef schema', () => {
+    expect(() => MediaRef.parse(parseProviderUrl('https://example.com/x')?.ref)).not.toThrow();
   });
 
   it('every parsed ref passes the contracts MediaRef schema', () => {

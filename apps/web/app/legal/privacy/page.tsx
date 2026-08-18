@@ -17,9 +17,12 @@ export default function PrivacyPage() {
       <h2>End-to-end encrypted media</h2>
       <p>
         Calls and peer-to-peer media travel over WebRTC with DTLS-SRTP — encrypted between
-        devices by construction. In the default mesh topology the server never sees media
-        plaintext. Premium Theater rooms relay through an SFU, which terminates encryption at
-        the relay; the room badge always says which mode you are in.
+        devices by construction. Every room uses the mesh topology: no media server sits in
+        the middle, so the server never sees media plaintext. Where two devices cannot reach
+        each other directly the connection falls back to a TURN relay, which forwards the
+        encrypted packets without being able to read them. Theater mode changes the layout
+        of the screen, not the path the media takes. The room badge always says which mode
+        you are in.
       </p>
 
       <h2>What we do not do</h2>

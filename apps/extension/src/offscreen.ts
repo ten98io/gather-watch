@@ -26,19 +26,21 @@
  * audio was legitimately requested and failed anyway. A share that has picture
  * but no sound is a working share.
  */
-import { MeshManager } from '@gather/p2p';
+import { MeshManager, TurnCredentialManager } from '@gather/p2p';
 import type {
+  IceServerLike,
   InboundSignal,
   MediaStreamTrackLike,
+  MeshLane,
   MeshLinkState,
   RtcPeerConnectionLike,
   SignalSend,
   TrackRole,
 } from '@gather/p2p';
 import { RoomSocket } from '@gather/api-client';
-import type { Plan, RoomId, UserId } from '@gather/contracts';
+import type { RoomId, TurnCredentialsResponse, UserId } from '@gather/contracts';
 
-import { WS_URL } from './config';
+import { API_URL, WS_URL } from './config';
 
 /** Where a stream id came from. Chrome's constraint name for it, verbatim. */
 export type CaptureSource = 'tab' | 'desktop';
@@ -48,17 +50,9 @@ export const MAX_WIDTH = 1920;
 export const MAX_HEIGHT = 1080;
 export const MAX_FRAME_RATE = 30;
 
-/** Free-tier ceiling for the share encode over a relayed link — the same
- *  number the web app passes (docs/COST_MODEL.md: cap, do not refuse). */
-export const FREE_SHARE_RELAY_KBPS = 400;
-
 /** Link classification only advances inside the mesh's pollStats(), and this
- *  document owns the interval — without the cadence the cap never applies. */
+ *  document owns the interval. */
 const LINK_POLL_MS = 5_000;
-
-/** The exact sentence the web app shows its sharing host — keep them in step. */
-export const SHARE_RELAY_NOTE =
-  'Sharing at reduced quality on this connection — Premium removes the limit.';
 
 /**
  * Chrome's legacy `mandatory` constraint bag. It is not part of the standard
@@ -111,19 +105,70 @@ export interface ShareMesh {
   syncPeers(userIds: UserId[]): void;
   handleSignal(ev: InboundSignal): void;
   setLocalTrack(role: TrackRole, track: MediaStreamTrackLike | null): void;
-  /** Classifies link paths and applies/lifts the relay cap as a side effect. */
+  /** Classifies each link's path (direct vs relayed) as a side effect. */
   pollStats(): Promise<Map<UserId, unknown>>;
   linkStates(): Map<UserId, MeshLinkState>;
+  /** Push newly-arrived ICE servers onto peers built before they landed.
+   *  WebRTC does not re-read a live connection's configuration, so without
+   *  this a peer linked in the share's first moments never sees TURN. */
+  refreshIceServers(): void;
   close(): void;
+}
+
+/**
+ * The TURN credential lifecycle this document needs; @gather/p2p's
+ * TurnCredentialManager satisfies it as-is.
+ *
+ * TURN is what lets two people on different networks reach each other at all.
+ * Without it a share works between two devices on one network and fails behind
+ * most home routers — so the share starts it, and never waits for it.
+ */
+export interface ShareTurn {
+  /** Fetch once and begin the refresh cycle. */
+  start(): Promise<void>;
+  stop(): void;
+  /** [] until the first successful fetch, and after every failed one. */
+  iceServers(): IceServerLike[];
 }
 
 /** Everything that touches the browser, so a test can supply all of it. */
 export interface ShareRuntime {
   getUserMedia(request: CaptureRequest): Promise<ShareStream>;
   createSocket(): ShareSocket;
+  /** `onUpdate` fires after every successful (re)fetch — the share uses it to
+   *  repair peers that were built while the list was still empty. */
+  createTurn(opts: { accessToken: string; onUpdate: () => void }): ShareTurn;
   createMesh(opts: {
     roomId: RoomId;
+    /**
+     * WHO THIS DOCUMENT IS IN THE ROOM. Every mesh derives a pair's
+     * connectionId from both user ids, and the server stamps the sender's id
+     * from the authenticated socket — so a name the room never issued makes
+     * every frame, in both directions, fail the receiver's guard. It comes
+     * from the room's own record via the worker, never from a page.
+     */
+    localUserId: UserId;
+    /**
+     * WHICH of that identity's meshes this one is.
+     *
+     * This document is never the person's only mesh: their web tab holds the
+     * call at the same time, and both sockets authenticate as the same user.
+     * A pair's connectionId is derived from both endpoint names with no round
+     * trip, so two unlaned meshes for one identity compute the SAME id — and
+     * a viewer answers whichever spoke first and drops the other as a glare
+     * loser. Half the time that leaves them on the call with no picture; the
+     * other half, on the share with no voice.
+     *
+     * Naming this mesh's lane is the whole of the fix (@gather/p2p folds it
+     * into the id). Omitting it here makes every lane-aware line in that
+     * package dead weight, silently and with a green suite.
+     */
+    lane?: MeshLane;
     send: SignalSend;
+    /** Current TURN servers, re-read for every NEW peer connection. */
+    getIceServers: () => IceServerLike[];
+    /** Operator-only bitrate lever on relayed links (@gather/p2p). Nothing
+     *  sets it: every share goes out at full quality for everyone. */
     capRelayedVideoKbps?: number;
   }): ShareMesh;
   /**
@@ -138,12 +183,12 @@ export interface StartShareRequest {
   streamId: string;
   roomId: string;
   accessToken: string;
+  /** The sharer's real, server-issued id. '' when the sender did not name
+   *  them, which {@link startShare} refuses rather than guesses about. */
+  userId: string;
   source: CaptureSource;
   /** False = this surface has no sound to give; asking would cost the video. */
   canRequestAudioTrack: boolean;
-  /** Only 'premium' lifts the relayed-share quality cap; a sender that does
-   *  not say (today's background) shares capped — the cost risk is ours. */
-  plan: Plan;
 }
 
 export interface ShareStarted {
@@ -232,10 +277,11 @@ export async function captureShare(
  * suppresses audio, because a sender that predates the field asked for it
  * unconditionally and a tab share always has it.
  *
- * `plan` is the opposite polarity, deliberately: only the exact string
- * 'premium' lifts the relayed-share cap. Absent (a background that predates
- * the field), junk, or anything else shares capped — degraded is defensible,
- * an operator paying relay for a free room is not.
+ * `userId` is the one field that is NOT coerced with String(): a missing one
+ * would become the literal 'undefined', which is a perfectly good-looking id
+ * that no room ever issued — and a share signed with it reaches nobody while
+ * reporting success. Anything that is not a string reads as absent, and
+ * {@link startShare} refuses an absent one.
  */
 export function parseStartShare(msg: Record<string, unknown>): StartShareRequest | null {
   if (msg['kind'] !== 'startShare') return null;
@@ -243,25 +289,55 @@ export function parseStartShare(msg: Record<string, unknown>): StartShareRequest
     streamId: String(msg['streamId']),
     roomId: String(msg['roomId']),
     accessToken: String(msg['accessToken']),
+    userId: typeof msg['userId'] === 'string' ? msg['userId'] : '',
     source: msg['source'] === 'desktop' ? 'desktop' : 'tab',
     canRequestAudioTrack: msg['canRequestAudioTrack'] !== false,
-    plan: msg['plan'] === 'premium' ? 'premium' : 'free',
   };
 }
 
-const browserRuntime: ShareRuntime = {
+/**
+ * The one runtime that ships. Exported so the tests can drive the REAL
+ * `createMesh` — the mesh's identity is derived from what this object passes
+ * to MeshManager, so a test against a stand-in proves nothing about it.
+ */
+export const browserRuntime: ShareRuntime = {
   getUserMedia: (request) =>
     navigator.mediaDevices.getUserMedia(request as unknown as MediaStreamConstraints),
   createSocket: () => new RoomSocket(WS_URL, { replayFetch: async () => [] }),
-  createMesh: ({ roomId, send, capRelayedVideoKbps }) =>
+  /**
+   * The same endpoint and the same room token the web app's call uses. A
+   * failure is survivable and deliberately not reported anywhere: the manager
+   * retries on its own backoff, `iceServers()` stays empty meanwhile, and an
+   * empty list makes MeshManager build peers on its public-STUN fallback — a
+   * share that works for most people instead of no share at all.
+   */
+  createTurn: ({ accessToken, onUpdate }) =>
+    new TurnCredentialManager({
+      getTurnCredentials: async () => {
+        const res = await fetch(`${API_URL}/rtc/turn-credentials`, {
+          headers: { authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) throw new Error(`turn credentials: ${String(res.status)}`);
+        return (await res.json()) as TurnCredentialsResponse;
+      },
+      now: () => Date.now(),
+      setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
+      clearTimeoutFn: (h) => clearTimeout(h as never),
+      onUpdate: () => onUpdate(),
+    }),
+  createMesh: ({ roomId, localUserId, lane, send, getIceServers, capRelayedVideoKbps }) =>
     new MeshManager({
       roomId,
-      localUserId: 'extension-host' as UserId,
+      localUserId,
+      // Conditional spread, not `lane`: `exactOptionalPropertyTypes` is on, so
+      // an explicit `undefined` is not the same as an absent key.
+      ...(lane === undefined ? {} : { lane }),
       rtcFactory: (config) =>
         new RTCPeerConnection({
           iceServers: config.iceServers as RTCIceServer[],
         }) as unknown as RtcPeerConnectionLike,
       send,
+      getIceServers,
       now: () => Date.now(),
       setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
       clearTimeoutFn: (h) => clearTimeout(h as never),
@@ -277,13 +353,13 @@ const browserRuntime: ShareRuntime = {
 
 let mesh: ShareMesh | null = null;
 let socket: ShareSocket | null = null;
+let turn: ShareTurn | null = null;
 let stream: ShareStream | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Periodic link poll while a capped share is live: classification (and with
- *  it the relay cap) only advances inside pollStats(), and this document is
- *  the only thing that can tick. Stops itself once the share it belongs to is
- *  gone. */
+/** Periodic link poll while a share is live: link classification only advances
+ *  inside pollStats(), and this document is the only thing that can tick it.
+ *  Stops itself once the share it belongs to is gone. */
 function schedulePoll(forMesh: ShareMesh): void {
   pollTimer = setTimeout(() => {
     if (mesh !== forMesh) return;
@@ -304,6 +380,14 @@ export async function startShare(
 ): Promise<ShareStarted> {
   await stopShare();
 
+  // BEFORE anything is captured. A share signed with an id the room never
+  // issued fails every viewer's connectionId guard in both directions, so it
+  // reaches nobody — and capturing first would put a person's screen on a
+  // stream with no receivers while telling them it worked.
+  if (opts.userId.length === 0) {
+    throw new Error('Gather does not know who you are in this room yet.');
+  }
+
   // Called through the object so a runtime may implement it as a method.
   const captured = await captureShare(opts, (req) => runtime.getUserMedia(req));
   stream = captured.stream;
@@ -312,13 +396,34 @@ export async function startShare(
   socket = runtime.createSocket();
   socket.connect(roomId, opts.accessToken);
 
-  const capped = opts.plan !== 'premium';
+  // The mesh does not exist yet, and the credentials may land before or after
+  // it does — whichever way round, the peers built in between are the ones
+  // that need repairing. Held in a local the update closes over rather than
+  // read off module state, so a stale share cannot repair the live one.
+  let liveMesh: ShareMesh | null = null;
+  const sharedTurn = runtime.createTurn({
+    accessToken: opts.accessToken,
+    onUpdate: () => liveMesh?.refreshIceServers(),
+  });
+  turn = sharedTurn;
+  // Deliberately NOT awaited: the room is already open and people are waiting.
+  // Peers built before the answer arrives run on the mesh's public-STUN
+  // fallback and are repaired by the onUpdate above.
+  void sharedTurn.start();
+
   const sharedMesh = runtime.createMesh({
     roomId,
+    localUserId: opts.userId as UserId,
+    // The sharer is in this room TWICE — their call is in the web tab, this
+    // is the capture — and both authenticate as the same user. The lane is
+    // what keeps the two pairs' connectionIds apart; without it a viewer can
+    // only ever hold one of them. See ShareRuntime.createMesh.
+    lane: 'share',
     send: (event) => socket?.send(event.type, event.payload),
-    ...(capped ? { capRelayedVideoKbps: FREE_SHARE_RELAY_KBPS } : {}),
+    getIceServers: () => sharedTurn.iceServers(),
   });
   mesh = sharedMesh;
+  liveMesh = sharedMesh;
 
   // Follow presence so late joiners get links.
   socket.on('presence.state', (ev) => {
@@ -348,25 +453,23 @@ export async function startShare(
   });
 
   sharedMesh.setLocalTrack('share', video as unknown as MediaStreamTrackLike);
-  if (audio !== null) sharedMesh.setLocalTrack('mic', audio as unknown as MediaStreamTrackLike);
+  // 'share-audio', never 'mic'. A role is a sender: publishing the captured
+  // surface's soundtrack on the microphone role REPLACED this person's live
+  // voice for the whole room the moment they shared, and withdrawing it on
+  // stop left them silent with their mic button still reading "on".
+  if (audio !== null) {
+    sharedMesh.setLocalTrack('share-audio', audio as unknown as MediaStreamTrackLike);
+  }
 
   // A silent share is still a share: the room is told it started either way.
   socket.send('restream.start', {});
   socket.send('presence.update', { sharing: true, state: 'watching' });
 
-  if (capped) schedulePoll(sharedMesh);
+  schedulePoll(sharedMesh);
 
-  // The reply note is this document's only voice: when a link is already
-  // known to run relayed on a capped plan, the quality sentence rides along
-  // with whatever the capture had to say. A fresh mesh usually has no
-  // classified links yet — the cap still applies on its own once a poll
-  // classifies one; only the sentence is best-effort.
-  const relayed = capped && [...sharedMesh.linkStates().values()].includes('relayed');
-  const note = [captured.note, relayed ? SHARE_RELAY_NOTE : '']
-    .filter((s) => s !== '')
-    .join(' ');
-
-  return { audio: captured.audio, note };
+  // The capture's own sentence is the only one left: nothing about this share
+  // is limited, so there is nothing else to say about its quality.
+  return { audio: captured.audio, note: captured.note };
 }
 
 // Track presence locally so diffs translate to a full desired-peer set.
@@ -390,13 +493,18 @@ function teardown(): void {
   const endingSocket = socket;
   const endingMesh = mesh;
   const endingStream = stream;
+  const endingTurn = turn;
   socket = null;
   mesh = null;
+  turn = null;
   stream = null;
   if (pollTimer !== null) {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
+  // The credential cycle re-fetches on a timer for as long as it is running.
+  // A share that ended has nothing to keep credentials fresh for.
+  endingTurn?.stop();
   // Peers belong to the room that just ended; carrying them into the next
   // share would link it to strangers.
   presenceMap.clear();
