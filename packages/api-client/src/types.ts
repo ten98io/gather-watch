@@ -35,8 +35,11 @@ export interface WebSocketLike {
   close(code?: number, reason?: string): void;
 }
 
-/** Structural constructor for a {@link WebSocketLike}. */
-export type WebSocketCtor = new (url: string) => WebSocketLike;
+/** Structural constructor for a {@link WebSocketLike}. The optional
+ *  `protocols` argument carries the auth subprotocol (see ws.ts): browsers,
+ *  `ws` and RN's WebSocket all accept it, and a test fake written against the
+ *  one-argument shape stays assignable. */
+export type WebSocketCtor = new (url: string, protocols?: string | string[]) => WebSocketLike;
 
 /** Opaque timer handle, intentionally untyped to stay platform agnostic. */
 export type TimeoutHandle = unknown;

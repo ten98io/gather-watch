@@ -64,6 +64,8 @@ export class MockWebSocket implements WebSocketLike {
   }
 
   readonly url: string;
+  /** The subprotocols the socket was opened with (the auth token's ride). */
+  readonly protocols: string | string[] | undefined;
   onopen: ((ev?: unknown) => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   onerror: ((ev?: unknown) => void) | null = null;
@@ -71,8 +73,9 @@ export class MockWebSocket implements WebSocketLike {
   sent: string[] = [];
   closeCalls = 0;
 
-  constructor(url: string) {
+  constructor(url: string, protocols?: string | string[]) {
     this.url = url;
+    this.protocols = protocols;
     MockWebSocket.instances.push(this);
   }
 

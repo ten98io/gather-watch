@@ -10,7 +10,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { WebSocket } from 'ws';
 import type { ApiError, Member, RoomId, UserId } from '@gather/contracts';
-import { ClientEvent, ReplayEventsQuery, ServerEvent, makeApiError } from '@gather/contracts';
+import { ClientEvent, ReplayEventsQuery, ServerEvent, WS_AUTH_SUBPROTOCOL_PREFIX, makeApiError } from '@gather/contracts';
 import { memberDocId, roomChannel } from '../adapters/ports';
 import type { RoomBusMessage } from '../adapters/ports';
 import { AppError, isAppError } from '../lib/errors';
@@ -84,6 +84,24 @@ function firstIssueMessage(err: { issues: ReadonlyArray<{ path: PropertyKey[]; m
 function sendError(socket: WebSocket, roomId: RoomId, payload: ApiError): void {
   if (socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({ type: 'error', roomId, seq: 0, ts: Date.now(), payload }));
+}
+
+/**
+ * The access token out of the upgrade's Sec-WebSocket-Protocol header — the
+ * one header a browser WebSocket can write, so the credential stays out of
+ * the URL and therefore out of request logs. The header may carry a
+ * comma-separated offer list; ours is the value with the contracts prefix.
+ */
+export function authTokenFromSubprotocol(request: FastifyRequest): string | null {
+  const header = request.headers['sec-websocket-protocol'];
+  if (typeof header !== 'string') return null;
+  for (const offered of header.split(',')) {
+    const value = offered.trim();
+    if (value.startsWith(WS_AUTH_SUBPROTOCOL_PREFIX)) {
+      return value.slice(WS_AUTH_SUBPROTOCOL_PREFIX.length);
+    }
+  }
+  return null;
 }
 
 /**
@@ -206,7 +224,10 @@ export class RoomHub implements HubApi {
     try {
       const query = request.query as Record<string, unknown>;
       const roomId = typeof query.roomId === 'string' ? query.roomId : null;
-      const token = typeof query.token === 'string' ? query.token : null;
+      // The token arrives as a Sec-WebSocket-Protocol value on new clients
+      // (a header no access log records); the query form stays accepted for
+      // already-installed extension/mobile builds that predate the move.
+      const token = authTokenFromSubprotocol(request) ?? (typeof query.token === 'string' ? query.token : null);
       if (roomId === null || token === null) {
         socket.close(4401, 'missing roomId or token');
         return;
@@ -589,9 +610,20 @@ export class RoomHub implements HubApi {
  * @fastify/websocket must already be registered.
  */
 export function registerWs(app: FastifyInstance, hub: RoomHub): void {
-  app.get('/ws', { websocket: true }, (socket, request) => {
-    void hub.accept(socket, request);
-  });
+  app.get(
+    '/ws',
+    {
+      websocket: true,
+      // The legacy query-token form keeps working for already-installed
+      // clients, and its credential would land in the automatic info-level
+      // request log. Warn-and-up still carries the hub's own handshake
+      // failure logs (it logs through the app logger, not this route).
+      logLevel: 'warn',
+    },
+    (socket, request) => {
+      void hub.accept(socket, request);
+    },
+  );
 
   app.get<{ Params: { roomId: string } }>('/rooms/:roomId/events', async (request, reply) => {
     const { store, log } = app.deps;

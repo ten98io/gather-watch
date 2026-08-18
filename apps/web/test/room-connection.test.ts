@@ -42,7 +42,10 @@ class FakeSocket implements WebSocketLike {
   readonly sent: string[] = [];
   closed = false;
 
-  constructor(readonly url: string) {
+  constructor(
+    readonly url: string,
+    readonly protocols?: string | string[],
+  ) {
     FakeSocket.instances.push(this);
   }
 
@@ -173,13 +176,15 @@ describe('toConnectionStatus', () => {
 });
 
 describe('RoomConnection', () => {
-  it('connects with the auth token in the ws URL and goes live on open', async () => {
+  it('connects with the auth token in the ws subprotocol and goes live on open', async () => {
     FakeSocket.reset();
     const { conn, roomId } = makeConnection({ initialSeq: 40 });
     await conn.connect();
     const sock = FakeSocket.instances[0];
     expect(sock).toBeDefined();
-    expect(sock?.url).toBe(`ws://test/ws?roomId=${roomId}&token=tok`);
+    // The credential rides Sec-WebSocket-Protocol; the URL stays log-safe.
+    expect(sock?.url).toBe(`ws://test/ws?roomId=${roomId}`);
+    expect(sock?.protocols).toEqual(['gather.auth.tok']);
     expect(conn.status).toBe('connecting');
     sock?.open();
     expect(conn.status).toBe('live');
@@ -337,7 +342,9 @@ describe('RoomConnection', () => {
     conn.chatSend({ body: 'still here?' });
     await tick();
     const sock2 = FakeSocket.instances[1];
-    expect(sock2?.url).toContain('token=tok2');
+    // The rotated token: new subprotocol, same credential-free URL.
+    expect(sock2?.url).not.toContain('tok');
+    expect(sock2?.protocols).toEqual(['gather.auth.tok2']);
     sock2?.open();
     const bodies = (sock2?.sent ?? [])
       .map((raw) => JSON.parse(raw) as { type: string; payload: { body?: string } })

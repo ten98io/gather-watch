@@ -236,8 +236,13 @@ export class AuthService {
         throw new AppError('UNAUTHORIZED', 'invalid refresh token');
       }
       const refreshToken = randomToken();
+      // CAS on the hash we were found BY: two concurrent refreshes with the
+      // same token both pass the read above, and an unconditional write would
+      // mint BOTH a new token while only the last write stays verifiable —
+      // the loser's client holds a credential that matches nothing and is
+      // logged out at the next refresh. Losing the race must fail instead.
       const updated = await store.sessions.updateOne(
-        { id: session.id },
+        { id: session.id, refreshHash: hash },
         {
           refreshHash: hashToken(config, refreshToken),
           lastSeenAt: now,

@@ -132,7 +132,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   await app.register(cookie);
   await app.register(cors, { origin: [config.appUrl], credentials: true });
-  await app.register(websocket);
+  await app.register(websocket, {
+    options: {
+      // Inbound-frame byte ceiling. The frame RATE limiter lives in the hub
+      // (300/10s), but a rate limiter does nothing about one 100 MiB frame —
+      // ws's default maxPayload — whose JSON.parse would be a room member's
+      // one-shot CPU/memory spike. The largest legitimate envelope (a chat
+      // body, a queue item) is a few KB; 64 KB is generous headroom.
+      maxPayload: 64 * 1024,
+    },
+  });
 
   // Deps: the hub is constructed with everything but itself, then handed the
   // full object before any connection can be accepted.

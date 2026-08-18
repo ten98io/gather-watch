@@ -43,7 +43,7 @@ is a layout, not a transport. No room ever successfully used LiveKit; it is
 deleted from the codebase.
 
 Gates at the end of this session, forced (not cached): **build 8/8, typecheck
-14/14, test 158 files / 2020 passed / 18 skipped, lint 9/9.** Build is 8 and not
+14/14, test 159 files / 2028 passed / 18 skipped, lint 9/9.** Build is 8 and not
 9 because `apps/mobile` has no `build` script. Typecheck and test are 14 because
 both `dependsOn: ["^build"]`, so each run also builds the five `dist`-shipped
 packages: 9 workspaces + 5 builds.
@@ -184,6 +184,71 @@ Read these before changing anything; each one has an audit finding behind it.
   and read as standing orders where they sat.
 
 Costs: `docs/COST_MODEL.md` (verified rates; three lines cannot be closed).
+
+## Adversarial audit 2026-08-19 (this session; findings + fixes)
+
+A full read of the security-bearing surface: bootstrap (CORS/trustProxy/
+rate limits/error mapper), auth (magic links, session rotation, guest scope),
+rooms (role gates, bans, invites, the password gate), the WS hub, sync/
+restream/queue write paths, chat (attachments, unfurl, SSRF), rtc, admin,
+compliance, the extension's external channel, and the web/mobile clients.
+What was already strong stays unsaid; what follows is what the audit CHANGED
+or deliberately did not.
+
+Fixed, each with a test:
+
+- **W1 — the WS access token rode the `?token=` query string**, which lands in
+  every access log the upgrade request touches. New clients (web, extension,
+  mobile — all share api-client's RoomSocket) send it as a
+  `Sec-WebSocket-Protocol` value (`WS_AUTH_SUBPROTOCOL_PREFIX` in contracts);
+  the hub reads the header first and keeps the query form for
+  already-installed extension/mobile builds. The /ws route's automatic
+  request logging is dropped to warn-and-up so even the legacy form no longer
+  reaches OUR logs. `packages/api-client/test/ws.test.ts` pins "token never
+  in the URL"; `services/api/test/ws-hub.test.ts` pins the subprotocol path
+  authenticates and carries frames.
+- **A2 — refresh rotation raced itself.** Two concurrent refreshes with one
+  cookie both minted successors; only the last write stayed verifiable, so
+  the loser held a credential that matched nothing. The rotation write is now
+  a compare-and-set on the presented hash; the loser gets 401. Pinned in
+  `services/api/test/auth.test.ts`.
+- **A10 — a guest whose membership was gone refreshed into an UNSCOPED token.**
+  `assertGuestScope` only confines a token with a non-null roomId, and a
+  kicked guest's membership row is deleted — so their next refresh minted a
+  guest credential with no scope. Refresh now refuses (401) for a guest with
+  no live, non-banned guest membership. Pinned in auth.test.ts.
+- **W3 — WS frames had ws's 100 MiB default maxPayload.** A room member could
+  make every server parse a 100 MB frame per window. The ceiling is now 64 KB
+  at the plugin; oversized frames die with a 1009 close before parse. Pinned
+  in ws-hub.test.ts.
+- **C1 — attachment mime was the uploader's unverified claim.** A `text/html`
+  attachment served inline off a gather.watch link is a phishing page with our
+  redirect in front of it. The content route now signs
+  `response-content-disposition: attachment` into the presigned GET for any
+  non-image/audio/video asset. Pinned in attachments.test.ts (inline for
+  media, download for the rest).
+- **B1 — the web app shipped no security headers.** next.config.ts now emits
+  nosniff, strict-origin-when-cross-origin, frame-ancestors 'none' / XFO DENY,
+  a Permissions-Policy scoped to camera/mic/display-capture/autoplay, and a
+  pragmatic CSP (script-src keeps 'unsafe-inline' for the inline theme
+  bootstrap and Next flight data — the nonce pipeline is the known follow-up).
+  Pinned by `apps/web/test/security-headers.test.ts`, which exists because a
+  config-file deletion otherwise fails silently at deploy.
+
+Reviewed and deliberately NOT changed (decisions, not oversights):
+
+- `GET /assets/:assetId/content` is unauthenticated BY DESIGN (capability URL,
+  Discord/Slack model); the bucket stays private and the id is unguessable.
+- `restream.start` is membership-gated but not role-gated — guests may share;
+  that is the product's ungated-share doctrine, not a hole.
+- `sync.advance`'s unknown-duration floor PRICES a skip rather than proving
+  one (open item 4; closing it needs duration resolution on queue insert).
+- Refresh reuse detection scans live sessions in memory — O(n) per failed
+  refresh; fine at current scale, worth a `rotatedHashes` array-contains query
+  if session counts grow.
+- Magic-link requests are capped only by the auth rate tier (20/min/IP) —
+  email-bombing a stranger is possible but bounded; a per-address cooldown is
+  the follow-up if it ever bites.
 
 ## Shipped 2026-08-19 (this session; verified against the code)
 
@@ -531,7 +596,7 @@ come from GitHub — pushing to main redeploys both Railway services.
 Before you change anything, re-run the gates yourself with --force
 (build/typecheck/test/lint) and `git status` — confirm the tree is clean
 rather than taking a previous session's word for it. The forced numbers to
-beat: build 8/8, typecheck 14/14, test 158 files / 2020 passed / 18 skipped,
+beat: build 8/8, typecheck 14/14, test 159 files / 2028 passed / 18 skipped,
 lint 9/9.
 
 Pick up in this order:

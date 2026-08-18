@@ -142,10 +142,25 @@ export const chatRoutes: FastifyPluginAsync = async (app) => {
     if (doc === null || doc.status !== 'ready' || doc.storageKey == null) {
       throw new AppError('NOT_FOUND', 'attachment not found');
     }
+    // The asset's mime is the uploader's CLAIM, never verified against the
+    // bytes. An 'image/*'-family claim renders inline in chat; anything else —
+    // a text/html page above all — must not render in the reader's browser
+    // off a gather.watch link, so the presign asks the bucket to answer with
+    // Content-Disposition: attachment (signed into the URL; appending it
+    // afterwards would break the signature).
+    const inline = /^(image|audio|video)\//.test(doc.mime);
+    const url = presignObjectUrl(
+      app.deps.config.s3,
+      doc.storageKey,
+      'GET',
+      60,
+      new Date(),
+      inline ? {} : { 'response-content-disposition': 'attachment' },
+    );
     // no-store: the redirect target expires in 60s; a cached redirect is a
     // broken image later.
     void reply.header('cache-control', 'no-store');
-    return reply.redirect(presignObjectUrl(app.deps.config.s3, doc.storageKey, 'GET', 60), 302);
+    return reply.redirect(url, 302);
   });
 
   app.post<{ Params: { roomId: string } }>(

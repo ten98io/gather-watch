@@ -1,4 +1,4 @@
-import { ServerEvent } from '@gather/contracts';
+import { ServerEvent, WS_AUTH_SUBPROTOCOL_PREFIX } from '@gather/contracts';
 import type { ClientEvent, RoomId, WsEnvelope } from '@gather/contracts';
 import { ClockEstimator } from '@gather/sync-core';
 import { ApiError } from './errors';
@@ -14,6 +14,9 @@ import type {
 
 /** Lifecycle status of a {@link RoomSocket}. */
 export type SocketStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
+
+// The subprotocol prefix itself lives in @gather/contracts (ws.ts) — the
+// server reads it too, and contracts is the wire's single source of truth.
 
 /* Close codes the hub uses to REJECT a socket (services/api/src/ws/hub.ts):
    4401 auth failures, 4403 forbidden/banned/scope, 4404 no room. Retrying any
@@ -346,14 +349,15 @@ export class RoomSocket {
     const token = this.currentToken;
     if (ctor === null || roomId === null || token === null) return;
     const sep = this.wsBaseUrl.includes('?') ? '&' : '?';
-    const url =
-      this.wsBaseUrl +
-      sep +
-      'roomId=' +
-      encodeURIComponent(roomId) +
-      '&token=' +
-      encodeURIComponent(token);
-    const sock = new ctor(url);
+    // The token travels as a Sec-WebSocket-Protocol subprotocol, NOT in the
+    // URL: a query-string credential lands in every access log the request
+    // touches (the api's own request log, edge proxies), and a WS URL cannot
+    // carry an Authorization header — the subprotocol slot is the only header
+    // a browser WebSocket can write. JWTs are base64url, which is legal
+    // subprotocol syntax. The server keeps accepting the query form for
+    // already-installed extension/mobile builds (services/api/src/ws/hub.ts).
+    const url = this.wsBaseUrl + sep + 'roomId=' + encodeURIComponent(roomId);
+    const sock = new ctor(url, [`${WS_AUTH_SUBPROTOCOL_PREFIX}${token}`]);
     this.socket = sock;
     this.sessionProven = false;
     this.setStatus(isReconnect ? 'reconnecting' : 'connecting');

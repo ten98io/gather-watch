@@ -200,6 +200,37 @@ describe('ws hub', () => {
     await expectClose(wsUrl(roomB.roomId, guest.accessToken), 4403);
   });
 
+  it('accepts the token via the auth subprotocol, keeping it out of the URL', async () => {
+    const { roomId } = await seedRoom(store);
+    const member = await makeMember('subproto@example.com', roomId);
+    // No token in the URL at all — the credential rides the one header a
+    // browser WebSocket can write (see WS_AUTH_SUBPROTOCOL_PREFIX).
+    const url = `ws://127.0.0.1:${port}/ws?roomId=${roomId}`;
+    const sock = new WebSocket(url, [`gather.auth.${member.accessToken}`]);
+    sockets.push(sock);
+    await new Promise<void>((resolve, reject) => {
+      sock.once('open', () => resolve());
+      sock.once('close', (code) => reject(new Error(`closed with ${code}`)));
+      sock.once('error', () => reject(new Error('socket error')));
+    });
+    expect(sock.readyState).toBe(WebSocket.OPEN);
+    // And it is a REAL room socket: frames flow.
+    const p = nextMessage(sock);
+    sock.send(clientFrame(roomId, 'clock.ping', { clientTs: 1 }));
+    const pong = await p;
+    expect(pong.type).toBe('clock.pong');
+  });
+
+  it('closes an oversized frame before it can be parsed (1009)', async () => {
+    const { roomId } = await seedRoom(store);
+    const member = await makeMember('flood@example.com', roomId);
+    const sock = await connect(wsUrl(roomId, member.accessToken));
+    const closed = closeCode(sock);
+    // 64 KB is the ceiling; this is 70 KB of one frame.
+    sock.send('x'.repeat(70 * 1024));
+    expect(await closed).toBe(1009);
+  });
+
   // ── frame validation ───────────────────────────────────────────────────────
 
   it('answers invalid frames with an ephemeral error event', async () => {

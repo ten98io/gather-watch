@@ -26,7 +26,7 @@ describe('chat attachments', () => {
     await app.close();
   });
 
-  async function ticketFor(sizeBytes: number): Promise<{
+  async function ticketFor(sizeBytes: number, mime = 'image/png'): Promise<{
     token: string;
     roomId: string;
     assetId: string;
@@ -39,7 +39,7 @@ describe('chat attachments', () => {
       method: 'POST',
       url: `/rooms/${roomId}/attachments`,
       headers: { authorization: `Bearer ${account.accessToken}` },
-      payload: { filename: 'pic.png', mime: 'image/png', sizeBytes },
+      payload: { filename: 'pic.png', mime, sizeBytes },
     });
     expect(created.statusCode).toBe(200);
     const body = created.json() as { assetId: string; uploadId: string };
@@ -143,8 +143,8 @@ describe('chat attachments', () => {
      * read path: the bucket is private and a presigned GET expires, while a
      * chat message does not.
      */
-    async function readyAsset(): Promise<string> {
-      const { token, roomId, assetId, uploadId } = await ticketFor(1 * MB);
+    async function readyAsset(mime = 'image/png'): Promise<string> {
+      const { token, roomId, assetId, uploadId } = await ticketFor(1 * MB, mime);
       setAttachmentObjectOps(deps, {
         stat: async () => ({ sizeBytes: 1 * MB }),
         remove: async () => undefined,
@@ -169,7 +169,19 @@ describe('chat attachments', () => {
       const location = res.headers['location'] as string;
       expect(location).toContain('X-Amz-Signature=');
       expect(location).toContain('X-Amz-Expires=60');
+      expect(location).not.toContain('response-content-disposition');
       expect(res.headers['cache-control']).toBe('no-store');
+    });
+
+    it('forces a DOWNLOAD for non-media mime — a claimed text/html must never render', async () => {
+      // The mime is the uploader's unverified claim; an HTML attachment opened
+      // from a gather.watch link must arrive as a download, not a page.
+      const assetId = await readyAsset('text/html');
+      const res = await app.inject({ method: 'GET', url: `/assets/${assetId}/content` });
+      expect(res.statusCode).toBe(302);
+      expect(res.headers['location'] as string).toContain(
+        'response-content-disposition=attachment',
+      );
     });
 
     it('404s an asset that is not ready, without leaking whether it exists', async () => {

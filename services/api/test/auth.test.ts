@@ -148,6 +148,44 @@ describe('auth', () => {
     expect(me.statusCode).toBe(401);
   });
 
+  it('a concurrent double-refresh mints exactly ONE successor token', async () => {
+    // Two tabs holding the same cookie refresh in the same instant. The
+    // rotation write is compare-and-set on the presented hash, so the loser
+    // fails instead of minting a token no store row will ever match again.
+    const account = await signupUser(app, 'race@example.com');
+    const [a, b] = await Promise.all([
+      app.inject({ method: 'POST', url: '/auth/refresh', headers: rtCookie(account.cookie) }),
+      app.inject({ method: 'POST', url: '/auth/refresh', headers: rtCookie(account.cookie) }),
+    ]);
+    expect([a.statusCode, b.statusCode].sort((x, y) => x - y)).toEqual([200, 401]);
+  });
+
+  it('refuses to refresh a guest whose membership is gone', async () => {
+    // A kicked guest (or a deleted room) leaves the guest USER row alive with
+    // no membership. Refreshing there must fail: the alternative is minting a
+    // guest token with a NULL room scope, and assertGuestScope only confines
+    // a token whose roomId is non-null.
+    const { inviteCode, roomId } = await seedRoom(store);
+    const joined = await app.inject({
+      method: 'POST',
+      url: '/auth/guest',
+      payload: { inviteCode, displayName: 'Shortlived' },
+    });
+    expect(joined.statusCode).toBe(200);
+    const guestCookie = joined.cookies.find((c) => c.name === 'gather_rt');
+    expect(guestCookie).toBeDefined();
+    const guestUser = (joined.json() as { user: User }).user;
+
+    await store.members.deleteOne({ id: `${roomId}:${guestUser.id}` });
+
+    const refresh = await app.inject({
+      method: 'POST',
+      url: '/auth/refresh',
+      headers: rtCookie(guestCookie!.value),
+    });
+    expect(refresh.statusCode).toBe(401);
+  });
+
   it('joins a room as a guest via invite code', async () => {
     const { inviteCode } = await seedRoom(store);
 

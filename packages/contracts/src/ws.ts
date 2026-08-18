@@ -22,6 +22,17 @@ import {
   WebUrl,
 } from './entities';
 
+/**
+ * The access token's ride on the WS upgrade: a Sec-WebSocket-Protocol value
+ * of `gather.auth.<jwt>`. A browser WebSocket cannot set Authorization, and a
+ * query-string credential lands in every access log between the client and
+ * the process — the subprotocol slot is the one header a browser CAN write.
+ * base64url JWTs are legal subprotocol syntax. The server reads this header
+ * first and keeps accepting the legacy `?token=` query for
+ * already-installed extension/mobile builds.
+ */
+export const WS_AUTH_SUBPROTOCOL_PREFIX = 'gather.auth.';
+
 export const WsEnvelope = z.object({
   type: z.string(),
   roomId: RoomId,

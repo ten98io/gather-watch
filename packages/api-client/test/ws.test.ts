@@ -56,6 +56,18 @@ describe('RoomSocket', () => {
     expect(sock.lastSeq).toBe(2);
   });
 
+  it('carries the access token in a subprotocol, never in the URL', () => {
+    // A URL credential lands in every access log between client and server;
+    // the subprotocol slot is the one header a browser WebSocket can write.
+    const { sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok_secret');
+    const ws = MockWebSocket.instances[0]!;
+    expect(ws.url).not.toContain('tok_secret');
+    expect(ws.url).toContain(`roomId=${room}`);
+    expect(ws.protocols).toEqual(['gather.auth.tok_secret']);
+  });
+
   it('gap triggers exactly one replay and re-emits missing events in order without dupes', async () => {
     const { sock, seen, replayCalls, setReplay } = setup();
     const room = rid('r1');

@@ -89,7 +89,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     let guestRoomId: string | null = null;
     if (user.email === null) {
       const membership = await store.members.findOne({ userId: user.id, role: 'guest' });
-      guestRoomId = membership?.roomId ?? null;
+      // A guest with NO membership was kicked, or the room is gone. Minting
+      // them a token anyway would mint an UNSCOPED guest credential —
+      // assertGuestScope only confines a token whose roomId is non-null — so
+      // the refresh is refused and the session dies here instead.
+      if (membership === null || membership.banned) {
+        throw new AppError('UNAUTHORIZED', 'guest session is no longer valid');
+      }
+      guestRoomId = membership.roomId;
     }
     const { accessToken, accessTokenExpiresAt } = await issueAccessToken(
       user,
