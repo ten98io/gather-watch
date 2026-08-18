@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Member, Room, RoomId } from '@gather/contracts';
 import { api } from './api';
+import { inCallIntent } from './call-mesh';
 import { presenceIdleStateFor } from './media-kind';
 import { RoomConnection } from './room-connection';
 import { toast } from '@/components/ui/toast';
@@ -52,6 +53,9 @@ export function RoomProvider({
       new RoomConnection({
         api,
         roomId: initialRoom.id,
+        // Lets the connection's presence keepalive re-assert THIS member's
+        // current state (in-call, sharing, away) instead of an idle default.
+        userId: initialMember.userId,
         ...(lastEventSeq === undefined ? {} : { initialSeq: lastEventSeq }),
         onGapLoss: () => {
           // A gap could not be backfilled: chat/queue/sync should refetch.
@@ -75,21 +79,30 @@ export function RoomProvider({
     // room, so this client must say it accurately.
     const idleState = (): 'watching' | 'listening' =>
       presenceIdleStateFor(connection.useRoomState.getState().playback?.mediaRef ?? null);
-    // Announce presence whenever the socket (re)connects — the hub's default
-    // entry is 'offline' until a client says otherwise, and peers render it.
-    const offStatus = connection.useStatus.subscribe((status) => {
-      if (status === 'live') {
-        connection.presenceUpdate({ state: idleState() });
-      }
-    });
+    // The on-connect announce used to live here. It now rides the connection's
+    // own open frame (RoomConnection.requestRoomSnapshot), which carries
+    // `wantSnapshot` as well — two frames per open would mean two full room
+    // snapshots, and the second one has nothing to add. What this provider
+    // still owns is the part the connection cannot know: which idle state the
+    // PLAYING item implies, re-announced below whenever that changes. On a
+    // fresh open the store has no playback yet, so there is nothing accurate
+    // to say until the snapshot lands — and when it lands, this fires.
+    //
     // A mixed queue flows music↔video: re-announce when the playing item's
     // kind changes — but never overwrite the richer states a member is
     // actually in ('in-call', 'away'); those surfaces own their own updates.
+    //
+    // 'in-call' is asked of LOCAL INTENT first (call-mesh's inCallIntent) and
+    // only then of the server's echo. The echo is a full round trip behind:
+    // a sync.state landing inside that window used to overwrite the 'in-call'
+    // we had just announced, and every other client dropped our tile until
+    // the reassert loop clawed it back.
     let lastIdle = idleState();
     const offPlayback = connection.useRoomState.subscribe((s) => {
       const next = presenceIdleStateFor(s.playback?.mediaRef ?? null);
       if (next === lastIdle) return;
       lastIdle = next;
+      if (inCallIntent(connection)) return;
       const mine = s.presence[initialMember.userId]?.state;
       if (mine === 'in-call' || mine === 'away') return;
       if (connection.status !== 'live') return;
@@ -97,7 +110,6 @@ export function RoomProvider({
     });
     return () => {
       offPlayback();
-      offStatus();
       connection.close();
     };
   }, [connection, initialMember.userId]);

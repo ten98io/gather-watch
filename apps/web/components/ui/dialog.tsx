@@ -92,7 +92,7 @@ export function DialogContent({
             role="dialog"
             aria-modal="true"
             aria-label={ariaLabel}
-            className={cn('glass-panel relative z-10 w-full max-w-md p-6 shadow-glow', className)}
+            className={cn('glass-panel relative z-10 w-full max-w-md p-6 shadow-e3', className)}
             {...motionProps}
           >
             {children}
@@ -104,8 +104,11 @@ export function DialogContent({
   );
 }
 
+/** `text-title` from the ramp, not `text-xl font-semibold` — the ramp already
+ *  carries 20/28/600/−0.01em, and restating the weight on top of it is how the
+ *  product ended up with three different "section header" treatments. */
 export function DialogTitle({ children, className }: { children: ReactNode; className?: string }) {
-  return <h2 className={cn('font-display text-xl font-semibold text-hi', className)}>{children}</h2>;
+  return <h2 className={cn('font-display text-title text-hi', className)}>{children}</h2>;
 }
 
 export function DialogDescription({
@@ -115,5 +118,5 @@ export function DialogDescription({
   children: ReactNode;
   className?: string;
 }) {
-  return <p className={cn('mt-1 text-sm text-mid', className)}>{children}</p>;
+  return <p className={cn('mt-1.5 text-body text-mid', className)}>{children}</p>;
 }

@@ -33,6 +33,10 @@ describe('mediaKindFor', () => {
     ['hls upload', { kind: 'hls', assetId: 'asset-1' as AssetId, url: 'https://cdn.example/v.m3u8' }, 'video'],
     ['direct audio url', { kind: 'url', url: 'https://cdn.example/t.mp3', mime: 'audio/mpeg' }, 'music'],
     ['direct video url', { kind: 'url', url: 'https://cdn.example/v.mp4', mime: 'video/mp4' }, 'video'],
+    // An arbitrary page is unknowable until someone's extension opens it, so
+    // it takes the default half of the split: the video stage, and 'watching'
+    // presence. Nothing here guesses from the url.
+    ['arbitrary web page', { kind: 'page', url: 'https://blog.example/the-film' }, 'video'],
     ['spotify embed', embed('spotify'), 'music'],
     ['apple music embed', embed('applemusic'), 'music'],
     ['tidal embed', embed('tidal'), 'music'],

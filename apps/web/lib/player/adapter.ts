@@ -43,6 +43,14 @@ export interface PlayerAdapter {
   setMuted(muted: boolean): void;
   isMuted(): boolean;
   setVolume(volume: number): void; // 0..1
+  /**
+   * Duck gain, 0..1, applied ON TOP of `setVolume` — see lib/player/ducking.ts.
+   * This is the ONE volume input that does not belong to the user, so it is
+   * deliberately a second channel rather than a second caller of setVolume:
+   * an adapter multiplies the two and writes only the product, which is what
+   * makes a duck incapable of moving the user's own setting.
+   */
+  setDuck(gain: number): void;
   on(evt: AdapterEvent, cb: () => void): () => void;
   destroy(): void;
 }
@@ -71,6 +79,15 @@ export function adapterKindFor(ref: MediaRef | null): AdapterKind | null {
   if (ref.kind === 'soundcloud') return 'soundcloud';
   if (ref.kind === 'vimeo') return 'vimeo';
   if (ref.kind === 'embed') return 'embed';
+  // A page ref is a LINK, not media bytes. Only the browser extension can play
+  // one (it drives whatever <video>/<audio> the page mounts on that device),
+  // and when the extension drives, this function is never reached — StagePane
+  // nulls the adapter kind first. So reaching here means "no extension on this
+  // device", and the honest answer is the one this function already documents:
+  // nothing playable. Falling through to 'native' instead would point a
+  // <video> at an HTML document and, because isFullSyncKind('native') is true,
+  // run the drift engine against a player that can never load.
+  if (ref.kind === 'page') return null;
   return 'native';
 }
 

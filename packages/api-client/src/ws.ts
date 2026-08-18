@@ -15,6 +15,32 @@ import type {
 /** Lifecycle status of a {@link RoomSocket}. */
 export type SocketStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
 
+/* Close codes the hub uses to REJECT a socket (services/api/src/ws/hub.ts):
+   4401 auth failures, 4403 forbidden/banned/scope, 4404 no room. Retrying any
+   of them with the same credentials just hammers the server forever, so they
+   end the session instead of feeding the backoff loop. */
+const CLOSE_UNAUTHORIZED = 4401;
+const CLOSE_FORBIDDEN = 4403;
+const CLOSE_NOT_FOUND = 4404;
+
+/** Fallbacks for a close frame that carried no reason text. */
+const CLOSE_FALLBACK_REASON: Record<number, string> = {
+  [CLOSE_UNAUTHORIZED]: 'your session is no longer authorized for this room',
+  [CLOSE_FORBIDDEN]: 'you no longer have access to this room',
+  [CLOSE_NOT_FOUND]: 'this room no longer exists',
+};
+
+/** 4403/4404 are permanent for ANY credentials — never worth another attempt. */
+function isPermanentCloseCode(code: number | undefined): boolean {
+  return code === CLOSE_FORBIDDEN || code === CLOSE_NOT_FOUND;
+}
+
+/** Why the session ended for good; surfaced so the UI can say something true. */
+export interface SocketCloseInfo {
+  code: number;
+  reason: string;
+}
+
 /** Fetches missed events after a sequence gap (typically wraps rest.events.replay). */
 export type ReplayFetch = (roomId: RoomId, sinceSeq: number) => Promise<WsEnvelope[]>;
 
@@ -26,6 +52,13 @@ export interface RoomSocketOptions {
   wsCtor?: WebSocketCtor;
   /** Heartbeat interval in ms. Defaults to 5000. */
   heartbeatMs?: number;
+  /**
+   * Consecutive unanswered clock.pings tolerated before the socket is treated
+   * as half-open and forcibly reconnected. Defaults to 3 — at the default
+   * 5s cadence that is ~15s of silence, well past any plausible RTT, so a
+   * slow-but-alive connection is never killed (any pong resets the counter).
+   */
+  maxMissedPongs?: number;
   /** Clock source in ms. Defaults to a lazy Date.now. */
   now?: () => number;
   /** Random source in [0, 1) for backoff jitter. Defaults to a lazy Math.random. */
@@ -52,6 +85,12 @@ export interface RoomSocketOptions {
    * refetch room state (messages, sync) when this fires.
    */
   onGapLoss?: (info: { roomId: RoomId; sinceSeq: number }) => void;
+  /**
+   * Fired when the session ended for good (an auth/permission/not-found close
+   * code, not a transport hiccup): no reconnect follows, so the app must show
+   * the reason instead of a permanent "reconnecting…".
+   */
+  onTerminalClose?: (info: SocketCloseInfo) => void;
 }
 
 /** Options for {@link RoomSocket.connect}. */
@@ -90,7 +129,9 @@ export class RoomSocket {
   private readonly clearTimeoutFn: ClearTimeoutFn;
   private readonly replayRetryAttempts: number;
   private readonly replayRetryDelayMs: number;
+  private readonly maxMissedPongs: number;
   private readonly onGapLoss: ((info: { roomId: RoomId; sinceSeq: number }) => void) | undefined;
+  private readonly onTerminalClose: ((info: SocketCloseInfo) => void) | undefined;
 
   private readonly tracker = new SeqTracker(0);
   private statusValue: SocketStatus = 'idle';
@@ -104,6 +145,21 @@ export class RoomSocket {
   private reconnectHandle: TimeoutHandle | null = null;
   private heartbeatHandle: TimeoutHandle | null = null;
   private sendQueue: string[] = [];
+  /** Pings sent since the last clock.pong; reset by any pong and by open. */
+  private missedPongs = 0;
+  /** True once a 4401 has already bought its one token-refresh retry. */
+  private authRetryUsed = false;
+  /**
+   * True once the CURRENT socket has carried a frame FROM the server. The hub
+   * completes the WebSocket handshake and only then authorizes, closing an
+   * unauthorized socket with 4401 after it is already open (see
+   * services/api/src/ws/hub.ts) — so 'open' on its own proves nothing. Only a
+   * server frame proves the session was really accepted, and only that refunds
+   * the budgets (backoff attempts, the one-shot 4401 retry) that must survive
+   * an open-then-rejected cycle.
+   */
+  private sessionProven = false;
+  private closeInfoValue: SocketCloseInfo | null = null;
   private buffer: ServerEvent[] = [];
   private replaying = false;
   private replayRetryCancel: (() => void) | null = null;
@@ -126,7 +182,9 @@ export class RoomSocket {
     this.clearTimeoutFn = opts.clearTimeoutFn ?? defaultClearTimeout;
     this.replayRetryAttempts = opts.replayRetryAttempts ?? 3;
     this.replayRetryDelayMs = opts.replayRetryDelayMs ?? 500;
+    this.maxMissedPongs = opts.maxMissedPongs ?? 3;
     this.onGapLoss = opts.onGapLoss;
+    this.onTerminalClose = opts.onTerminalClose;
     this.clock = new ClockEstimator();
   }
 
@@ -138,6 +196,14 @@ export class RoomSocket {
   /** Highest contiguous server sequence number seen for the current room. */
   get lastSeq(): number {
     return this.tracker.lastSeq;
+  }
+
+  /**
+   * Set when the server refused the session for good (4401 after its one
+   * retry, 4403, 4404); null while healthy or after an intentional close().
+   */
+  get closeInfo(): SocketCloseInfo | null {
+    return this.closeInfoValue;
   }
 
   /**
@@ -174,17 +240,30 @@ export class RoomSocket {
     this.currentRoomId = roomId;
     this.currentToken = token;
     this.closeRequested = false;
+    this.closeInfoValue = null;
+    // An explicit connect() is a deliberate new session with caller-supplied
+    // credentials, so it always starts with a full retry budget. The infinite
+    // loop this guards against lives in the INTERNAL reconnect path, which
+    // never comes through here.
+    this.authRetryUsed = false;
     this.reconnectAttempt = 0;
+    this.missedPongs = 0;
     this.openSocket(false);
   }
 
-  /** Intentionally closes the session: no reconnect, status becomes 'closed'.
-   *  Queued-but-unsent envelopes are dropped. */
-  close(): void {
+  /**
+   * Intentionally closes the session: no reconnect, status becomes 'closed'.
+   * Queued-but-unsent envelopes are dropped — unless `preserveQueue` is set,
+   * which an app uses when it is only BOUNCING the socket (token rotation)
+   * and the user's unsent chat message or queue change must survive.
+   */
+  close(opts?: { preserveQueue?: boolean }): void {
     this.closeRequested = true;
     this.cancelReconnect();
     this.stopHeartbeat();
-    this.sendQueue = [];
+    if (opts?.preserveQueue !== true) {
+      this.sendQueue = [];
+    }
     this.replayRetryCancel?.();
     const sock = this.socket;
     this.socket = null;
@@ -276,6 +355,7 @@ export class RoomSocket {
       encodeURIComponent(token);
     const sock = new ctor(url);
     this.socket = sock;
+    this.sessionProven = false;
     this.setStatus(isReconnect ? 'reconnecting' : 'connecting');
 
     let settled = false;
@@ -285,6 +365,7 @@ export class RoomSocket {
     };
     sock.onmessage = (ev) => {
       if (this.socket !== sock) return;
+      this.markSessionProven();
       this.handleMessage(ev);
     };
     sock.onerror = () => {
@@ -292,17 +373,42 @@ export class RoomSocket {
       settled = true;
       this.handleSocketClose(sock);
     };
-    sock.onclose = () => {
-      if (settled) return;
+    sock.onclose = (ev) => {
+      if (settled) {
+        // onerror already drove the reconnect, but a permanent code arriving
+        // behind it must still stop the retry loop instead of hammering the
+        // server with credentials it has already rejected.
+        if (!this.closeRequested && this.socket === null && isPermanentCloseCode(ev?.code)) {
+          this.cancelReconnect();
+          this.failTerminally(ev?.code as number, ev?.reason);
+        }
+        return;
+      }
       settled = true;
-      this.handleSocketClose(sock);
+      this.handleSocketClose(sock, ev);
     };
+  }
+
+  /**
+   * First server frame on the current socket: this session is genuinely
+   * established, not merely handshaken, so the budgets that must survive an
+   * open-then-rejected cycle are refunded here rather than in handleOpen.
+   */
+  private markSessionProven(): void {
+    if (this.sessionProven) return;
+    this.sessionProven = true;
+    this.reconnectAttempt = 0;
+    this.authRetryUsed = false;
   }
 
   private handleOpen(sock: WebSocketLike): void {
     const wasReconnect = this.hasBeenOpen;
     this.hasBeenOpen = true;
-    this.reconnectAttempt = 0;
+    this.missedPongs = 0;
+    // NOTE: reconnectAttempt and authRetryUsed are deliberately NOT reset here.
+    // The hub rejects AFTER the handshake, so every rejected socket reaches
+    // this method; refunding budgets on 'open' made "4401 buys one retry" an
+    // infinite loop and pinned the backoff at its base delay forever.
     this.setStatus('open');
     const queued = this.sendQueue;
     this.sendQueue = [];
@@ -322,7 +428,7 @@ export class RoomSocket {
     }
   }
 
-  private handleSocketClose(sock: WebSocketLike): void {
+  private handleSocketClose(sock: WebSocketLike, ev?: { code?: number; reason?: string }): void {
     if (this.socket !== sock) return;
     this.socket = null;
     this.stopHeartbeat();
@@ -330,7 +436,50 @@ export class RoomSocket {
       this.setStatus('closed');
       return;
     }
+    const code = ev?.code;
+    if (code !== undefined && this.rejectsRetry(code)) {
+      this.failTerminally(code, ev?.reason);
+      return;
+    }
     this.scheduleReconnect();
+  }
+
+  /**
+   * Whether this close code means "stop trying". 4403/4404 are permanent for
+   * any credentials. 4401 buys exactly ONE more attempt — the app rotates its
+   * access token on the 'reconnecting' transition, so the retry can genuinely
+   * succeed — and is terminal if the fresh token is refused too.
+   */
+  private rejectsRetry(code: number): boolean {
+    if (isPermanentCloseCode(code)) return true;
+    if (code !== CLOSE_UNAUTHORIZED) return false;
+    if (this.authRetryUsed) return true;
+    this.authRetryUsed = true;
+    return false;
+  }
+
+  /**
+   * Ends the session for good: no reconnect, no further heartbeats. The send
+   * queue is kept — a later connect() with working credentials still owes the
+   * user those envelopes.
+   */
+  private failTerminally(code: number, reason?: string): void {
+    this.closeRequested = true;
+    this.cancelReconnect();
+    this.stopHeartbeat();
+    this.replayRetryCancel?.();
+    const text =
+      reason !== undefined && reason !== ''
+        ? reason
+        : (CLOSE_FALLBACK_REASON[code] ?? 'the room refused this connection');
+    const info: SocketCloseInfo = { code, reason: text };
+    this.closeInfoValue = info;
+    this.setStatus('closed');
+    try {
+      this.onTerminalClose?.(info);
+    } catch {
+      // A bad callback must not break the pipeline.
+    }
   }
 
   private scheduleReconnect(): void {
@@ -359,6 +508,13 @@ export class RoomSocket {
       if (this.statusValue !== 'open' || this.socket === null || this.currentRoomId === null) {
         return;
       }
+      if (this.missedPongs >= this.maxMissedPongs) {
+        // Half-open socket: pings keep leaving, no pong ever comes back and
+        // the transport reports nothing — without this the UI says 'Live'
+        // forever. Bounce it and let the normal backoff reconnect.
+        this.forceReconnect();
+        return;
+      }
       const envelope = {
         type: 'clock.ping',
         roomId: this.currentRoomId,
@@ -368,6 +524,7 @@ export class RoomSocket {
       };
       try {
         this.socket.send(JSON.stringify(envelope));
+        this.missedPongs += 1;
       } catch {
         // A broken socket surfaces via onerror/onclose.
       }
@@ -381,6 +538,26 @@ export class RoomSocket {
       this.clearTimeoutFn(this.heartbeatHandle);
       this.heartbeatHandle = null;
     }
+  }
+
+  /**
+   * Drops a socket the watchdog declared dead and reconnects. The reference is
+   * cleared BEFORE closing so the close callbacks (which see a stale `sock`)
+   * cannot schedule a second reconnect.
+   */
+  private forceReconnect(): void {
+    const sock = this.socket;
+    this.socket = null;
+    this.stopHeartbeat();
+    this.missedPongs = 0;
+    if (sock !== null) {
+      try {
+        sock.close();
+      } catch {
+        // Ignore errors from an already-broken socket.
+      }
+    }
+    this.scheduleReconnect();
   }
 
   private handleMessage(ev: { data: unknown }): void {
@@ -398,6 +575,9 @@ export class RoomSocket {
     // one foreign high seq would poison gap detection for the whole session.
     if (this.currentRoomId === null || event.roomId !== this.currentRoomId) return;
     if (event.type === 'clock.pong') {
+      // Any pong proves the socket is two-way alive — a slow connection must
+      // never trip the watchdog, so this resets the whole streak.
+      this.missedPongs = 0;
       this.clock.addSample({
         clientSendTs: event.payload.clientTs,
         serverTs: event.payload.serverTs,

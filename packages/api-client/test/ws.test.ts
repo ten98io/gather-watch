@@ -126,8 +126,9 @@ describe('RoomSocket', () => {
     ws2.message(typingEvt(room, 4));
     expect(seen).toEqual([1, 2, 3, 4]);
     ws2.end();
-    // The attempt counter resets on every successful open (handleOpen sets it to 0),
-    // so the second drop backs off from attempt 0 again: 500ms, not 1000ms.
+    // The attempt counter resets once a socket has carried a server frame (this
+    // one carried several), so the second drop backs off from attempt 0 again:
+    // 500ms, not 1000ms.
     expect(timers.delays()).toEqual([500]);
   });
 
@@ -284,6 +285,179 @@ describe('RoomSocket', () => {
     expect(replayCalls).toEqual([2, 2]);
     expect(losses).toEqual([]);
     expect(sock.lastSeq).toBe(5);
+  });
+
+  it('an unanswered heartbeat streak forces a reconnect; any pong clears it', () => {
+    const { timers, sock } = setup({ opts: { maxMissedPongs: 3 } });
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    ws.open();
+    // Three pings leave unanswered; the socket still looks open to the transport.
+    timers.runNext();
+    timers.runNext();
+    timers.runNext();
+    expect(ws.sent.filter((s) => s.includes('clock.ping')).length).toBe(3);
+    expect(sock.status).toBe('open');
+    // Fourth tick: the streak is at the limit — the half-open socket is dropped.
+    timers.runNext();
+    expect(sock.status).toBe('reconnecting');
+    expect(ws.closeCalls).toBe(1);
+    expect(MockWebSocket.instances.length).toBe(1);
+    timers.runNext(); // backoff elapses
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.open();
+    // A slow-but-alive connection answers eventually: every pong resets the
+    // streak, so the watchdog never fires.
+    for (let i = 0; i < 10; i += 1) {
+      timers.runNext();
+      timers.runNext();
+      ws2.message(pongEvt(room, 1000, 2000));
+    }
+    expect(sock.status).toBe('open');
+    expect(MockWebSocket.instances.length).toBe(2);
+  });
+
+  it('a 4403 close is terminal: no reconnect, and the reason is surfaced', () => {
+    const closes: { code: number; reason: string }[] = [];
+    const { timers, sock } = setup({
+      opts: {
+        onTerminalClose: (info) => {
+          closes.push(info);
+        },
+      },
+    });
+    sock.connect(rid('r1'), 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    ws.open();
+    ws.end(4403, 'banned');
+    expect(sock.status).toBe('closed');
+    expect(timers.delays()).toEqual([]);
+    expect(MockWebSocket.instances.length).toBe(1);
+    expect(closes).toEqual([{ code: 4403, reason: 'banned' }]);
+    expect(sock.closeInfo).toEqual({ code: 4403, reason: 'banned' });
+  });
+
+  it('a 4404 close is terminal and falls back to a readable reason', () => {
+    const { timers, sock } = setup();
+    sock.connect(rid('r1'), 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    ws.open();
+    ws.end(4404);
+    expect(sock.status).toBe('closed');
+    expect(timers.delays()).toEqual([]);
+    expect(sock.closeInfo?.code).toBe(4404);
+    expect(sock.closeInfo?.reason).toBe('this room no longer exists');
+  });
+
+  it('a 4401 close retries exactly once (the app rotates the token), then gives up', () => {
+    const closes: { code: number; reason: string }[] = [];
+    const { timers, sock } = setup({
+      opts: {
+        onTerminalClose: (info) => {
+          closes.push(info);
+        },
+      },
+    });
+    sock.connect(rid('r1'), 'tok');
+    const ws1 = MockWebSocket.instances[0]!;
+    ws1.open();
+    ws1.end(4401, 'invalid token');
+    // One retry: the app refreshes its access token on this transition.
+    expect(sock.status).toBe('reconnecting');
+    expect(closes).toEqual([]);
+    timers.runNext();
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.end(4401, 'invalid token');
+    // The fresh credentials were refused too — retrying forever would be a lie.
+    expect(sock.status).toBe('closed');
+    expect(timers.delays()).toEqual([]);
+    expect(closes).toEqual([{ code: 4401, reason: 'invalid token' }]);
+  });
+
+  it('a 4401 budget survives the open-then-rejected cycle the hub actually performs', () => {
+    const closes: { code: number; reason: string }[] = [];
+    const { timers, sock } = setup({
+      opts: {
+        onTerminalClose: (info) => {
+          closes.push(info);
+        },
+      },
+    });
+    sock.connect(rid('r1'), 'tok');
+    // services/api/src/ws/hub.ts finishes the WebSocket handshake and only THEN
+    // authorizes, so a rejected socket OPENS first. Every retry therefore looked
+    // like a brand-new session, refunded the one-shot budget, and looped forever.
+    for (let i = 0; i < 6 && sock.status !== 'closed'; i += 1) {
+      const ws = MockWebSocket.instances[i]!;
+      ws.open();
+      ws.end(4401, 'invalid token');
+      if (sock.status === 'reconnecting') timers.runNext();
+    }
+    expect(sock.status).toBe('closed');
+    // One original attempt plus exactly one retry — not an endless stream.
+    expect(MockWebSocket.instances.length).toBe(2);
+    expect(timers.delays()).toEqual([]);
+    expect(closes).toEqual([{ code: 4401, reason: 'invalid token' }]);
+  });
+
+  it('a socket that carried real traffic gets a fresh 4401 budget', () => {
+    const { timers, sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws1 = MockWebSocket.instances[0]!;
+    ws1.open();
+    ws1.end(4401, 'invalid token'); // spends the budget
+    timers.runNext();
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.open();
+    // This session is genuine: the server talked to it. A later 4401 (the
+    // session was revoked mid-call) is a NEW situation and buys its own retry.
+    ws2.message(typingEvt(room, 1));
+    ws2.end(4401, 'session revoked');
+    expect(sock.status).toBe('reconnecting');
+    expect(sock.closeInfo).toBeNull();
+  });
+
+  it('an ordinary transport close still reconnects', () => {
+    const { sock } = setup();
+    sock.connect(rid('r1'), 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    ws.open();
+    ws.end(1006);
+    expect(sock.status).toBe('reconnecting');
+    expect(sock.closeInfo).toBeNull();
+  });
+
+  it('close({ preserveQueue: true }) keeps unsent envelopes across a token rotation', () => {
+    const { sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws1 = MockWebSocket.instances[0]!;
+    ws1.open();
+    ws1.end(); // dropped: the app is now reconnecting
+    // The user types a message while the socket is down.
+    sock.send('chat.typing', { typing: true });
+    // The app rotates the access token: bounce the socket, keep the envelope.
+    sock.close({ preserveQueue: true });
+    sock.connect(room, 'tok2');
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.open();
+    expect(ws2.sent.length).toBe(1);
+    const sent = JSON.parse(ws2.sent[0]!) as { type: string };
+    expect(sent.type).toBe('chat.typing');
+  });
+
+  it('a plain close() still drops queued envelopes', () => {
+    const { sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    sock.send('chat.typing', { typing: true });
+    sock.close();
+    sock.connect(room, 'tok');
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.open();
+    expect(ws2.sent).toEqual([]);
   });
 
   it('exhausted replay retries surface onGapLoss, then flush leniently', async () => {

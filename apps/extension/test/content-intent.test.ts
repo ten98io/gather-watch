@@ -188,8 +188,25 @@ function userSeek(toMs: number): void {
   fireNow('seeked', element);
 }
 
+/** What a real player does when the media runs out, in Chrome's own order:
+ *  the element pauses itself, and only then says it ended. */
+function playbackReachesEnd(): void {
+  player.positionMs = 5_400_000;
+  player.paused = true;
+  player.ended = true;
+  fireNow('pause', element);
+  fireNow('ended', element);
+}
+
 const intents = (): Array<Record<string, unknown>> =>
   sent.filter((m) => m['kind'] === 'userIntent');
+
+const ends = (): Array<Record<string, unknown>> =>
+  sent.filter((m) => m['kind'] === 'mediaEnded');
+
+/** The end of ONE source is reported once, and that latch outlives a test the
+ *  same way it outlives a track — so each test starts on a source of its own. */
+let sourceCount = 0;
 
 beforeAll(async () => {
   vi.useFakeTimers();
@@ -207,6 +224,8 @@ beforeEach(() => {
   player.paused = false;
   player.ended = false;
   element.isConnected = true;
+  sourceCount += 1;
+  element.currentSrc = `https://cdn.example.com/feature-${String(sourceCount)}.m3u8`;
   deliver({ kind: 'frameRole', role: 'driver' });
   // Being driven is the licence to speak; an idle decision touches nothing.
   deliver(driveMessage(600_000, block({ reason: 'idle' })));
@@ -245,6 +264,61 @@ describe("the user's hand on the site's player", () => {
     player.positionMs = 5_400_000;
     userPause();
     expect(intents()).toEqual([]);
+  });
+});
+
+/* ─── the end of the media: a fact about the item, never a user's pause ─── */
+
+describe('arrival at the end of the media', () => {
+  it('reports the end on its own, with the duration the room needs', () => {
+    playbackReachesEnd();
+    expect(ends()).toEqual([
+      { kind: 'mediaEnded', positionMs: 5_400_000, durationMs: 5_400_000 },
+    ]);
+  });
+
+  it('still does not report that same end as the user pausing', () => {
+    playbackReachesEnd();
+    expect(intents()).toEqual([]);
+  });
+
+  it('reports one end however many times the site fires it', () => {
+    playbackReachesEnd();
+    fireNow('ended', element);
+    fireNow('ended', element);
+    expect(ends()).toHaveLength(1);
+  });
+
+  it('says nothing for an end on an element this frame is not driving', () => {
+    fireNow('ended', adElement);
+    expect(ends()).toEqual([]);
+  });
+
+  it('says nothing for an element that left the document', () => {
+    element.isConnected = false;
+    playbackReachesEnd();
+    expect(ends()).toEqual([]);
+  });
+
+  /** The stale end an SPA produces: the event lands after the site loaded the
+   *  next item into the SAME element, which is back at the start. */
+  it('says nothing when the element no longer claims to have ended', () => {
+    player.positionMs = 0;
+    player.ended = false;
+    fireNow('ended', element);
+    expect(ends()).toEqual([]);
+  });
+
+  it('says nothing while not driven', () => {
+    deliver({ kind: 'driveOff' });
+    playbackReachesEnd();
+    expect(ends()).toEqual([]);
+  });
+
+  it('says nothing from a frame the election demoted', () => {
+    deliver({ kind: 'frameRole', role: 'idle' });
+    playbackReachesEnd();
+    expect(ends()).toEqual([]);
   });
 });
 

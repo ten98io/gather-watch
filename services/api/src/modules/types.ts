@@ -1,5 +1,5 @@
 /**
- * Module plug-in seam. FROZEN — module workers (rooms/chat/sync/media/billing…)
+ * Module plug-in seam. FROZEN — module workers (rooms/chat/sync/rtc/admin…)
  * build against these types and register through src/modules/index.ts with a
  * single additive line; nothing else in the skeleton may be touched.
  */

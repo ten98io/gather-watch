@@ -28,15 +28,17 @@
   --focus-ring:     oklch(0.72 0.2 295);
 
   /* ink on a filled control — absolute, chosen per fill, never per theme */
-  --ink-black:       oklch(0 0 0);
-  --ink-white:       oklch(1 0 0);
-  --ink-on-aurora-1: var(--ink-black);
-  --ink-on-aurora-2: var(--ink-black);
-  --ink-on-aurora-3: var(--ink-black);
-  --ink-on-accent:   var(--ink-black);
-  --ink-on-success:  var(--ink-black);
-  --ink-on-danger:   var(--ink-black);
-  --ink-on-warn:     var(--ink-black);
+  --ink-black:              oklch(0 0 0);
+  --ink-white:              oklch(1 0 0);
+  --ink-on-aurora-1:        var(--ink-black);
+  --ink-on-aurora-2:        var(--ink-black);
+  --ink-on-aurora-3:        var(--ink-black);
+  --ink-on-accent:          var(--ink-black);
+  --ink-on-success:         var(--ink-black);
+  --ink-on-danger:          var(--ink-black);
+  --ink-on-warn:            var(--ink-black);
+  /* a label crossing all three aurora stops takes one ink */
+  --ink-on-aurora-gradient: var(--ink-black);
 }
 
 :root[data-theme='light'] {
@@ -54,8 +56,8 @@
   --text-mid:       oklch(0.42 0.02 285);
   /* measured floor: 0.55 fell to 3.83:1 on --surface-3; 0.50 holds >=4.72:1 across the ladder */
   --text-low:       oklch(0.5 0.02 285);
-  --aurora-1:       oklch(0.55 0.2 295);  /* electric violet */
-  --aurora-2:       oklch(0.58 0.22 340);  /* fuchsia */
+  --aurora-1:       oklch(0.59 0.19 295);  /* electric violet */
+  --aurora-2:       oklch(0.6 0.21 340);  /* fuchsia */
   --aurora-3:       oklch(0.7 0.14 75);  /* solar amber */
   /* listen rooms rebind this to the artwork colour at runtime */
   --accent:         var(--aurora-1);
@@ -67,13 +69,92 @@
   --focus-ring:     oklch(0.58 0.18 295);
 
   /* ink on a filled control — absolute, chosen per fill, never per theme */
-  --ink-black:       oklch(0 0 0);
-  --ink-white:       oklch(1 0 0);
-  --ink-on-aurora-1: var(--ink-white);
-  --ink-on-aurora-2: var(--ink-white);
-  --ink-on-aurora-3: var(--ink-black);
-  --ink-on-accent:   var(--ink-white);
-  --ink-on-success:  var(--ink-black);
-  --ink-on-danger:   var(--ink-white);
-  --ink-on-warn:     var(--ink-black);
+  --ink-black:              oklch(0 0 0);
+  --ink-white:              oklch(1 0 0);
+  --ink-on-aurora-1:        var(--ink-black);
+  --ink-on-aurora-2:        var(--ink-black);
+  --ink-on-aurora-3:        var(--ink-black);
+  --ink-on-accent:          var(--ink-black);
+  --ink-on-success:         var(--ink-black);
+  --ink-on-danger:          var(--ink-white);
+  --ink-on-warn:            var(--ink-black);
+  /* a label crossing all three aurora stops takes one ink */
+  --ink-on-aurora-gradient: var(--ink-black);
+}
+
+:root {
+  --space-xs:              4px;
+  --space-sm:              8px;
+  --space-md:              12px;
+  --space-lg:              16px;
+  --space-xl:              24px;
+  --space-xxl:             32px;
+  --space-xxxl:            48px;
+  --radius-sm:             6px;
+  --radius-control:        8px;
+  --radius-card:           10px;
+  --radius-panel:          14px;
+  --radius-pill:           999px;
+  --layout-edge:           3px;
+  --layout-tap:            44px;
+  --layout-row:            56px;
+  --layout-rail:           380px;
+  --layout-tabBar:         48px;
+  --text-display-size:     32px;
+  --text-display-line:     40px;
+  --text-display-weight:   600;
+  --text-display-tracking: -0.02em;
+  --text-title-size:       20px;
+  --text-title-line:       28px;
+  --text-title-weight:     600;
+  --text-title-tracking:   -0.01em;
+  --text-body-size:        15px;
+  --text-body-line:        22px;
+  --text-body-weight:      400;
+  --text-body-tracking:    0;
+  --text-label-size:       13px;
+  --text-label-line:       18px;
+  --text-label-weight:     500;
+  --text-label-tracking:   0;
+  --text-caption-size:     11px;
+  --text-caption-line:     14px;
+  --text-caption-weight:   500;
+  --text-caption-tracking: 0.06em;
+  --text-hero-size:        28px;
+  --text-hero-line:        1.05;
+  --text-hero-weight:      700;
+  --text-hero-tracking:    -0.02em;
+  --elevation-e1:          0 1px 2px -1px color-mix(in oklch, var(--ink-black) 16%, transparent), 0 2px 6px -2px color-mix(in oklch, var(--ink-black) 10%, transparent);
+  --elevation-e2:          0 4px 10px -4px color-mix(in oklch, var(--ink-black) 20%, transparent), 0 12px 24px -10px color-mix(in oklch, var(--ink-black) 12%, transparent);
+  --elevation-e3:          0 8px 20px -8px color-mix(in oklch, var(--ink-black) 24%, transparent), 0 28px 56px -20px color-mix(in oklch, var(--ink-black) 16%, transparent);
+  --dur-micro:             220ms;
+  --dur-panel:             300ms;
+  --dur-max:               400ms;
+  --dur-reduced:           150ms;
+  --ease-spring:           cubic-bezier(0.34, 1.3, 0.64, 1);
+  --font-display:          'Space Grotesk', system-ui, sans-serif;
+  --font-sans:             Inter, system-ui, sans-serif;
+  --font-mono:             'JetBrains Mono', ui-monospace, monospace;
+}
+
+:root {
+  /* Desktop density. The coarse-pointer block below is the touch answer. */
+  --control-h-sm:   28px;
+  --control-px-sm:  10px;
+  --control-gap-sm: 6px;
+  --control-h-md:   32px;
+  --control-px-md:  12px;
+  --control-gap-md: 8px;
+  --control-h-lg:   40px;
+  --control-px-lg:  20px;
+  --control-gap-lg: 8px;
+}
+
+@media (pointer: coarse) {
+  /* A finger, not a mouse: every control goes back to a 44px target. */
+  :root {
+    --control-h-sm: 44px;
+    --control-h-md: 44px;
+    --control-h-lg: 48px;
+  }
 }

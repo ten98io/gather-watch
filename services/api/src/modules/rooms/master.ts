@@ -8,9 +8,17 @@
  * match stays exact). The client names the epoch its claim is based on; the
  * SERVER increments — a lost CAS or a mismatched epoch means the claim was
  * stale and is rejected with CONFLICT.
+ *
+ * NOT the live seat: the sync module registered `sync.claimMaster` first (see
+ * ./ws.ts). This stays as the reference CAS, and it carries the SAME
+ * authorization as the live one — the master seat is never a way around
+ * `playbackControl` — so swapping the ws seat over here cannot reopen the
+ * bypass by accident.
  */
 import type { RoomId, UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
+import { memberDocId } from '../../adapters/ports';
+import { policyAllows } from '../sync/policy';
 import type { Deps } from '../types';
 
 /** Claim playback-master for the room at the caller-known epoch. */
@@ -23,6 +31,13 @@ export async function claimMaster(
   const room = await deps.store.rooms.findById(roomId);
   if (room === null) {
     throw new AppError('NOT_FOUND', 'room not found');
+  }
+  const member = await deps.store.members.findById(memberDocId(roomId, userId));
+  if (member === null || member.banned) {
+    throw new AppError('FORBIDDEN', 'not a member');
+  }
+  if (!policyAllows(room.policies.playbackControl, member.role)) {
+    throw new AppError('ROOM_POLICY', 'playback control not allowed');
   }
   const stored = room.master;
   const storedEpoch = stored?.epoch ?? 0;

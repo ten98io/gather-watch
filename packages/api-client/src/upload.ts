@@ -97,7 +97,14 @@ export class ChunkedUploader {
       });
     });
     const inner = this.run(source, state);
-    // In-flight work settling after an abort must not surface as unhandled.
+    // This swallow loses NOTHING: it is a second subscriber on `inner`, not a
+    // replacement for one. `inner` is also raced below, and when it settles
+    // first that race is what the caller awaits — so a genuine upload failure
+    // still rejects `upload()`. This handler only covers the other branch,
+    // where abort() won the race and `inner` rejects later with no one left
+    // listening; without it that becomes an unhandled rejection (a hard crash
+    // under Node's default), and the error it carries is by then redundant —
+    // the caller was already told the upload was aborted.
     inner.catch(() => {});
     return Promise.race([inner, abortSignal]).finally(() => {
       this.active = null;

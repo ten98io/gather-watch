@@ -13,6 +13,10 @@
  * controller decides when to adopt a stable lag instead of fighting it, decays
  * that lag slowly back toward zero while playback is calm, and hard-caps its
  * magnitude. See docs/EXTENSION_FIRST.md Part 1.
+ *
+ * Both modes are bounded above by the item's own length when the caller passes
+ * `durationMs` (see {@link DriftDecideOptions}): a projection past the end is
+ * not a viewer who fell behind, and correcting toward it restarts the player.
  */
 
 /** The correction the player should apply at the current instant. */
@@ -66,6 +70,26 @@ export interface ElasticDriftOptions extends DriftOptions {
   voiceReleaseMs?: number;
   /** Suppress the hard-seek escape while voice tightening is in effect. Default true. */
   voiceSuppressSeek?: boolean;
+  /**
+   * The magnitude at which voice tightening STOPS suppressing the hard seek.
+   * Default 30000. Pass Infinity for absolute suppression.
+   *
+   * Suppression exists to protect a live reaction, and a seek is the one
+   * correction guaranteed to wreck one. But it was suppressing at every
+   * magnitude, so a viewer who fell minutes behind — a long stall, a laptop
+   * lid, a slow reconnect — was never rescued for as long as anybody in the
+   * room held a mic open, and rate alone cannot rescue them: closing 5 minutes
+   * at the watch band's ±3% takes over two hours of playback, at the listen
+   * band's ±1% over eight.
+   *
+   * 30 s is twice {@link ElasticDriftOptions.anchorMaxMs} — the largest lag the
+   * elastic design will ever deliberately hold, and therefore the room's own
+   * statement of how far apart two people can be and still be watching the same
+   * thing. At twice that there is no shared moment left for a seek to spoil, so
+   * the seek stops being the rude correction and becomes the only one that can
+   * put the viewer back in the conversation.
+   */
+  voiceSeekCeilingMs?: number;
   /** Largest inter-call gap counted as elapsed playback time (tab-sleep guard). Default 2000. */
   maxStepMs?: number;
 }
@@ -75,6 +99,18 @@ export interface DriftDecideOptions extends ElasticDriftOptions {
   /** Timestamp of this sample on a monotonic client clock. Defaults to the
    *  controller's clock source. Drives anchor decay and the voice ramp. */
   nowMs?: number;
+  /**
+   * Length of the playing item, when the player knows it. THE CONTROLLER'S
+   * TERMINAL STATE: the room's projected position keeps climbing after the
+   * source runs out, so an unbounded expectation reads as "this viewer is
+   * minutes behind" forever and prescribes a seek past the end once per tick —
+   * and seeking a finished player is what starts it again. Clamping the
+   * expectation here gives an item an end.
+   *
+   * Omit it, pass 0 (every adapter's "not known yet"), or pass Infinity (a
+   * live stream) and nothing is clamped.
+   */
+  durationMs?: number;
 }
 
 /** Constructor options: elastic tunables plus an injectable clock. */
@@ -115,6 +151,7 @@ interface ResolvedDriftOptions {
   voiceAttackMs: number;
   voiceReleaseMs: number;
   voiceSuppressSeek: boolean;
+  voiceSeekCeilingMs: number;
   maxStepMs: number;
 }
 
@@ -136,6 +173,7 @@ const DEFAULTS: ResolvedDriftOptions = {
   voiceAttackMs: 2000,
   voiceReleaseMs: 8000,
   voiceSuppressSeek: true,
+  voiceSeekCeilingMs: 30000,
   maxStepMs: 2000,
 };
 
@@ -220,6 +258,7 @@ function resolve(base: ResolvedDriftOptions, opts?: ElasticDriftOptions): Resolv
     voiceAttackMs: opts.voiceAttackMs ?? base.voiceAttackMs,
     voiceReleaseMs: opts.voiceReleaseMs ?? base.voiceReleaseMs,
     voiceSuppressSeek: opts.voiceSuppressSeek ?? base.voiceSuppressSeek,
+    voiceSeekCeilingMs: opts.voiceSeekCeilingMs ?? base.voiceSeekCeilingMs,
     maxStepMs: opts.maxStepMs ?? base.maxStepMs,
   };
 }
@@ -287,7 +326,16 @@ export class DriftController {
       this.anchor = Math.sign(this.anchor) * ceiling;
     }
 
-    const rawDrift = expectedMs - actualMs;
+    // No item plays past its own end, so no expectation may name a position
+    // past it either — see `durationMs`. Everything downstream (the drift, the
+    // seek target) reads the clamped expectation, never the raw projection.
+    const duration = opts?.durationMs;
+    const expected =
+      duration !== undefined && Number.isFinite(duration) && duration > 0
+        ? Math.min(expectedMs, duration)
+        : expectedMs;
+
+    const rawDrift = expected - actualMs;
     const deadband = lerp(o.deadbandMs, Math.min(o.deadbandMs, o.voiceTargetMs), this.blend);
     const release = Math.min(o.releaseMs, deadband);
 
@@ -300,16 +348,19 @@ export class DriftController {
     const drift = rawDrift - anchorInUse;
     const abs = Math.abs(drift);
 
-    // Consequence B: while people are actually talking we converge with rate only.
-    // A seek is the one correction guaranteed to wreck a live reaction.
-    const seekAllowed = !(tightening && o.voiceSuppressSeek);
+    // Consequence B: while people are actually talking we converge with rate
+    // only. A seek is the one correction guaranteed to wreck a live reaction —
+    // up to the point where there is no longer a live reaction to wreck. Past
+    // `voiceSeekCeilingMs` this viewer is not watching the same moment as the
+    // people on mic, and the rescue outranks the manners (see the option).
+    const seekAllowed = !(tightening && o.voiceSuppressSeek) || abs > o.voiceSeekCeilingMs;
 
     if (abs > o.seekThresholdMs && seekAllowed) {
       this.stopNudging();
       // The position is about to jump: every lag sample in the window is stale.
       this.resetWindow();
       this.arm('disturbance');
-      return { action: 'seek', toMs: Math.max(0, expectedMs - anchorInUse), rate: 1 };
+      return { action: 'seek', toMs: Math.max(0, expected - anchorInUse), rate: 1 };
     }
 
     if (this.nudging) {

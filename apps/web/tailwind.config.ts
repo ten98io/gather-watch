@@ -2,6 +2,8 @@ import type { Config } from 'tailwindcss';
 import type { ColorTokenName, TypeStep } from '@gather/design';
 import {
   COLOR_TOKEN_NAMES,
+  CONTROL_SIZE_NAMES,
+  ELEVATION_NAMES,
   cssVarName,
   fontFamily,
   layout,
@@ -122,6 +124,24 @@ const fontSize: Record<string, FontSizeValue> = Object.fromEntries(
 );
 
 /**
+ * Control geometry, as spacing entries pointing at the custom properties the
+ * package emits. Feeds `h-`, `w-`, `px-` and `gap-` at once, which is why
+ * height and padding get different prefixes: `h-ctl-md`, `px-ctl-x-md`,
+ * `gap-ctl-g-md`.
+ */
+const controlSpacing: Record<string, string> = Object.fromEntries(
+  CONTROL_SIZE_NAMES.flatMap((name) => [
+    [`ctl-${name}`, `var(--control-h-${name})`],
+    [`ctl-x-${name}`, `var(--control-px-${name})`],
+    [`ctl-g-${name}`, `var(--control-gap-${name})`],
+  ]),
+);
+
+const elevationShadows: Record<string, string> = Object.fromEntries(
+  ELEVATION_NAMES.map((name) => [name, `var(--elevation-${name})`]),
+);
+
+/**
  * next/font loads the bundled face in app/layout.tsx and exposes it as
  * `--font-<family>`; the package's stack supplies the fallbacks behind it.
  */
@@ -157,14 +177,33 @@ const config: Config = {
       },
       // Layout constants that were previously arbitrary values. `tabBar` is in
       // the package too but is mobile's bottom sheet; web has no use for it.
+      //
+      // The `ctl-*` entries are deliberately `var()` and NOT a number: a
+      // control's height is 32px where there is a mouse and 44px where there is
+      // a finger, and @gather/design emits that pair behind a
+      // `@media (pointer: coarse)` block. Inline the number here and desktop
+      // density gets bought with the touch target, which is not a trade this
+      // system makes. `h-ctl-md` / `px-ctl-x-md` are the only correct way to
+      // size a control.
       spacing: {
         edge: px(layout.edge), // active-row accent edge
         tap: px(layout.tap), // minimum touch target
         row: px(layout.row), // media row height
         rail: px(layout.rail), // right rail width
+        ...controlSpacing,
       },
-      // Elevation is glow, not shadow (DESIGN.md §4).
+      // Two elevation vocabularies, and they are not interchangeable:
+      //
+      //  · `shadow-e1/e2/e3` — neutral, directional depth for chrome that
+      //    floats (menus, tooltips, toasts, dialogs, sheets). Emitted by
+      //    @gather/design as a wash of the ABSOLUTE ink, so it does not invert
+      //    with the theme.
+      //  · `shadow-glow` / `shadow-glow-lg` — the aurora underglow, RESERVED
+      //    for signature moments (DESIGN.md §5): the listen-room hero artwork,
+      //    the playing indicator. It used to sit under every dropdown and under
+      //    secondary buttons on hover, which is what made ordinary chrome shout.
       boxShadow: {
+        ...elevationShadows,
         glow: `0 0 40px -12px ${wash('aurora1', 22)}`,
         'glow-lg': `0 0 80px -20px ${wash('aurora2', 30)}`,
       },

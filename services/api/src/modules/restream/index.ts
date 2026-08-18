@@ -9,11 +9,14 @@
  * error reply rather than a silent success — honest until it is built.
  */
 import type { Deps, ModulePlugin } from '../types';
-import { RestreamService } from './service';
+import { RestreamService, ensureShareLiveness } from './service';
 
 const services = new WeakMap<Deps, RestreamService>();
 
 function serviceFor(deps: Deps): RestreamService {
+  // Wiring the reaper here covers the instance that handled the start; the
+  // rooms presence handler covers every other instance (see ensureShareLiveness).
+  ensureShareLiveness(deps);
   let service = services.get(deps);
   if (service === undefined) {
     service = new RestreamService(deps);

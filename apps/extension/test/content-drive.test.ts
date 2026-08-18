@@ -75,6 +75,8 @@ type MessageListener = (
 ) => boolean | undefined;
 
 const listeners: MessageListener[] = [];
+/** Everything the content script told the worker, in order. */
+const toWorker: Array<Record<string, unknown>> = [];
 
 function installBrowserFake(): void {
   const noop = (): void => undefined;
@@ -113,7 +115,10 @@ function installBrowserFake(): void {
         },
         removeListener: noop,
       },
-      sendMessage: async (): Promise<undefined> => undefined,
+      sendMessage: async (msg: Record<string, unknown>): Promise<undefined> => {
+        toWorker.push(msg);
+        return undefined;
+      },
     },
   };
 }
@@ -185,6 +190,47 @@ beforeEach(() => {
   player.rate = 1;
   player.paused = false;
   deliver({ kind: 'frameRole', role: 'driver' });
+});
+
+/* ────────────── the generic finder, on a site nobody registered ─────── */
+
+/**
+ * E19's other half, and the reason every test below it is meaningful: this
+ * whole file runs on `https://example.com/watch?v=1` — a site in no registry,
+ * with one plain <video> and nothing else. The finder is a scan for
+ * `video, audio` with no provider gate anywhere in front of it, so an
+ * arbitrary page is driven exactly like a recognised one. That is stated here
+ * rather than left implied, because it is the promise a queued page makes.
+ */
+describe('an unregistered site is found and driven like any other', () => {
+  it('reports itself as the generic provider, named by its host', () => {
+    const reported = toWorker.filter((m) => m['kind'] === 'provider');
+    expect(reported).not.toHaveLength(0);
+    const provider = reported[0]?.['provider'] as Record<string, unknown>;
+    expect(provider['id']).toBe('generic');
+    expect(provider['name']).toBe('example.com');
+    // Not protected: nothing about an unknown page refuses to be driven.
+    expect(provider['drm']).toBe(false);
+  });
+
+  /** The scan runs at startup and its result is claimed once — a claim is
+   *  re-sent only when it CHANGES, so this is the one the worker elects on. */
+  it('claims the page’s plain <video> so the worker has a frame to elect', () => {
+    const claim = toWorker.find((m) => m['kind'] === 'frameClaim');
+    expect(claim).toBeDefined();
+    const metrics = claim?.['metrics'] as Record<string, unknown> | null;
+    // Not null: null is "this frame has no player", and would make the page
+    // ineligible for election however good its <video> was.
+    expect(metrics).not.toBeNull();
+    expect(metrics?.['tag']).toBe('video');
+    expect(claim?.['url']).toBe('https://example.com/watch?v=1');
+  });
+
+  it('applies a room correction to it, which is the whole point', () => {
+    deliver(driveMessage(612_000, block({ seekToMs: 612_000, reason: 'seek' })));
+
+    expect(player.touched).toContain('seek:612000');
+  });
 });
 
 /* ─────────────────────── the elastic decision wins ──────────────────── */

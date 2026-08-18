@@ -33,6 +33,8 @@
  *   → { kind: 'telemetry', positionMs, durationMs, playing, rate }
  *   → { kind: 'userIntent', intent, positionMs }      the user's own hand on
  *                                 the SITE's player (driver frame, driven only)
+ *   → { kind: 'mediaEnded', positionMs, durationMs }  the item ran out — a
+ *                                 fact, never an intent (driver frame, driven)
  *   → { kind: 'provider', provider }                  (top frame, on route)
  *   → { kind: 'overlay:state' } → the room for THIS tab, or null when it is
  *                                 not the tab in the room
@@ -43,6 +45,7 @@ import { performNativeCast } from './cast';
 import type { CastResult, CastTarget } from './cast';
 import { WEB_ORIGINS } from './config';
 import {
+  MediaEndDetector,
   UserIntentDetector,
   appliesVerbatim,
   elasticDecision,
@@ -116,6 +119,16 @@ let lastClaimAt = 0;
 /** Turns transport events on the driven element into user intent — and
  *  swallows the ones our own applied commands cause. Pure; lives in driver.ts. */
 const userIntent = new UserIntentDetector();
+/** The other half of that judgement: the end of the media, which the intent
+ *  detector deliberately refuses to call a pause. Pure; lives in driver.ts. */
+const mediaEnd = new MediaEndDetector();
+/**
+ * Bumped every time the element this frame drives is REPLACED. It is half of
+ * the key an end is reported once per (the element's own `currentSrc` is the
+ * other half), because two different players can be at the same source and one
+ * player can be handed two sources.
+ */
+let mediaEpoch = 0;
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -162,7 +175,12 @@ function rescan(now: number): HTMLMediaElement | null {
   const next = pickBestMedia(candidates)?.el ?? null;
   // A swapped element (ad roll, SPA route) starts a fresh intent history: the
   // old element's expectations and baseline describe a player that is gone.
-  if (next !== cachedMedia) userIntent.reset();
+  // The end latch is the same story, and its key moves with the epoch.
+  if (next !== cachedMedia) {
+    userIntent.reset();
+    mediaEnd.reset();
+    mediaEpoch += 1;
+  }
   cachedMedia = next;
   return cachedMedia;
 }
@@ -279,8 +297,10 @@ function sendTelemetry(): void {
   const el = currentMedia();
   if (el === null) return;
   const t = readTelemetry(el as MediaElementLike);
-  // The same reading is the intent detector's baseline for "material seek".
+  // The same reading is the intent detector's baseline for "material seek",
+  // and the end detector's proof that a player it saw end is playing again.
   userIntent.notePosition(t.positionMs);
+  mediaEnd.notePosition(t.positionMs, t.durationMs);
   void chrome.runtime.sendMessage({ kind: 'telemetry', ...t }).catch(() => undefined);
 }
 
@@ -531,6 +551,9 @@ const nav = watchNavigation(
     // revoke, so the election is left to say whether this frame still wins.
     driven = false;
     lastCommand = null;
+    // Whatever ended on the old route ended there. The listener survives the
+    // route (one document, one registration) — the judgement does not.
+    mediaEnd.reset();
     reportProvider();
     reportClaim(true);
     // A route change can mean the tab left the room's content, or that the
@@ -552,7 +575,14 @@ observer.observe(document.documentElement, { childList: true, subtree: true });
 
 // Media events do not bubble, but capture-phase listeners on the document see
 // them (including from open shadow roots) — the fastest re-claim signal.
-for (const type of ['loadedmetadata', 'durationchange', 'emptied', 'play', 'pause'] as const) {
+for (const type of [
+  'loadedmetadata',
+  'durationchange',
+  'emptied',
+  'play',
+  'pause',
+  'ended',
+] as const) {
   document.addEventListener(
     type,
     () => {
@@ -594,6 +624,52 @@ function onTransportEvent(type: 'play' | 'pause' | 'seeked', ev: Event): void {
 for (const type of ['play', 'pause', 'seeked'] as const) {
   document.addEventListener(type, (ev) => onTransportEvent(type, ev), true);
 }
+
+/**
+ * The media ran out. That is a fact about the item, not a gesture, so it never
+ * touches the intent detector — which drops the pause the end causes, on
+ * purpose (driver.ts, "arrival, not intent"). The two paths meet nowhere: this
+ * one cannot emit a `userIntent`, and the intent path cannot emit an end.
+ *
+ * It carries the duration with it, because the room needs both — the end to
+ * advance on, and the duration to clamp its projection of an item that has no
+ * more frames to play.
+ *
+ * The same gates as intent, for the same reasons: only the elected, driven
+ * frame speaks, and only about the element it is driving. The listener itself
+ * is registered once on the document, in capture phase, so it sees ends from
+ * open shadow roots, is not duplicated by an SPA route change (the document
+ * outlives the route), and cannot go stale — what a route change invalidates
+ * is the STATE, and that is reset with the rest of it.
+ */
+function onMediaEnded(ev: Event): void {
+  if (role !== 'driver' || !driven) return;
+  const el = cachedMedia;
+  if (el === null || !el.isConnected) return;
+  const path = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+  if ((path[0] ?? ev.target) !== el) return;
+  const t = readTelemetry(el as MediaElementLike);
+  const src = el.currentSrc.length > 0 ? el.currentSrc : el.src;
+  const found = mediaEnd.observe({
+    // Element identity AND source: a player handed the next track reports that
+    // track's end too, while the same track's second 'ended' is swallowed.
+    sourceKey: `${String(mediaEpoch)}:${src}`,
+    positionMs: t.positionMs,
+    durationMs: t.durationMs,
+    // The element's own word, read now rather than when the event was queued.
+    ended: el.ended,
+  });
+  if (found === null) return;
+  void chrome.runtime
+    .sendMessage({
+      kind: 'mediaEnded',
+      positionMs: found.positionMs,
+      durationMs: found.durationMs,
+    })
+    .catch(() => undefined);
+}
+
+document.addEventListener('ended', (ev) => onMediaEnded(ev), true);
 
 window.addEventListener('pagehide', () => {
   nav.dispose();

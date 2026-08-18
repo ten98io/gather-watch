@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsup && node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('dist',{recursive:true});for(const f of fs.readdirSync('public'))if(!f.startsWith('.'))fs.copyFileSync(p.join('public',f),p.join('dist',f));\"",
+    "build": "tsup",
+    "build:prod": "GATHER_BUILD=prod tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint src test",

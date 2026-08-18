@@ -9,7 +9,9 @@
  *
  * Either way: sync.state → expected position (clock math via the socket's
  * ClockEstimator) → `drive` messages to the driven tab's content script, and
- * telemetry flows back out to the web app over its event port.
+ * telemetry flows back out to the web app over its event port — as does the
+ * end of the driven item, on its own `ended` event, because the item running
+ * out is a fact about the media and never a person pausing it.
  *
  * Mode B requests — this tab, a window, or a whole screen — are resolved to a
  * stream id here and forwarded to the offscreen document, which owns the only
@@ -59,6 +61,7 @@ import {
 } from './protocol';
 import type {
   CapabilityResult,
+  EndedPayload,
   HelloResult,
   MediaIntent,
   ProviderSummary,
@@ -723,12 +726,56 @@ async function loadRoomAccess(): Promise<void> {
   if (res === null || !res.ok) return;
   const body = (await res.json().catch(() => null)) as {
     room?: { policies?: { playbackControl?: unknown } };
-    member?: { role?: unknown };
+    member?: { role?: unknown; userId?: unknown };
   } | null;
   // The user may have left, or moved rooms, while this was in flight.
   if (session === null || session.roomId !== roomId) return;
   session.playbackPolicy = parsePolicyLevel(body?.room?.policies?.playbackControl);
   session.role = parseMemberRole(body?.member?.role);
+  // WHO WE ARE, from the same record and for the same reason: the token names
+  // us. It is the only source on the handoff path — the web app deliberately
+  // sends no user id, because a page may not tell this worker who it is
+  // talking to — and a share signed with any other name reaches nobody (D2).
+  const memberId = body?.member?.userId;
+  if (typeof memberId === 'string' && memberId.length > 0 && session.userId !== memberId) {
+    session.userId = memberId;
+    // A revived worker must not have to fetch this again.
+    await persistSession();
+  }
+}
+
+/**
+ * How long a caller waits for the room to say who we are before giving up.
+ * Comfortably longer than a round trip, short enough that an unanswered
+ * request costs a sentence rather than a control that never comes back.
+ */
+const IDENTITY_WAIT_MS = 4000;
+
+/**
+ * Our own user id, fetched if this session does not know it yet.
+ *
+ * The popup path learns it at guest join and the handoff path learns it from
+ * {@link loadRoomAccess}, which openSession starts without waiting — so the
+ * only caller that has to force the issue is one that cannot proceed without
+ * it. Returns null when the room genuinely cannot place us, which is a
+ * refusal, never a guess.
+ */
+async function ensureUserId(): Promise<string | null> {
+  if (session === null) return null;
+  if (session.userId !== null) return session.userId;
+  // Bounded, because `loadRoomAccess` has no timeout of its own and this sits
+  // in front of a button somebody just pressed. Losing the race is not an
+  // error: the fetch may still land and fill the session in, and the caller's
+  // own refusal already tells the person to try again in a moment.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    loadRoomAccess(),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, IDENTITY_WAIT_MS);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  return session?.userId ?? null;
 }
 
 /** Longest body the room accepts (contracts: ClientChatSend). */
@@ -868,6 +915,15 @@ async function openSession(input: OpenSessionInput): Promise<void> {
   });
   socket.connect(input.roomId as never, input.accessToken);
 
+  // Beat presence, like every other client. The server's 45s presence TTL is
+  // what decides a member has gone, and a DEPARTURE is what releases an active
+  // screen share — so a socket that reads presence without ever writing it got
+  // its own share declared over about forty-five seconds after it started.
+  // The web beats at 15s (apps/web/lib/room-connection.ts); match it, and send
+  // the CURRENT state rather than an empty payload, which the server treats as
+  // a roster-snapshot request.
+  startPresenceBeat();
+
   // Follow-drift passes between state mutations. One timer, ever.
   startDriveTimer();
   await startKeepalive();
@@ -902,6 +958,35 @@ const DRIVE_TICK_MS = 1000;
 /** 30s is MV3's floor; anything smaller is silently clamped by Chrome. */
 const KEEPALIVE_ALARM = 'gather.keepalive';
 const KEEPALIVE_PERIOD_MINUTES = 0.5;
+
+/** Presence heartbeat cadence. Two missed beats still sit inside the server's
+ *  45s TTL, the same margin the web client uses. */
+const PRESENCE_BEAT_MS = 15_000;
+
+let presenceBeatTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Keep this member's presence entry alive for as long as the room socket is.
+ *  Idempotent: a second call replaces the timer rather than adding one. */
+function startPresenceBeat(): void {
+  stopPresenceBeat();
+  presenceBeatTimer = setInterval(() => {
+    const live = session;
+    if (live === null) return;
+    // Re-assert what we already are. An empty payload would be read by the
+    // server as a snapshot request and cost a full roster reply every beat.
+    live.socket.send('presence.update', {
+      state: 'watching',
+      sharing: live.restream?.active === true && live.restream.hostUserId === live.userId,
+    });
+  }, PRESENCE_BEAT_MS);
+}
+
+function stopPresenceBeat(): void {
+  if (presenceBeatTimer !== null) {
+    clearInterval(presenceBeatTimer);
+    presenceBeatTimer = null;
+  }
+}
 
 /**
  * The follow-drift pass. `setInterval` is correct *while the worker lives* —
@@ -955,6 +1040,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.runtime.onSuspend.addListener(() => {
   stopDriveTimer();
+  stopPresenceBeat();
 });
 
 /**
@@ -970,6 +1056,7 @@ chrome.runtime.onSuspend.addListener(() => {
  */
 async function closeSession(): Promise<void> {
   stopDriveTimer();
+  stopPresenceBeat();
   if (session !== null) {
     if (session.drivenTabId !== null) {
       const frameId = drivenFrameId(session.drivenTabId);
@@ -1102,6 +1189,15 @@ export interface OffscreenShareMessage {
   streamId: string;
   roomId: string;
   accessToken: string;
+  /**
+   * Who the sharer is in this room, from the room's own record — never from
+   * the page that handed the room over. The offscreen document signs every
+   * signalling frame as this person, and each viewer derives the pair's
+   * connectionId from both ids; the server stamps the sender's id from the
+   * authenticated socket, so any other name fails that guard in both
+   * directions and the share reaches nobody at all (D2).
+   */
+  userId: string;
   source: ShareSource;
   /**
    * Whether an audio track may be asked for AT ALL. Additive hint, and the
@@ -1134,6 +1230,9 @@ export interface ShareRoom {
   accessToken: string;
   /** The driven tab. Required for a tab share, irrelevant to the others. */
   tabId: number | null;
+  /** Who we are in this room. Not nullable on purpose: a share cannot be
+   *  planned without it, so the refusal happens before this type exists. */
+  userId: string;
 }
 
 /** The capture surface of the browser, injected so `planShare` stays testable. */
@@ -1224,6 +1323,7 @@ function shareMessage(
     streamId,
     roomId: room.roomId,
     accessToken: room.accessToken,
+    userId: room.userId,
     source,
     canRequestAudioTrack,
   };
@@ -1311,6 +1411,14 @@ export const browserShareDeps: ShareDeps = {
 /** No sentence below names an API, an error code, or a constraint. */
 const SHARE_FAILED_NOTE = 'That share could not start — nothing is going to the room.';
 const SHARE_REFUSED_NOTE = 'Chrome did not allow that — try again and pick what to share.';
+/**
+ * We are in the room but cannot yet say which member we are, so a share would
+ * be signed with a name no viewer can match and would reach nobody. Waiting a
+ * moment is the whole fix, and that is what the sentence says — it does not
+ * mention ids, meshes or the room record.
+ */
+const SHARE_NO_IDENTITY_NOTE =
+  'Still getting you settled in this room — give it a moment and try sharing again.';
 
 /** Capture failures arrive as browser error text; a person gets a sentence. */
 export function shareFailureNote(error: string): string {
@@ -1351,12 +1459,23 @@ export function readShareReply(
  */
 async function startShare(surface: ShareSurface = 'tab'): Promise<ShareResult> {
   if (session === null) throw new Error('connect to a room first');
+  // Who we are decides whether this share reaches anybody at all (see
+  // OffscreenShareMessage.userId), so it is settled BEFORE the picker opens —
+  // a person should not choose a window for a share that will then be refused.
+  // Usually already known; the await only bites on a handoff whose room record
+  // has not landed yet.
+  const userId = await ensureUserId();
+  if (session === null) {
+    return { shared: false, cancelled: false, note: 'That room ended before the share started.' };
+  }
+  if (userId === null) return { shared: false, cancelled: false, note: SHARE_NO_IDENTITY_NOTE };
   // Read the room BEFORE awaiting the picker: the user may disconnect while it
   // is open, and a share must never be started against a room that ended.
   const room: ShareRoom = {
     roomId: session.roomId,
     accessToken: session.accessToken,
     tabId: session.drivenTabId,
+    userId,
   };
   const plan = await planShare(room, surface, browserShareDeps);
   if (!plan.start) return { shared: false, cancelled: true, note: plan.note };
@@ -1699,6 +1818,51 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       else session.socket.send('sync.seek', { positionMs });
       // The just-sent intent must not read as drift while the room echoes it.
       session.driver.noteLocalIntent(intent, positionMs, Date.now());
+      return false;
+    }
+    /**
+     * The driven item ran out (see content.ts). It travels on its own event
+     * and never as a pause: the content script's intent detector deliberately
+     * drops the pause arriving at the end causes ("arrival, not intent"), so
+     * this message is the ONLY thing that says the item is over. Without it a
+     * room driven from here sits on the last frame forever.
+     *
+     * The worker does not decide what to do about it — advancing a queue is
+     * the room's business and the page's. It reports the fact, with the
+     * duration beside it so the page can clamp a projection that has nothing
+     * left to project into, and the item's key so a page that already moved on
+     * can ignore a late end. The same election gate as telemetry: only the
+     * elected frame of the driven tab speaks for the room.
+     *
+     * Nothing is de-duplicated here. The content script already makes exactly
+     * one judgement per item (driver.ts's MediaEndDetector), and a second,
+     * disagreeing judgement in this worker would give one end two answers.
+     */
+    case 'mediaEnded': {
+      const tabId = sender.tab?.id;
+      if (
+        session === null ||
+        tabId === undefined ||
+        tabId !== session.drivenTabId ||
+        sender.frameId !== drivenFrameId(tabId)
+      ) {
+        return false;
+      }
+      const rawPosition = msg['positionMs'];
+      const rawDuration = msg['durationMs'];
+      const payload: EndedPayload = {
+        positionMs:
+          typeof rawPosition === 'number' && Number.isFinite(rawPosition)
+            ? Math.max(0, rawPosition)
+            : 0,
+        durationMs:
+          typeof rawDuration === 'number' && Number.isFinite(rawDuration)
+            ? Math.max(0, rawDuration)
+            : 0,
+        mediaKey: mediaKeyOf(session.playback?.mediaRef ?? null),
+        at: Date.now(),
+      };
+      ports.broadcast((v) => eventMessage('ended', payload, v));
       return false;
     }
     case 'provider': {

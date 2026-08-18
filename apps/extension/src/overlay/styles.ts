@@ -88,9 +88,6 @@ export const OVERLAY_CSS = `${TOKEN_CSS}
   z-index: ${Z_INDEX};
   pointer-events: none;
   color-scheme: light dark;
-
-  /* DESIGN.md §4: elevation is glow, not shadow. Same expression web uses. */
-  --lift: 0 0 40px -12px color-mix(in oklch, var(--aurora-1) 22%, transparent);
 }
 
 *,
@@ -118,23 +115,36 @@ input:focus-visible {
 }
 
 /*
- * The ink on an accent fill is the theme's ground, NOT --accent-ink: measured
- * against packages/design's own guard, --accent-ink on --accent is 3.80:1 in
- * dark, under WCAG_AA_TEXT, and this label is 12px/600 — normal-size text.
- * --bg-void holds 5.00:1 dark and 4.85:1 light, and inverts with the theme the
- * way the old hand-written palette did.
+ * The panel and the handle float over a page nobody chose, so they take the
+ * NEUTRAL elevation the design system emits (--elevation-e2), not the aurora
+ * glow they used to carry. A coloured halo around a chat panel sitting on top
+ * of someone else's site is the definition of a thing shouting: it reads as a
+ * notification, not as a surface. Glow stays what DESIGN.md §5 makes it — a
+ * signature moment — and the overlay has none.
+ *
+ * The ink on an accent fill is --ink-on-accent: the package measuring, per
+ * theme, which of the two absolute inks clears WCAG AA on the colour that
+ * actually landed. This used to name --bg-void, a hand-measured answer that
+ * held at 5.00:1 dark / 4.85:1 light — and then stopped holding (4.06:1) the
+ * moment light --aurora-1 moved for the primary button's gradient. The
+ * measured token is 5.21:1 dark and 4.72:1 light and cannot fall out of step
+ * with the palette, because it IS the palette answering.
+ *
+ * Sized from --control-h-sm, so the handle is a 28px chip beside a mouse and a
+ * 44px target under a finger, with no media query written here.
  */
 .handle {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 13px;
+  gap: var(--control-gap-sm);
+  height: var(--control-h-sm);
+  padding: 0 var(--control-px-sm);
   border-radius: var(--radius-pill);
   background: var(--accent);
-  color: var(--bg-void);
-  font: 600 12px/1.2 var(--font-sans);
-  box-shadow: var(--lift);
+  color: var(--ink-on-accent);
+  font: var(--text-label-weight) var(--text-label-size) / var(--text-label-line) var(--font-sans);
+  box-shadow: var(--elevation-e2);
   white-space: nowrap;
 }
 .handle[hidden] {
@@ -156,10 +166,14 @@ input:focus-visible {
   max-height: 70vh;
   background: var(--surface-1);
   color: var(--text-hi);
-  font: 400 13px/1.45 var(--font-sans);
-  border: 1px solid var(--border-glass);
+  /* The label step's SIZE at running-text weight. The ramp has no 13px/400
+     step because web has no need of one; a 320px overlay does — the body step
+     at 15px is a page's size, not a panel's, and 400 is what running text
+     takes. (No backticks in this file: OVERLAY_CSS is a template literal.) */
+  font: 400 var(--text-label-size) / 1.45 var(--font-sans);
+  border: 1px solid var(--hairline);
   border-radius: var(--radius-card);
-  box-shadow: var(--lift);
+  box-shadow: var(--elevation-e2);
   overflow: hidden;
 }
 .panel[hidden] {
@@ -188,28 +202,34 @@ input:focus-visible {
 .room {
   margin: 0;
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--text-label-size);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .status {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: var(--text-label-size);
   color: var(--text-mid);
   overflow-wrap: anywhere;
 }
 
+/* A real control, sized from the tokens: 28px beside a mouse, 44px under a
+   finger. It was a 3px-padded 12px chip, which is under any touch target. */
 .hide {
   flex: 0 0 auto;
-  padding: 3px 9px;
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h-sm);
+  padding: 0 var(--control-px-sm);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
   background: var(--surface-1);
   color: var(--text-mid);
-  font-size: 12px;
+  font-size: var(--text-label-size);
 }
 .hide:hover {
+  background: var(--surface-3);
   color: var(--text-hi);
 }
 
@@ -217,11 +237,13 @@ input:focus-visible {
   padding: 10px 12px;
   border-bottom: 1px solid var(--hairline);
 }
+/* The ramp's caption step, by name — it was a hand-copy of it that had already
+   drifted on weight (600 against the ramp's 500) and tracking (0.04 vs 0.06). */
 .section-title {
   margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+  letter-spacing: var(--text-caption-tracking);
   text-transform: uppercase;
   color: var(--text-low);
 }
@@ -253,7 +275,7 @@ input:focus-visible {
   white-space: nowrap;
 }
 .person-note {
-  font-size: 11px;
+  font-size: var(--text-caption-size);
   color: var(--text-low);
 }
 .person-empty {
@@ -281,15 +303,32 @@ input:focus-visible {
   font-weight: 600;
   margin-right: 6px;
 }
-.msg[data-mine='true'] .msg-author {
-  color: var(--accent);
+/*
+ * "Mine" is an accent EDGE, not an accent-coloured name.
+ *
+ * --accent used to paint this author name, and the design package's guard
+ * caught what that actually was: --accent has three jobs already (a gradient
+ * stop, a standalone graphic, and a fill under a measured ink), and body text
+ * on the lightest surface is a fourth it was never measured for. It cannot be
+ * both — black has to sit ON the accent for the primary button, which wants the
+ * accent LIGHT, and the accent has to sit on near-white here, which wants it
+ * DARK. It measured 4.38:1 in light, under the text bar.
+ *
+ * As a 3px edge it is a graphic (WCAG 1.4.11, 3:1) and the token holds 3.49:1
+ * at its worst rung — and it is the same "this row is yours" language the app
+ * already uses for the active queue row.
+ */
+.msg[data-mine='true'] {
+  border-left: var(--layout-edge) solid var(--accent);
+  padding-left: 7px;
+  margin-left: -10px;
 }
 
 .ahead,
 .notice {
   margin: 0;
   padding: 0 12px 8px;
-  font-size: 12px;
+  font-size: var(--text-label-size);
   color: var(--text-mid);
 }
 .ahead[hidden],
@@ -307,21 +346,23 @@ input:focus-visible {
 .input {
   flex: 1 1 auto;
   min-width: 0;
+  height: var(--control-h-md);
   font: inherit;
   color: var(--text-hi);
   background: var(--surface-1);
   border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm);
-  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  padding: 0 9px;
 }
-/* --bg-void for the same measured reason as .handle. */
+/* --ink-on-accent for the same measured reason as .handle. */
 .send {
   flex: 0 0 auto;
-  padding: 7px 13px;
-  border-radius: var(--radius-sm);
+  height: var(--control-h-md);
+  padding: 0 var(--control-px-md);
+  border-radius: var(--radius-control);
   background: var(--accent);
-  color: var(--bg-void);
-  font-weight: 600;
+  color: var(--ink-on-accent);
+  font-weight: var(--text-label-weight);
 }
 .input[disabled],
 .send[disabled] {
@@ -338,7 +379,7 @@ input:focus-visible {
 }
 .link {
   color: var(--text-mid);
-  font-size: 12px;
+  font-size: var(--text-label-size);
   text-decoration: underline;
 }
 .link:hover {

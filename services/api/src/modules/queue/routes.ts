@@ -19,6 +19,7 @@ import { newId } from '../../lib/tokens';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import { policyAllows } from '../sync/policy';
+import { QUEUE_MAX_ITEMS, assertMediaRefWithinBounds } from './service';
 
 type PlaylistParams = { Params: { playlistId: string } };
 
@@ -111,6 +112,19 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
     if (playlist.items.length === 0) {
       return { added: 0 };
     }
+
+    // The SAME bounds QueueService.add enforces. This route writes the queue
+    // directly rather than going through the service, so every guard has to be
+    // repeated here or it is simply not enforced — and an unbounded copy is
+    // the cheapest way to push a room document toward Mongo's 16 MB ceiling,
+    // after which EVERY write to that room fails, not just the queue.
+    if (room.queue.items.length + playlist.items.length > QUEUE_MAX_ITEMS) {
+      throw new AppError(
+        'VALIDATION',
+        `that playlist does not fit — the queue holds ${QUEUE_MAX_ITEMS} items`,
+      );
+    }
+    for (const item of playlist.items) assertMediaRefWithinBounds(item.mediaRef);
 
     // Append COPIES with fresh ids so playlist edits never alias queue items.
     const copies: QueueItem[] = playlist.items.map((item) => ({

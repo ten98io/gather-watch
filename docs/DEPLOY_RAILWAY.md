@@ -5,18 +5,21 @@ home-directory config, not the repo; verify what's linked before `railway up`).
 Data plane: **MongoDB Atlas** (external) + **Railway Redis**. **Do not add
 Railway's Mongo template** — Mongo lives in Atlas.
 
-## Current state (as of 2026-08-17): DEPLOYED and serving at gather.watch
+## Current state (as of 2026-08-18): DEPLOYED and serving at gather.watch
 
 | Resource | State |
 |---|---|
-| `api` + `web` services | **deployed**, zero-downtime deploys gated on `/readyz`, config-as-code (`services/api/railway.json`, `apps/web/railway.json`) |
+| `api` + `web` services | **deployed**, zero-downtime deploys, config-as-code (`services/api/railway.json` → healthcheck `/readyz`; `apps/web/railway.json` → healthcheck `/`) |
 | Redis | online, wired into `api` by reference variable |
 | `attachments` Railway Bucket (`ams`) | **live** — chat attachments; wired into `api` by reference variables |
-| `media` service | **DELETED** — users never upload streams; the upload→HLS pipeline is not deployed |
+| `media` service | **DELETED** — users never upload streams, nothing transcodes, and `services/media` is gone from the repo too |
 | Email | Cloudflare Email Service, sender domain `email.gather.watch` |
 | Custom domains | `gather.watch` (web) + api domain, live |
 | LiveKit | never used (its token route 404'd until 2026-08-16 and was never exercised); deleted from the repo |
 | `mongodb-volume`, `mongodb-volume-yuCl` | detached leftovers — **delete if still present** (dashboard → volume → ⋯ → Delete); detached volumes still bill per GB |
+
+There are exactly **two** Railway services to deploy. Anything else in the
+project canvas is either a data store (Redis, the bucket) or a leftover.
 
 Phase status:
 
@@ -25,9 +28,9 @@ Phase status:
 - **Phase 2 — media pipeline: SUPERSEDED.** The media service is deleted; the
   only storage is the `attachments` bucket (done). Original instructions
   removed — they can no longer be followed.
-- **Phase 3 — LiveKit relay: REPLACED.** Theater relay is Cloudflare
-  Realtime (`relayMode: 'cf-sfu'`); what remains is setting the Cloudflare
-  TURN/SFU keys on `api` (see Phase 3 below).
+- **Phase 3 — relay keys: PARTLY PENDING.** LiveKit is gone. What remains is
+  setting the Cloudflare **TURN** keys on `api`; the SFU keys are reserved
+  names that nothing dials yet (see Phase 3 below).
 
 ---
 
@@ -226,33 +229,45 @@ exists instead, already configured:
 
 ---
 
-## Phase 3 — Cloudflare Realtime relay for Theater mode (keys pending)
+## Phase 3 — Cloudflare TURN keys (pending; this is the live gap)
 
 LiveKit is gone — no room ever successfully used it (its token route 404'd
-until 2026-08-16 and was never exercised), and it is deleted from the
-repo. Theater-mode relay is **Cloudflare Realtime** (`relayMode: 'cf-sfu'`;
-mesh is the default). The one deploy step: set the Cloudflare TURN/SFU keys
-on `api` (names from `services/api/src/config.ts`):
+until 2026-08-16 and was never exercised), and it is deleted from the repo.
+
+**Theater mode is a layout, not a transport.** It collapses the rail and
+floats the call tiles; it does not move the room onto a relay. Every stored
+room is `relayMode: 'mesh'`, and nothing writes `'cf-sfu'`
+(`services/api/test/rooms-ungated.test.ts` pins that, because the old theater
+toggle used to flip it and hand the room a call path that is still a stub).
+
+So the one deploy step that matters is the TURN pair (names from
+`services/api/src/config.ts`):
 
 ```env
 CF_TURN_KEY_ID=…
 CF_TURN_API_TOKEN=…
-CF_SFU_APP_ID=…
-CF_SFU_API_TOKEN=…
-ENABLE_SFU=true
-FREE_TURN_CAP_GB_PER_MONTH=20   # optional; default 20
 ```
 
-Until the TURN keys are set, voice dropouts persist for peers that need a
-relay. Rates and the cost model: `docs/COST_MODEL.md`.
-
-### Stripe (only when selling Premium)
+Until these are set the API serves **STUN only** — there is no second relay to
+fall back to, so peers behind a symmetric NAT simply cannot connect and voice
+dropouts persist. The credentials are minted per user, short-lived, by
+`services/api/src/modules/rtc/`, and handed out at
+`GET /rtc/turn-credentials`.
 
 ```env
-STRIPE_SECRET_KEY=sk_live_…
-STRIPE_WEBHOOK_SECRET=whsec_…   # webhook endpoint: https://<api-domain>/billing/webhook
-STRIPE_PRICE_PREMIUM_MONTHLY=price_…
+CF_SFU_APP_ID=…
+CF_SFU_API_TOKEN=…
 ```
+
+These two parse into `AppConfig` and are read by **nothing else** — the client
+lane that would dial the Realtime SFU is not built. Setting them today changes
+no behaviour; they are the reserved names for the deferred capacity fallback
+(`docs/CAST_RELAY.md`, `docs/COST_MODEL.md`). There is no `ENABLE_SFU` flag;
+if you see one in an older doc or an old Railway variable list, it is not a
+config key and never was in this codebase.
+
+TURN relay is unmetered — every account gets relay URLs whenever a relay is
+configured. Egress is billed. Rates and the cost model: `docs/COST_MODEL.md`.
 
 ---
 
@@ -301,5 +316,12 @@ for the Web Store). Omitting `GATHER_API_URL` keeps the localhost dev default.
 - **Mongo stays on Atlas** (owner decision 2026-08-16): no Railway Mongo
   template; the two detached `mongodb-volume*` leftovers should be deleted.
 - **Cloudflare cannot replace this stack** (no UDP or long-lived sockets at
-  the edge); it serves as CDN in front of Railway plus the Realtime TURN/SFU
-  and Email services.
+  the edge); it serves as CDN in front of Railway, plus Realtime TURN and
+  Email Service. The Realtime SFU is in the design, not in the deploy.
+- **One tier, no billing.** There is no payment processor to configure, no
+  webhook endpoint to register and no Stripe variable to set. Three tombstone
+  suites fail if any of that comes back (`services/api/test/no-billing.test.ts`,
+  `rooms-ungated.test.ts`, `apps/web/test/no-paywall.test.ts`).
+- **Rooms never expire.** Nothing on the deploy needs a TTL, a cron or a
+  cleanup job: the only sweep deletes rooms that are *empty* and 30 days
+  quiet, and it runs in-process.

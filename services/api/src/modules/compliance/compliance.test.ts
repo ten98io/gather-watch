@@ -21,7 +21,6 @@ import type {
 import { newId } from '../../lib/tokens';
 import type { AssetDoc, StorePort } from '../../adapters/ports';
 import type { Deps } from '../types';
-import { setStripeClientForDeps } from '../billing/service';
 import { addMember, makeApp, seedRoom, signupUser } from '../../../test/helpers';
 import type { SignedUpUser } from '../../../test/helpers';
 import {
@@ -82,7 +81,7 @@ async function seedAsset(store: StorePort, ownerId: string): Promise<AssetDoc> {
   return asset;
 }
 
-/** Playlist + push sub + subscription + usage row, all keyed to the user. */
+/** Playlist + push sub + usage row, all keyed to the user. */
 async function seedAccountData(store: StorePort, userId: string): Promise<void> {
   await store.playlists.insertOne({
     id: newId() as PlaylistId,
@@ -99,16 +98,6 @@ async function seedAccountData(store: StorePort, userId: string): Promise<void> 
     keys: { p256dh: 'p256dh-key', auth: 'auth-secret' },
     expoPushToken: null,
     createdAt: Date.now(),
-  });
-  await store.subscriptions.insertOne({
-    id: userId,
-    userId,
-    plan: 'free',
-    status: 'active',
-    stripeCustomerId: null,
-    stripeSubscriptionId: null,
-    currentPeriodEnd: null,
-    updatedAt: Date.now(),
   });
   await store.usage.insertOne({
     id: newId(),
@@ -429,7 +418,6 @@ describe('compliance', () => {
       // Account-owned rows gone; media assets deliberately untouched (their
       // storage lifecycle belongs to the media module); usage awaits purgeAt.
       expect(await store.pushSubs.findMany({ userId: account.user.id })).toEqual([]);
-      expect(await store.subscriptions.findById(account.user.id)).toBeNull();
       expect(await store.playlists.findMany({ ownerId: account.user.id })).toEqual([]);
       expect(await store.assets.count({ ownerId: account.user.id })).toBe(1);
       expect(await store.usage.count({ userId: account.user.id })).toBe(1);
@@ -471,46 +459,6 @@ describe('compliance', () => {
 
       // Registry entry consumed — a second sweep does nothing for this user.
       expect(await purgeDueUsers(deps, purgeAt + 1000)).not.toContain(account.user.id);
-    });
-
-    it('cancels the live Stripe subscription before deleting the billing row', async () => {
-      const account = await signupUser(app, 'paying-erasure@example.com');
-      await store.subscriptions.insertOne({
-        id: account.user.id,
-        userId: account.user.id,
-        plan: 'premium',
-        status: 'active',
-        stripeCustomerId: 'cus_erase_1',
-        stripeSubscriptionId: 'sub_erase_1',
-        currentPeriodEnd: null,
-        updatedAt: Date.now(),
-      });
-      const canceled: string[] = [];
-      setStripeClientForDeps(deps, {
-        customers: { create: async () => ({ id: 'cus_x' }) },
-        checkout: { sessions: { create: async () => ({ url: null }) } },
-        billingPortal: { sessions: { create: async () => ({ url: 'https://x' }) } },
-        webhooks: {
-          constructEvent: () => {
-            throw new Error('unused');
-          },
-        },
-        subscriptions: {
-          cancel: async (id) => {
-            canceled.push(id);
-            return { id };
-          },
-        },
-      });
-
-      const res = await app.inject({
-        method: 'DELETE',
-        url: '/me',
-        headers: bearer(account.accessToken),
-      });
-      expect(res.statusCode).toBe(200);
-      expect(canceled).toEqual(['sub_erase_1']);
-      expect(await store.subscriptions.findById(account.user.id)).toBeNull();
     });
 
     it('rejects guest tokens with 403 (no account to erase)', async () => {

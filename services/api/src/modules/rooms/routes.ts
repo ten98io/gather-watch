@@ -11,6 +11,7 @@ import {
   CreateRoomBody,
   JoinRoomBody,
   KickMemberBody,
+  RoomHistoryQuery,
   SetMemberRoleBody,
   SetRoomMuteBody,
   SetTheaterBody,
@@ -22,7 +23,7 @@ import { AppError } from '../../lib/errors';
 import { requireAccount, requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import type { AuthContext } from '../types';
-import { RoomsService, startRoomExpirySweeper } from './service';
+import { RoomsService, startIdleRoomSweeper } from './service';
 import { getRoomsRuntime } from './runtime';
 import { serializeMember, serializeRoom } from './serialize';
 
@@ -38,9 +39,9 @@ function assertGuestScope(auth: AuthContext, roomId: string): void {
 export const roomsRoutes: FastifyPluginAsync = async (app) => {
   const service = new RoomsService(app.deps);
   const runtime = getRoomsRuntime(app.deps);
-  const stopExpirySweeper = startRoomExpirySweeper(app.deps);
+  const stopIdleSweeper = startIdleRoomSweeper(app.deps);
   app.addHook('onClose', async () => {
-    stopExpirySweeper();
+    stopIdleSweeper();
     await runtime.close();
   });
 
@@ -89,6 +90,22 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
     assertGuestScope(auth, request.params.roomId);
     await service.leaveRoom(request.params.roomId, auth.userId);
     return { ok: true as const };
+  });
+
+  /** The room's playback history, newest first. Members only, and paginated
+   *  from the newest end — this is the panel's read, not an export. */
+  app.get<RoomParams>('/rooms/:roomId/history', async (request) => {
+    const auth = requireAuth(request);
+    assertGuestScope(auth, request.params.roomId);
+    const query = parseWith(RoomHistoryQuery, request.query);
+    // exactOptionalPropertyTypes: an absent cursor must stay absent, never an
+    // explicit undefined that the store would read as a filter.
+    const { entries, nextBefore } = await service.listHistory(
+      request.params.roomId,
+      auth.userId,
+      { ...(query.before !== undefined ? { before: query.before } : {}), limit: query.limit },
+    );
+    return { entries, nextBefore };
   });
 
   app.get<RoomParams>('/rooms/:roomId/members', async (request) => {

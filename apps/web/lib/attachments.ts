@@ -3,8 +3,8 @@
  * (POST /rooms/:id/attachments[/complete]). The server issues ONE presigned
  * PUT covering the whole object (chat cap is tens of MB, not library GB), so
  * this is a straight PUT — no multipart machinery. Returns a contracts
- * MessageAttachment ready for chat.send. Honest errors: entitlement caps,
- * missing object, and network failures surface to the composer.
+ * MessageAttachment ready for chat.send. Honest errors: size caps, missing
+ * object, and network failures surface to the composer.
  */
 import {
   CompleteUploadBody,

@@ -27,15 +27,16 @@
  * call is a room full of people rather than an empty rectangle.
  *
  * Honesty notes:
- *   • relayMode 'cf-sfu' surfaces the honest boundary panel and says, in
- *     plain words, that relayed calls are not enabled — presence is NOT set to
- *     in-call, because other clients render that.
+ *   • Every call is a device-to-device mesh: there is one join path, and the
+ *     stage badge names the mode the media actually travels in.
  *   • The speaking ring is measured from the actual audio (WebAudio peak on
  *     the live tracks), never simulated. Where WebAudio is unavailable the
  *     ring simply stays off.
  *   • A peer who is screen-sharing shows their avatar here, not a video tile:
  *     their picture is already on the stage, and the mesh does not tag which
  *     of a peer's video tracks is the camera.
+ *   • A tile means "this person's media is reaching this room", not "the
+ *     server said so a moment ago" — see callPeerIds below.
  */
 import {
   createContext,
@@ -49,8 +50,17 @@ import {
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
+import type { MeshConnectionState } from '@gather/p2p';
+import { voiceActiveFrom } from '@gather/sync-core';
 import { api } from '@/lib/api';
-import { getCallMesh, closeCallMesh } from '@/lib/call-mesh';
+import { publishSpeechActive, publishVoiceActive } from '@/lib/player/room-audio';
+import {
+  getCallMesh,
+  closeCallMesh,
+  isAudioSinkClaimed,
+  onAudioSinkClaims,
+  setCallIntent,
+} from '@/lib/call-mesh';
 import type { RemoteTrackEntry } from '@/lib/call-mesh';
 import { describeError } from '@/lib/describe-error';
 import { presenceIdleStateFor } from '@/lib/media-kind';
@@ -58,7 +68,6 @@ import { RELAY_SHORT_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
-import { EmptyState } from '@/components/ui/empty-state';
 import {
   MicIcon,
   MicOffIcon,
@@ -71,7 +80,7 @@ import {
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/cn';
 
-export type CallPhase = 'idle' | 'joining' | 'in-call' | 'boundary';
+export type CallPhase = 'idle' | 'joining' | 'in-call';
 
 /** One person on the call, as the tiles need them. */
 export interface CallParticipant {
@@ -88,16 +97,24 @@ export interface CallParticipant {
   speaking: boolean;
   /** The camera track to render, when this person is publishing one. */
   videoTrack: MediaStreamTrack | null;
+  /** Their link is down and the mesh is retrying — say so on the tile. */
+  linkTrouble: boolean;
 }
 
 export interface CallSessionValue {
   phase: CallPhase;
   micOn: boolean;
   camOn: boolean;
-  /** False for relay modes where this build cannot publish a camera. */
+  /**
+   * A local device ENDED on its own — unplugged, seized by another app, walked
+   * out of bluetooth range. Distinct from `micOn`/`camOn`, which are the
+   * user's own latches: this one says the hardware is gone, and it is what the
+   * surface has to say out loud.
+   */
+  micLost: boolean;
+  camLost: boolean;
+  /** Whether this build can publish a camera at all. */
   cameraAvailable: boolean;
-  /** Plain-words explanation when the relay is not enabled on this server. */
-  boundaryDetail: string | null;
   /** Everyone on the call, local user first. */
   participants: CallParticipant[];
   publisherCap: number;
@@ -108,7 +125,24 @@ export interface CallSessionValue {
   leave(): void;
   toggleMic(): void;
   toggleCamera(): void;
-  dismissBoundary(): void;
+  /** Ask for a microphone again and republish it, mute latch intact. */
+  recoverMic(): void;
+}
+
+/**
+ * One sentence for a local device that vanished, or null while both are fine.
+ *
+ * Pure, and exported, because this is the only place the app admits the
+ * failure in words — the icons cannot, since the whole defect is that a dead
+ * track still looks exactly like a live one.
+ */
+export function deviceLossNote(input: { micLost: boolean; camLost: boolean }): string | null {
+  if (input.micLost && input.camLost) {
+    return 'Your microphone and camera disconnected — nobody can hear or see you.';
+  }
+  if (input.micLost) return 'Your microphone disconnected — nobody can hear you.';
+  if (input.camLost) return 'Your camera disconnected — your video stopped.';
+  return null;
 }
 
 const CallSessionContext = createContext<CallSessionValue | null>(null);
@@ -119,9 +153,6 @@ export function useCallSession(): CallSessionValue {
   if (ctx === null) throw new Error('useCallSession must be used within <CallSessionProvider>');
   return ctx;
 }
-
-const RELAY_NOT_ENABLED =
-  'Relayed calls aren’t enabled on this server yet — the room still works with direct calls.';
 
 /* ────────────────────────────────────────────────────────────────────────────
    Voice activity — real measurement, 150 ms poll, no animation loop.
@@ -150,6 +181,15 @@ function useVoiceActivity(sources: AudioSource[], enabled: boolean): ReadonlySet
     }
     const current = sourcesRef.current;
     let ctx: AudioContext | null = null;
+    // The graph MUST reach a destination. A remote WebRTC track routed into
+    // Web Audio has its rendering taken over by the graph in Chromium, so a
+    // chain that dead-ends at an AnalyserNode swallows the audio and the
+    // <audio> element attached to the same track goes silent — inaudible
+    // remote voice caused by the indicator that was only supposed to draw a
+    // ring around it. Video never touches this code, which is why a call could
+    // look perfect and sound like nothing. The sink is muted (gain 0) so the
+    // path exists without ever making sound of its own.
+    let sink: GainNode | null = null;
     // Inferred rather than annotated: lib.dom's Uint8Array buffer generic has
     // moved between TypeScript releases and getByteTimeDomainData is strict.
     const makeBuffer = (bytes: number) => new Uint8Array(new ArrayBuffer(bytes));
@@ -165,12 +205,16 @@ function useVoiceActivity(sources: AudioSource[], enabled: boolean): ReadonlySet
       if (Ctor === undefined) return;
       ctx = new Ctor();
       void ctx.resume().catch(() => undefined);
+      sink = ctx.createGain();
+      sink.gain.value = 0;
+      sink.connect(ctx.destination);
       for (const source of current) {
         const node = ctx.createMediaStreamSource(new MediaStream([source.track]));
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
         analyser.smoothingTimeConstant = 0.6;
         node.connect(analyser);
+        analyser.connect(sink);
         nodes.push({
           userId: source.userId,
           analyser,
@@ -216,6 +260,11 @@ function useVoiceActivity(sources: AudioSource[], enabled: boolean): ReadonlySet
           // Already torn down with the context.
         }
       }
+      try {
+        sink?.disconnect();
+      } catch {
+        // Already torn down with the context.
+      }
       void ctx?.close().catch(() => undefined);
     };
   }, [key, enabled]);
@@ -223,22 +272,162 @@ function useVoiceActivity(sources: AudioSource[], enabled: boolean): ReadonlySet
   return useMemo(() => new Set(speaking), [speaking]);
 }
 
+/**
+ * May the content step back right now? (E18 — see lib/player/ducking.ts for
+ * the envelope this boolean feeds, and lib/player/room-audio.ts for why this
+ * signal is not the one the sync band reads.)
+ *
+ * Two exclusions, both of them the difference between help and harm:
+ *
+ *  • MY OWN MICROPHONE NEVER DUCKS MY OWN CONTENT. Echo cancellation is
+ *    referenced against what the browser renders, not against arbitrary page
+ *    audio, so a loud film leaks into my own mic on plenty of machines. Duck
+ *    on that and it is a loop: film leaks in → level drops → leak stops →
+ *    level climbs → leak returns. The film would breathe on its own with
+ *    nobody saying a word. Ducking exists so I can hear THEM; the sound I
+ *    make, I am already inside of.
+ *  • NOT WHILE THIS BROWSER IS REFUSING TO PLAY THE CALL. The speaking ring is
+ *    measured off the raw tracks by an AnalyserNode, which keeps working
+ *    perfectly while autoplay policy is refusing the <audio> sinks
+ *    (CALL_SOUND_BLOCKED_LABEL). Ducking on that reading would take the film
+ *    away from someone to make room for voices they cannot hear at all —
+ *    silence in both directions.
+ */
+export function shouldDuckContent(input: {
+  participants: readonly CallParticipant[];
+  soundBlocked: boolean;
+}): boolean {
+  if (input.soundBlocked) return false;
+  return input.participants.some((p) => !p.isMe && p.speaking);
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Who is in the call
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * How long a peer keeps their tile on the strength of their MEDIA alone, once
+ * presence has stopped calling them 'in-call'.
+ *
+ * Long enough to cover a presence blip — a client re-announcing 'watching' or
+ * 'listening' for its own reasons overwrites its call state for about one
+ * round trip, and every other client used to drop that person's tile for the
+ * duration. Short enough that someone who genuinely left cannot linger: their
+ * tracks may end no faster than the next renegotiation, and a roster that
+ * shows people who left is a different lie from the one being fixed.
+ */
+export const PRESENCE_BRIDGE_MS = 6_000;
+
+/** How often we re-tell the server we are in the call while it disagrees. */
+export const PRESENCE_REASSERT_MS = 2_000;
+
+/** Link states where a tile must admit something is wrong. */
+const TROUBLED_LINK: ReadonlySet<MeshConnectionState> = new Set<MeshConnectionState>([
+  'disconnected',
+  'failed',
+]);
+
+export interface CallRosterInput {
+  me: UserId;
+  presence: Record<UserId, PresenceEntry>;
+  /** Peers whose media is arriving right now (retained by the mesh). */
+  trackPeers: ReadonlySet<UserId>;
+  /** Peers presence has called 'in-call' at any point in this session. */
+  everInCall: ReadonlySet<UserId>;
+  /**
+   * When presence STOPPED calling each of them in — the moment the bridge
+   * starts running from. Absent means it has only just happened (the bookkeeping
+   * lands one tick later), which is precisely when a blip needs bridging most.
+   */
+  leftCallAt: ReadonlyMap<UserId, number>;
+  now: number;
+}
+
+/**
+ * Everyone except me who is in the call, from the two signals that exist.
+ *
+ * Presence is the DECLARATION and arrives over a round trip; a track arriving
+ * is the EVIDENCE and cannot be faked — a peer only publishes a microphone
+ * because they joined. Requiring both would make the roster a function of the
+ * server's echo (the bug: one stale presence write blanks a working call);
+ * accepting media alone would let a screen-share, which rides the same mesh
+ * without joining anything, masquerade as a caller. So: presence says who is
+ * in, and live media keeps someone in for a few seconds after presence stops
+ * saying it — never longer, and never for someone presence never let in.
+ */
+export function callPeerIds(input: CallRosterInput): UserId[] {
+  const { me, presence, trackPeers, everInCall, leftCallAt, now } = input;
+  const ids: UserId[] = [];
+  const seen = new Set<UserId>();
+  const consider = (userId: UserId): void => {
+    if (userId === me || seen.has(userId)) return;
+    seen.add(userId);
+    if (presence[userId]?.state === 'in-call') {
+      ids.push(userId);
+      return;
+    }
+    // Media alone is not membership: a screen-share rides the same mesh.
+    if (!trackPeers.has(userId) || !everInCall.has(userId)) return;
+    const at = leftCallAt.get(userId);
+    if (at === undefined || now - at <= PRESENCE_BRIDGE_MS) ids.push(userId);
+  };
+  for (const entry of Object.values(presence)) consider(entry.userId);
+  // A peer whose presence row expired while their media keeps arriving is
+  // still in the call; presence is what went missing, not the person.
+  for (const userId of trackPeers) consider(userId);
+  return ids;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    Session provider
    ──────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * Autoplay policy refused the hidden <audio>. Swallowing that rejection —
+ * `void el.play().catch(() => undefined)` — is a call where you hear NOBODY,
+ * permanently, with no prompt and nothing to click: total silent failure of
+ * the headline feature. One tap is all the policy wants.
+ */
+export const CALL_SOUND_BLOCKED_LABEL = 'Tap to enable sound';
+
 /** Hidden sink for one remote audio track. */
-function RemoteAudioTrack({ track }: { track: MediaStreamTrack }) {
+function RemoteAudioTrack({
+  track,
+  resumeNonce,
+  onPlayResult,
+}: {
+  track: MediaStreamTrack;
+  /** Bumped by the affordance below; re-runs play() inside the user gesture. */
+  resumeNonce: number;
+  onPlayResult: (track: MediaStreamTrack, blocked: boolean) => void;
+}) {
   const ref = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     const el = ref.current;
     if (el === null) return;
     el.srcObject = new MediaStream([track]);
-    void el.play().catch(() => undefined);
     return () => {
       el.srcObject = null;
     };
   }, [track]);
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    let live = true;
+    void el.play().then(
+      () => {
+        if (live) onPlayResult(track, false);
+      },
+      () => {
+        // Muting an <audio> would only trade one silence for another, so this
+        // one has to be reported and answered with a control.
+        if (live) onPlayResult(track, true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [track, resumeNonce, onPlayResult]);
   return <audio ref={ref} autoPlay className="hidden" />;
 }
 
@@ -253,10 +442,20 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<CallPhase>('idle');
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(false);
-  const [boundaryDetail, setBoundaryDetail] = useState<string | null>(null);
+  /** A local device ended by itself — see the handlers below. */
+  const [micLost, setMicLost] = useState(false);
+  const [camLost, setCamLost] = useState(false);
   const [localCam, setLocalCam] = useState<MediaStreamTrack | null>(null);
   const [remoteVideos, setRemoteVideos] = useState<RemoteTrackEntry[]>([]);
   const [remoteAudios, setRemoteAudios] = useState<RemoteTrackEntry[]>([]);
+  const [linkStates, setLinkStates] = useState<ReadonlyMap<UserId, MeshConnectionState>>(
+    () => new Map(),
+  );
+  /** Track ids whose sink autoplay refused; non-empty means offer the tap. */
+  const [soundBlocked, setSoundBlocked] = useState<ReadonlySet<string>>(() => new Set());
+  const [resumeNonce, setResumeNonce] = useState(0);
+  /** Bumped whenever some other surface claims or releases an audio sink. */
+  const [claimTick, setClaimTick] = useState(0);
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
   const camTrackRef = useRef<MediaStreamTrack | null>(null);
 
@@ -293,16 +492,67 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       if (track.kind === 'video') setRemoteVideos(drop);
       else setRemoteAudios(drop);
     });
+    const offLink = mesh.onConnectionState((userId, state) => {
+      setLinkStates((prev) => {
+        if (prev.get(userId) === state) return prev;
+        const next = new Map(prev);
+        next.set(userId, state);
+        return next;
+      });
+    });
+    // The empty onError this used to pass is the whole of "it just doesn't
+    // work and I have no idea why". The mesh sends one plain sentence per
+    // kind of failure, and only once media is actually at stake.
+    const offError = mesh.onError((note) => {
+      toast.error(note);
+    });
     return () => {
       offLocal();
       offRemote();
       offRemoved();
+      offLink();
+      offError();
     };
   }, [connection, me]);
 
   /* Leaving the room tears the mesh down; without this the peer connections
      outlive the page and keep sending. */
   useEffect(() => () => closeCallMesh(connection), [connection]);
+
+  /* Another surface may already be playing one of these tracks — the share
+     viewer plays the sharing host's sound with or without the call. Two
+     elements on one track is a flanged double, so the call sink stands down
+     for anything claimed (lib/call-mesh.ts). */
+  useEffect(
+    () =>
+      onAudioSinkClaims(() => {
+        setClaimTick((n) => n + 1);
+      }),
+    [],
+  );
+  /* claimTick is the clock: the claim registry lives outside React. */
+  const unclaimedAudios = useMemo(
+    () => remoteAudios.filter((entry) => !isAudioSinkClaimed(entry.track)),
+    [remoteAudios, claimTick],
+  );
+
+  /* Read through the LIVE sinks rather than trusting the id set: a sink that
+     unmounts while blocked never reports again, and an affordance left over
+     from a track nobody is playing is a button that fixes nothing. */
+  const soundIsBlocked = useMemo(
+    () => unclaimedAudios.some((entry) => soundBlocked.has(entry.track.id)),
+    [unclaimedAudios, soundBlocked],
+  );
+
+  const notePlayResult = useCallback((track: MediaStreamTrack, blocked: boolean): void => {
+    setSoundBlocked((prev) => {
+      if (prev.has(track.id) === blocked) return prev;
+      const next = new Set(prev);
+      if (blocked) next.add(track.id);
+      else next.delete(track.id);
+      return next;
+    });
+  }, []);
 
   /** What presence goes back to when the call ends: read off what is playing
    *  AT THAT MOMENT (music → 'listening'), not off any room-level mode. Read
@@ -311,6 +561,50 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     (): PresenceEntry['state'] =>
       presenceIdleStateFor(connection.useRoomState.getState().playback?.mediaRef ?? null),
     [connection],
+  );
+
+  /* ── local devices that vanish ─────────────────────────────────────────────
+     A device disappearing does exactly ONE thing: it fires 'ended' on its
+     track. No error, no permission change, nothing on the mesh — and the track
+     object stays put with `enabled` still true, so every control keyed on our
+     own `micOn` flag goes on drawing a live microphone while not one sample
+     leaves the machine. Unplug a headset mid-sentence and you are muted for
+     the rest of the call, looking at a mic-on icon. It is the swallowed play()
+     rejection again in a different costume: someone who cannot tell they are
+     broken.
+
+     Both handlers begin with an identity guard. `stop()` is not specified to
+     fire 'ended' and usually does not, but browsers differ — and a camera the
+     USER turned off must never be reported as a fault, so a handler whose
+     track is no longer the one we publish simply stands down. */
+  const handleMicEnded = useCallback(
+    (track: MediaStreamTrack): void => {
+      if (micTrackRef.current !== track) return;
+      micTrackRef.current = null;
+      // A dead track left published is a sender the mesh keeps renegotiating
+      // for and nobody can hear.
+      getCallMesh(connection, me).setLocalTrack('mic', null);
+      setMicLost(true);
+      // Presence has to carry it too, or every other screen in the room keeps
+      // a live mic drawn on a tile that has been silent for ten minutes.
+      connection.presenceUpdate({ micOn: false });
+      toast.error('Your microphone disconnected — nobody can hear you');
+    },
+    [connection, me],
+  );
+
+  const handleCamEnded = useCallback(
+    (track: MediaStreamTrack): void => {
+      if (camTrackRef.current !== track) return;
+      camTrackRef.current = null;
+      getCallMesh(connection, me).setLocalTrack('cam', null);
+      setLocalCam(null);
+      setCamOn(false);
+      setCamLost(true);
+      connection.presenceUpdate({ camOn: false });
+      toast.error('Your camera disconnected — turn it back on when it is ready');
+    },
+    [connection, me],
   );
 
   const leave = useCallback((): void => {
@@ -322,6 +616,11 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     mesh.setLocalTrack('mic', null);
     mesh.setLocalTrack('cam', null);
     setLocalCam(null);
+    setMicLost(false);
+    setCamLost(false);
+    // Drop the intent BEFORE announcing: anything that re-announces presence
+    // on our behalf must not re-assert a call we are leaving.
+    setCallIntent(connection, false);
     connection.presenceUpdate({ state: idleState(), micOn: false, camOn: false });
     setPhase('idle');
     setMicOn(true);
@@ -339,7 +638,15 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       mesh.start();
       const mic = stream.getAudioTracks()[0] ?? null;
       micTrackRef.current = mic;
+      setMicLost(false);
+      mic?.addEventListener('ended', () => {
+        handleMicEnded(mic);
+      });
       mesh.setLocalTrack('mic', mic);
+      // The intent is set first and read by everything that re-announces
+      // presence for other reasons, so 'in-call' cannot be overwritten in the
+      // round trip before the server echoes it back.
+      setCallIntent(connection, true);
       connection.presenceUpdate({ state: 'in-call', micOn: true, camOn: false });
       setMicOn(true);
       setPhase('in-call');
@@ -351,29 +658,59 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         toast.error(describeError(err, 'Could not join the call'));
       }
     }
-  }, [connection, me]);
-
-  const joinSfu = useCallback((): void => {
-    // The relayed call rides Cloudflare Realtime; until its join path is
-    // wired the honest state is the boundary panel, immediately — there is
-    // no token to mint and nothing to pretend at.
-    setPhase('joining');
-    setBoundaryDetail(RELAY_NOT_ENABLED);
-    setPhase('boundary');
-  }, []);
+  }, [connection, handleMicEnded, me]);
 
   const join = useCallback((): void => {
-    if (room.relayMode === 'mesh') void joinMesh();
-    else joinSfu();
-  }, [room.relayMode, joinMesh, joinSfu]);
+    void joinMesh();
+  }, [joinMesh]);
+
+  /**
+   * The way back from a lost microphone: ask for one again and republish it to
+   * everyone already connected. Saying "your mic died" without this is only
+   * half an answer — the other half was a page reload.
+   */
+  const recoverMic = useCallback((): void => {
+    void (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+          video: false,
+        });
+        const mic = stream.getAudioTracks()[0] ?? null;
+        if (mic === null) throw new Error('no microphone track');
+        // THE MUTE LATCH IS THE USER'S. Swapping a dead headset for a live one
+        // is not consent to be heard again, so the new track arrives in the
+        // state the old one was left in.
+        mic.enabled = micOn;
+        micTrackRef.current = mic;
+        mic.addEventListener('ended', () => {
+          handleMicEnded(mic);
+        });
+        getCallMesh(connection, me).setLocalTrack('mic', mic);
+        setMicLost(false);
+        connection.presenceUpdate({ micOn });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'NotAllowedError') {
+          toast.error('Microphone permission denied — allow it in your browser to be heard');
+        } else {
+          toast.error(describeError(err, 'Could not reach a microphone'));
+        }
+      }
+    })();
+  }, [connection, handleMicEnded, me, micOn]);
 
   const toggleMic = useCallback((): void => {
+    // There is nothing to unmute: the device ended and the track is gone.
+    // Flipping the latch here would publish `micOn: true` to the whole room
+    // over silence — the exact lie the loss handling exists to stop. The
+    // surface offers recoverMic in this slot instead.
+    if (micLost) return;
     const next = !micOn;
     const track = micTrackRef.current;
     if (track !== null) track.enabled = next;
     setMicOn(next);
     connection.presenceUpdate({ micOn: next });
-  }, [connection, micOn]);
+  }, [connection, micLost, micOn]);
 
   const toggleCamera = useCallback((): void => {
     const mesh = getCallMesh(connection, me);
@@ -391,11 +728,15 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         const cam = stream.getVideoTracks()[0] ?? null;
         camTrackRef.current = cam;
+        cam?.addEventListener('ended', () => {
+          handleCamEnded(cam);
+        });
         // Publishing here re-offers to every peer already connected, so the
         // people already in the call see the camera — not just later joiners.
         mesh.setLocalTrack('cam', cam);
         setLocalCam(cam);
         setCamOn(true);
+        setCamLost(false);
         connection.presenceUpdate({ camOn: true });
       } catch (err) {
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
@@ -405,12 +746,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         }
       }
     })();
-  }, [camOn, connection, me]);
-
-  const dismissBoundary = useCallback((): void => {
-    setBoundaryDetail(null);
-    setPhase('idle');
-  }, []);
+  }, [camOn, connection, handleCamEnded, me]);
 
   /* Unmount = leave (tracks stopped, presence restored). */
   useEffect(
@@ -418,6 +754,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       if (micTrackRef.current !== null || camTrackRef.current !== null) {
         micTrackRef.current?.stop();
         camTrackRef.current?.stop();
+        setCallIntent(connection, false);
         connection.presenceUpdate({
           state: idleState(),
           micOn: false,
@@ -428,13 +765,28 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     [connection, idleState],
   );
 
-  /* Self-healing presence: a reconnect re-announces the idle state for what is
-     playing ('watching'/'listening'), which would silently drop us out of the
-     call as far as everyone else's tiles are concerned. Re-assert while in it. */
+  /* Self-healing presence. Other surfaces re-announce presence for their own
+     reasons — the playback subscriber flips 'watching'/'listening' as a mixed
+     queue moves between music and video — and any of those writes can land on
+     top of 'in-call' and drop us out of everyone else's roster.
+
+     This effect is edge-triggered on the SERVER's echo, so it must not fire
+     once and give up: if the assertion is lost (a socket that went away
+     mid-send, a write the server never applied) the echo never changes, the
+     effect never re-runs, and the only cure left is the reload the owner found
+     by hand. So it keeps saying it until the room agrees, and stops the moment
+     it does — the deps carry the echo, so agreement ends the loop. */
   const myPresenceState: PresenceEntry['state'] | undefined = presence[me]?.state;
   useEffect(() => {
     if (phase !== 'in-call' || myPresenceState === 'in-call') return;
-    connection.presenceUpdate({ state: 'in-call', micOn, camOn });
+    const assert = (): void => {
+      connection.presenceUpdate({ state: 'in-call', micOn, camOn });
+    };
+    assert();
+    const handle = setInterval(assert, PRESENCE_REASSERT_MS);
+    return () => {
+      clearInterval(handle);
+    };
   }, [phase, myPresenceState, connection, micOn, camOn]);
 
   const memberById = useMemo(() => {
@@ -456,14 +808,95 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     return map;
   }, [remoteVideos]);
 
+  /** Peers whose media is arriving right now — the evidence half of the
+   *  roster (callPeerIds). */
+  const trackPeers = useMemo(() => {
+    const ids = new Set<UserId>();
+    for (const { userId } of remoteVideos) ids.add(userId);
+    for (const { userId } of remoteAudios) ids.add(userId);
+    return ids;
+  }, [remoteVideos, remoteAudios]);
+
+  /* Bridge bookkeeping, both written from the presence they describe.
+
+     `everInCall` is a ref: it only ever grows, and it is consulted about peers
+     who were in the call BEFORE this render, so being one tick behind is
+     correct rather than merely tolerable. `leftCallAt` is state, because a
+     bridge that expires has to re-render the roster to end. Anchoring on the
+     moment presence stopped saying 'in-call' — rather than on the last time it
+     said so — is what makes the window mean six seconds: presence only diffs
+     when a field actually changes, so a quiet room's entries can be minutes
+     old while everyone is still very much in the call. */
+  const everInCallRef = useRef(new Set<UserId>());
+  const [leftCallAt, setLeftCallAt] = useState<ReadonlyMap<UserId, number>>(() => new Map());
+  const [bridgeTick, setBridgeTick] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const inCallNow = new Set<UserId>();
+    for (const entry of Object.values(presence)) {
+      if (entry.state === 'in-call') inCallNow.add(entry.userId);
+    }
+    for (const userId of inCallNow) everInCallRef.current.add(userId);
+    setLeftCallAt((prev) => {
+      let next: Map<UserId, number> | null = null;
+      for (const userId of prev.keys()) {
+        if (inCallNow.has(userId)) (next ??= new Map(prev)).delete(userId);
+      }
+      // A row that vanished entirely counts as leaving too — the peer may have
+      // simply aged out of presence while their microphone kept arriving.
+      for (const userId of everInCallRef.current) {
+        if (inCallNow.has(userId) || prev.has(userId)) continue;
+        (next ??= new Map(prev)).set(userId, now);
+      }
+      return next ?? prev;
+    });
+  }, [presence]);
+
+  /* A bridged peer has to leave the roster when their few seconds are up, and
+     a presence store that has gone quiet will not re-render us on its own. */
+  useEffect(() => {
+    const now = Date.now();
+    let earliest: number | null = null;
+    for (const userId of trackPeers) {
+      if (presence[userId]?.state === 'in-call') continue;
+      const at = leftCallAt.get(userId);
+      if (at === undefined) continue;
+      const dueIn = at + PRESENCE_BRIDGE_MS - now;
+      if (dueIn <= 0) continue;
+      if (earliest === null || dueIn < earliest) earliest = dueIn;
+    }
+    if (earliest === null) return;
+    const handle = setTimeout(() => {
+      setBridgeTick((n) => n + 1);
+    }, earliest + 1);
+    return () => {
+      clearTimeout(handle);
+    };
+  }, [presence, trackPeers, leftCallAt, bridgeTick]);
+
+  /* bridgeTick is the clock; everInCallRef is a ref by design (above). */
+  const peerIds = useMemo(
+    () =>
+      callPeerIds({
+        me,
+        presence,
+        trackPeers,
+        everInCall: everInCallRef.current,
+        leftCallAt,
+        now: Date.now(),
+      }),
+    [me, presence, trackPeers, leftCallAt, bridgeTick],
+  );
+
   const audioSources = useMemo<AudioSource[]>(() => {
     const list: AudioSource[] = remoteAudios.map(({ userId, track }) => ({ userId, track }));
     const mic = micTrackRef.current;
     if (phase === 'in-call' && mic !== null) list.unshift({ userId: me, track: mic });
     return list;
     // micTrackRef is a ref by design (the track outlives renders); phase and
-    // micOn are what actually change whether it should be measured.
-  }, [remoteAudios, phase, me]);
+    // micLost are what actually change whether it should be measured — a mic
+    // that ended must leave the analyser, or the ring keeps its last reading.
+  }, [remoteAudios, phase, me, micLost]);
   const speakingIds = useVoiceActivity(audioSources, phase === 'in-call');
 
   const participants = useMemo<CallParticipant[]>(() => {
@@ -475,34 +908,91 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         avatarUrl: memberById.get(me)?.avatarUrl ?? null,
         accentColor: memberById.get(me)?.accentColor ?? null,
         isMe: true,
-        micOn,
+        // A microphone that ended is not "on" by any honest reading, whatever
+        // the mute latch still says — my own tile lies to me first.
+        micOn: micOn && !micLost,
         camOn,
         sharing: presence[me]?.sharing === true,
-        speaking: micOn && speakingIds.has(me),
+        speaking: micOn && !micLost && speakingIds.has(me),
         videoTrack: camOn ? localCam : null,
+        linkTrouble: false,
       });
     }
-    for (const entry of Object.values(presence)) {
-      if (entry.state !== 'in-call' || entry.userId === me) continue;
-      const info = memberById.get(entry.userId);
+    for (const userId of peerIds) {
+      // Presence keeps carrying mic/cam/sharing accurately even while its
+      // `state` is momentarily wrong (the server merges partial patches), so
+      // these read from it when it exists and from the media when it does not.
+      const entry = presence[userId];
+      const info = memberById.get(userId);
+      const sharing = entry?.sharing === true;
+      const video = videoByUser.get(userId) ?? null;
+      const micOnPeer = entry?.micOn ?? true;
+      const camOnPeer = entry?.camOn ?? video !== null;
       list.push({
-        userId: entry.userId,
+        userId,
         name: info?.displayName ?? 'Someone',
         avatarUrl: info?.avatarUrl ?? null,
         accentColor: info?.accentColor ?? null,
         isMe: false,
-        micOn: entry.micOn,
-        camOn: entry.camOn,
-        sharing: entry.sharing,
-        speaking: entry.micOn && speakingIds.has(entry.userId),
+        micOn: micOnPeer,
+        camOn: camOnPeer,
+        sharing,
+        speaking: micOnPeer && speakingIds.has(userId),
         // A sharing peer's video is already on the stage, and the mesh cannot
         // tell their camera track from their screen track — show the avatar.
-        videoTrack:
-          entry.camOn && !entry.sharing ? (videoByUser.get(entry.userId) ?? null) : null,
+        videoTrack: camOnPeer && !sharing ? video : null,
+        linkTrouble: TROUBLED_LINK.has(linkStates.get(userId) ?? 'new'),
       });
     }
     return list;
-  }, [phase, me, micOn, camOn, localCam, presence, memberById, speakingIds, videoByUser]);
+  }, [
+    phase,
+    me,
+    micOn,
+    micLost,
+    camOn,
+    localCam,
+    peerIds,
+    presence,
+    memberById,
+    speakingIds,
+    videoByUser,
+    linkStates,
+  ]);
+
+  /* ── what the content player has to answer to ──────────────────────────────
+     Two signals, deliberately read from two different places (see
+     lib/player/room-audio.ts). Publishing them here rather than passing them
+     down keeps the stage — an iframe-owning subtree — out of a re-render every
+     time somebody starts a sentence.
+
+     SPEECH: measured, fast, drives ducking.
+     VOICE:  presence mic state, slow, drives the drift band. It counts every
+             open mic in the room, not only the ones on this call's roster,
+             because the trade Consequence B describes is about live audio in
+             the room and nothing else. */
+  const duck = shouldDuckContent({ participants, soundBlocked: soundIsBlocked });
+  useEffect(() => {
+    publishSpeechActive(duck);
+  }, [duck]);
+
+  const voiceActive = useMemo(() => voiceActiveFrom(Object.values(presence)), [presence]);
+  useEffect(() => {
+    publishVoiceActive(voiceActive);
+  }, [voiceActive]);
+
+  /* Standing both down is the teardown that matters: a player left ducked, or
+     left tightened, by a publisher that no longer exists has no control
+     anywhere in the room that would put it back. Unmount-only on purpose —
+     folding this into the effects above would publish false between every
+     edge. */
+  useEffect(
+    () => () => {
+      publishSpeechActive(false);
+      publishVoiceActive(false);
+    },
+    [],
+  );
 
   const publisherCap = room.policies.maxPublishers;
   const inCallCount = useMemo(
@@ -515,8 +1005,9 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       phase,
       micOn,
       camOn,
-      cameraAvailable: room.relayMode === 'mesh',
-      boundaryDetail,
+      micLost,
+      camLost,
+      cameraAvailable: true,
       participants,
       publisherCap,
       capReached: inCallCount >= publisherCap && phase !== 'in-call',
@@ -525,14 +1016,15 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       leave,
       toggleMic,
       toggleCamera,
-      dismissBoundary,
+      recoverMic,
     }),
     [
       phase,
       micOn,
       camOn,
+      micLost,
+      camLost,
       room.relayMode,
-      boundaryDetail,
       participants,
       publisherCap,
       inCallCount,
@@ -540,7 +1032,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       leave,
       toggleMic,
       toggleCamera,
-      dismissBoundary,
+      recoverMic,
     ],
   );
 
@@ -548,7 +1040,28 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     <CallSessionContext.Provider value={value}>
       {children}
       {phase === 'in-call' &&
-        remoteAudios.map((entry) => <RemoteAudioTrack key={entry.track.id} track={entry.track} />)}
+        unclaimedAudios.map((entry) => (
+          <RemoteAudioTrack
+            key={entry.track.id}
+            track={entry.track}
+            resumeNonce={resumeNonce}
+            onPlayResult={notePlayResult}
+          />
+        ))}
+      {phase === 'in-call' && soundIsBlocked && (
+        <div className="fixed inset-x-0 bottom-6 z-50 flex justify-center">
+          <Button
+            size="sm"
+            onClick={() => {
+              // Inside the gesture, which is the whole of what the policy
+              // was waiting for. Each sink reports again from here.
+              setResumeNonce((n) => n + 1);
+            }}
+          >
+            {CALL_SOUND_BLOCKED_LABEL}
+          </Button>
+        </div>
+      )}
     </CallSessionContext.Provider>
   );
 }
@@ -589,8 +1102,11 @@ function CallTile({
   compact?: boolean;
   onTurnOnCamera?: (() => void) | undefined;
 }) {
-  const { name, micOn, camOn, sharing, speaking, videoTrack, isMe } = participant;
-  const status = camOn ? (micOn ? 'mic on' : 'muted') : micOn ? 'camera off' : 'camera off, muted';
+  const { name, micOn, camOn, sharing, speaking, videoTrack, isMe, linkTrouble } = participant;
+  const base = camOn ? (micOn ? 'mic on' : 'muted') : micOn ? 'camera off' : 'camera off, muted';
+  // The tile is the only place a broken link is visible per person; the toast
+  // says it once for the call, this says which tile it happened to.
+  const status = linkTrouble ? `${base}, reconnecting` : base;
   return (
     <figure
       className={cn(
@@ -640,6 +1156,12 @@ function CallTile({
           Sharing
         </span>
       )}
+
+      {linkTrouble && (
+        <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded-full bg-black/55 px-2 py-0.5 text-center text-caption text-white">
+          Reconnecting…
+        </span>
+      )}
     </figure>
   );
 }
@@ -679,15 +1201,35 @@ function ControlBar({ compact = false }: { compact?: boolean }) {
   const size = compact ? 14 : 16;
   return (
     <div className="flex items-center gap-1.5">
-      <Button
-        variant={call.micOn ? 'secondary' : 'ghost'}
-        size="sm"
-        aria-label={call.micOn ? 'Mute microphone' : 'Unmute microphone'}
-        aria-pressed={!call.micOn}
-        onClick={call.toggleMic}
-      >
-        {call.micOn ? <MicIcon size={size} aria-hidden /> : <MicOffIcon size={size} aria-hidden />}
-      </Button>
+      {/* A mute toggle over a microphone that no longer exists is a control
+          that does nothing, next to an icon that says everything is fine. The
+          slot carries the recovery instead, for exactly as long as it is the
+          only thing worth clicking. */}
+      {call.micLost ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          aria-label="Reconnect microphone"
+          onClick={call.recoverMic}
+        >
+          <MicOffIcon size={size} aria-hidden className="text-danger" />
+          {!compact && 'Reconnect mic'}
+        </Button>
+      ) : (
+        <Button
+          variant={call.micOn ? 'secondary' : 'ghost'}
+          size="sm"
+          aria-label={call.micOn ? 'Mute microphone' : 'Unmute microphone'}
+          aria-pressed={!call.micOn}
+          onClick={call.toggleMic}
+        >
+          {call.micOn ? (
+            <MicIcon size={size} aria-hidden />
+          ) : (
+            <MicOffIcon size={size} aria-hidden />
+          )}
+        </Button>
+      )}
       {call.cameraAvailable && (
         <Button
           variant={call.camOn ? 'secondary' : 'ghost'}
@@ -752,23 +1294,7 @@ export function CallDock({ roomId, className }: { roomId: RoomId; className?: st
   const call = useCallSession();
   const { participants, phase } = call;
   const empty = participants.length === 0;
-
-  if (phase === 'boundary') {
-    return (
-      <section aria-label="Call" data-room={roomId} className={cn('p-3', className)}>
-        <EmptyState
-          icon={<UsersIcon size={20} aria-hidden />}
-          title="Calls are direct in this room"
-          {...(call.boundaryDetail === null ? {} : { description: call.boundaryDetail })}
-          action={
-            <Button variant="secondary" size="sm" onClick={call.dismissBoundary}>
-              Got it
-            </Button>
-          }
-        />
-      </section>
-    );
-  }
+  const lossNote = deviceLossNote(call);
 
   if (empty) {
     // One slim row — the call costs the rail nothing until someone calls.
@@ -801,6 +1327,13 @@ export function CallDock({ roomId, className }: { roomId: RoomId; className?: st
         participants={participants}
         onTurnOnCamera={call.cameraAvailable ? call.toggleCamera : undefined}
       />
+      {/* The icons cannot carry this: the whole defect is that a dead track
+          looks exactly like a live one. Say it in words. */}
+      {lossNote !== null && (
+        <p role="alert" className="text-label text-danger">
+          {lossNote}
+        </p>
+      )}
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-caption text-low">
           {participants.length} in call · {call.relayLabel}
@@ -865,12 +1398,13 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
   const call = useCallSession();
   const [hidden, setHidden] = useHiddenForSession(roomId);
   const { participants } = call;
+  const lossNote = deviceLossNote(call);
 
   if (participants.length === 0) return null;
 
   if (hidden) {
     return (
-      <div className={cn(OVERLAY_ANCHOR, className)}>
+      <div className={cn(OVERLAY_ANCHOR, 'flex max-w-44 flex-col gap-1', className)}>
         <Button
           variant="secondary"
           size="sm"
@@ -880,6 +1414,13 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
           <UsersIcon size={16} aria-hidden />
           {participants.length}
         </Button>
+        {/* Dismissing the tiles is not consent to be told nothing: a device
+            that died is the one thing this collapsed state still owes you. */}
+        {lossNote !== null && (
+          <p role="alert" className="glass-raised rounded-ctl px-2 py-1 text-label text-danger">
+            {lossNote}
+          </p>
+        )}
       </div>
     );
   }
@@ -916,6 +1457,13 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
           would be one too many. */}
       <TileGrid participants={shown} compact />
       {overflow > 0 && <p className="text-label text-low">+{overflow} more in the call</p>}
+      {/* Theater and mobile see this surface and no other, so the device-loss
+          sentence has to live here too. */}
+      {lossNote !== null && (
+        <p role="alert" className="text-label text-danger">
+          {lossNote}
+        </p>
+      )}
       {call.phase === 'in-call' ? <ControlBar compact /> : <JoinButton />}
     </aside>
   );

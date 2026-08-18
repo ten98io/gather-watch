@@ -2,15 +2,11 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, ChunkedUploader } from '@gather/api-client';
 import {
-  CreateCheckoutSessionResponse,
-  CreatePortalSessionResponse,
   DeleteMeResponse,
-  GetEntitlementsResponse,
   ListSessionsResponse,
   MeExportResponse,
   RevokeAllSessionsResponse,
@@ -18,7 +14,9 @@ import {
 import type { AccentColor } from '@gather/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { formatBytes, formatTimestamp } from '@/lib/format';
+import { describeError } from '@/lib/describe-error';
+import { formatTimestamp } from '@/lib/format';
+import { usePushNotifications, unsubscribeFromPush } from '@/hooks/useServiceWorker';
 import { useTheme } from '@/hooks/useTheme';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -58,7 +56,6 @@ function ProfileSection() {
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl ?? '');
   const [accentColor, setAccentColor] = useState<string>(user?.accentColor ?? ACCENT_PRESETS[0] ?? '#7c5cfc');
   const [pending, setPending] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (user === null) return;
@@ -86,75 +83,26 @@ function ProfileSection() {
     }
   };
 
-  const uploadAvatar = async (file: File) => {
-    try {
-      // ChunkedUploader owns the multipart mechanics: it forwards the REAL
-      // per-part ETags to completeUpload (a hand-rolled loop with fake etags
-      // is rejected by MinIO/S3) and handles the CORS ExposeHeaders:ETag
-      // failure mode with a readable error.
-      const uploader = new ChunkedUploader(api);
-      const asset = await uploader.upload({
-        filename: file.name,
-        mime: file.type || 'image/png',
-        sizeBytes: file.size,
-        readPart: async (start, end) => new Uint8Array(await file.slice(start, end).arrayBuffer()),
-      });
-      toast.success('Avatar uploaded — processing…');
-      // The media pipeline processes async; its thumbnail (source scaled to
-      // 640w) is the public URL we can persist. Poll briefly, then save.
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        const page = await api.media.listLibrary({ limit: 50 });
-        const processed = page.items.find((item) => item.id === asset.id);
-        if (processed === undefined || processed.status === 'failed') break;
-        if (processed.status === 'ready') {
-          const url = processed.thumbnailUrl;
-          if (url !== null) {
-            setAvatarUrl(url);
-            const { user: updated } = await api.auth.updateProfile({ avatarUrl: url });
-            setUser(updated);
-            toast.success('Avatar saved');
-            return;
-          }
-          break;
-        }
-      }
-      toast.error('Could not process that image — paste an image URL instead.');
-    } catch {
-      toast.error('Uploads are offline on this server — paste an image URL instead.');
-    }
-  };
-
   if (user === null) return null;
   return (
     <Section title="Profile" description="How you appear inside rooms.">
+      {/* Avatars are a URL, not an upload. The file picker that used to sit
+          here ran the whole thing through services/media: a multipart POST for
+          the bytes, then a poll of the library listing waiting for the
+          transcoder's 640w thumbnail. That service is deleted, so the POST 404d
+          and the poll had nothing to read — every press ended in "Uploads are
+          offline on this server — paste an image URL instead." This is that
+          sentence, as a field instead of a dead end. */}
       <div className="flex items-center gap-4">
         <Avatar src={user.avatarUrl} name={user.displayName} accentColor={accentColor} size={64} />
-        <div className="flex flex-col gap-2">
-          <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
-            Upload avatar
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            aria-label="Upload avatar image"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file !== undefined) void uploadAvatar(file);
-              e.target.value = '';
-            }}
-          />
-          <Input
-            aria-label="Avatar image URL"
-            placeholder="…or paste an image URL"
-            value={avatarUrl}
-            onChange={(e) => {
-              setAvatarUrl(e.target.value);
-            }}
-          />
-        </div>
+        <Input
+          aria-label="Avatar image URL"
+          placeholder="Paste an image URL"
+          value={avatarUrl}
+          onChange={(e) => {
+            setAvatarUrl(e.target.value);
+          }}
+        />
       </div>
       <label className="flex flex-col gap-1.5">
         <span className="text-sm font-medium text-mid">Display name</span>
@@ -247,66 +195,6 @@ function SessionsSection() {
   );
 }
 
-function BillingSection() {
-  const entitlementsQuery = useQuery({
-    queryKey: ['entitlements'],
-    queryFn: () => apiFetch('/billing/entitlements', { schema: GetEntitlementsResponse }),
-  });
-
-  const open = async (kind: 'checkout' | 'portal') => {
-    try {
-      const res =
-        kind === 'checkout'
-          ? await apiFetch('/billing/checkout-session', {
-              method: 'POST',
-              body: { plan: 'premium' as const },
-              schema: CreateCheckoutSessionResponse,
-            })
-          : await apiFetch('/billing/portal-session', {
-              method: 'POST',
-              schema: CreatePortalSessionResponse,
-            });
-      window.location.assign(res.url);
-    } catch (err) {
-      if (err instanceof ApiError && (err.code === 'NOT_FOUND' || err.code === 'INTERNAL')) {
-        toast.error('Billing is not configured on this server.');
-      } else {
-        toast.error('Could not reach billing. Try again.');
-      }
-    }
-  };
-
-  return (
-    <Section title="Plan" description="Free is the full product; Premium adds Theater mode and bigger calls.">
-      {entitlementsQuery.isPending ? (
-        <Skeleton className="h-16" />
-      ) : entitlementsQuery.isError ? (
-        <p role="alert" className="text-sm text-mid">Couldn’t load plan details.</p>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3">
-          <Badge variant={entitlementsQuery.data.entitlements.plan === 'premium' ? 'aurora' : 'default'}>
-            {entitlementsQuery.data.entitlements.plan === 'premium' ? 'Premium' : 'Free'}
-          </Badge>
-          <span className="text-xs text-low">
-            {entitlementsQuery.data.entitlements.maxPublishers} people on camera or mic ·{' '}
-            {formatBytes(entitlementsQuery.data.entitlements.uploadQuotaGb * 1_073_741_824)} upload quota
-            {entitlementsQuery.data.entitlements.relayAllowed ? ' · Theater mode' : ''}
-          </span>
-        </div>
-      )}
-      <div className="flex flex-wrap gap-2">
-        {entitlementsQuery.data?.entitlements.plan === 'premium' ? (
-          <Button variant="secondary" onClick={() => void open('portal')}>
-            Manage subscription
-          </Button>
-        ) : (
-          <Button onClick={() => void open('checkout')}>Upgrade to Premium</Button>
-        )}
-      </div>
-    </Section>
-  );
-}
-
 function DataSection() {
   const router = useRouter();
   const { logout } = useAuth();
@@ -335,6 +223,9 @@ function DataSection() {
     try {
       const res = await apiFetch('/me', { method: 'DELETE', schema: DeleteMeResponse });
       toast.success(`Account deletion scheduled for ${new Date(res.purgeAt).toLocaleDateString()}`);
+      // Erasure drops the server row; this drops the browser end, so the
+      // device stops holding a subscription to an account that is going away.
+      await unsubscribeFromPush().catch(() => undefined);
       await logout();
       router.replace('/login');
     } catch {
@@ -374,6 +265,73 @@ function DataSection() {
           </div>
         </DialogContent>
       </Dialog>
+    </Section>
+  );
+}
+
+/**
+ * The opt-in, and the only place in the app that may ask for notification
+ * permission. Nothing prompts on load: an unprompted permission dialog is how
+ * an origin gets permanently blocked, and a blocked origin can never ask again.
+ *
+ * The copy states the actual policy, because the policy is the reassurance —
+ * this is a watch-together app and nothing may interrupt what is playing. The
+ * server pushes @mentions, invites and room-starts only; ordinary chat is the
+ * unread badge on the Chat tab, and sw.js additionally stays silent for a room
+ * you already have open on screen.
+ */
+function NotificationsSection() {
+  const { state, busy, enable, disable } = usePushNotifications();
+
+  const toggle = async (on: boolean) => {
+    try {
+      if (!on) {
+        await disable();
+        toast.success('Notifications off');
+        return;
+      }
+      const settled = await enable();
+      if (settled === 'on') {
+        toast.success('Notifications on — @mentions only');
+      } else if (settled === 'blocked') {
+        toast.error('Your browser blocked notifications for this site.');
+      }
+      // 'off' means the prompt was dismissed. That is an answer, not a
+      // failure — the switch stays off and nothing needs saying.
+    } catch (err) {
+      toast.error(describeError(err, 'Could not change notification settings.'));
+    }
+  };
+
+  return (
+    <Section
+      title="Notifications"
+      description="Only @mentions, invites, and a room starting. Never ordinary chat, and never while you already have that room open."
+    >
+      {state === 'checking' ? (
+        <Skeleton className="h-9" />
+      ) : state === 'unsupported' ? (
+        <p className="text-sm text-mid">
+          This browser can’t do push notifications. On iOS, add Gather to your Home Screen first.
+        </p>
+      ) : state === 'blocked' ? (
+        <p role="alert" className="text-sm text-mid">
+          Notifications are blocked for this site. Re-allow them in your browser’s site settings,
+          then come back.
+        </p>
+      ) : (
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm text-mid">Notify me when someone @mentions me</span>
+          <Switch
+            aria-label="Notify me when someone @mentions me"
+            checked={state === 'on'}
+            disabled={busy}
+            onCheckedChange={(on) => {
+              void toggle(on);
+            }}
+          />
+        </label>
+      )}
     </Section>
   );
 }
@@ -429,7 +387,13 @@ export default function SettingsPage() {
           <Button
             variant="ghost"
             onClick={() => {
-              void logout()
+              // Before the token goes, not after: the subscription row belongs
+              // to THIS account, and a device left subscribed keeps delivering
+              // one person's mentions to whoever signs in next. A failure here
+              // must never trap someone in a session they asked to leave.
+              void unsubscribeFromPush()
+                .catch(() => undefined)
+                .then(() => logout())
                 .then(() => queryClient.clear())
                 .then(() => {
                   router.replace('/login');
@@ -442,9 +406,9 @@ export default function SettingsPage() {
       </header>
 
       <ProfileSection />
+      <NotificationsSection />
       <AppearanceSection />
       <SessionsSection />
-      <BillingSection />
       <DataSection />
 
       <nav aria-label="Legal" className="flex gap-4 text-xs text-low">

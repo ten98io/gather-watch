@@ -4,7 +4,8 @@
  * local sockets. Cross-instance delivery comes free from the bus — the hub
  * only ever talks to its own sockets.
  *
- * Close codes: 4401 auth failures, 4403 forbidden/banned/scope, 4404 no room.
+ * Close codes: 4401 auth failures, 4403 forbidden/banned/scope, 4404 no room,
+ * 1013 the realtime bus never came up for this room (retryable).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { WebSocket } from 'ws';
@@ -37,7 +38,30 @@ interface Conn {
   frameCount: number;
 }
 
+/** One room's bus subscription: the liveness promise concurrent handshakes
+ *  wait on, plus the unsubscribe the last leaver calls. */
+interface BusSub {
+  /** Resolves once the channel is really subscribed (rejects if it failed). */
+  ready: Promise<unknown>;
+  /**
+   * Tears the subscription down. Resolves IMMEDIATELY when the subscribe has
+   * not landed yet: awaiting a promise that may never settle parked one more
+   * pending chain per timed-out handshake, and hung shutdown on its ceiling.
+   * A subscribe that lands later still unsubscribes itself.
+   */
+  unsub: () => Promise<void>;
+}
+
 const HEARTBEAT_INTERVAL_MS = 30_000;
+/**
+ * Handshake ceiling for the room's bus subscription. RedisBus.subscribe can
+ * stall indefinitely on an unreachable Redis (ioredis queues the SUBSCRIBE
+ * with maxRetriesPerRequest null), and a handshake that parks there leaves a
+ * socket the client believes is connected. Close it honestly instead.
+ */
+const BUS_SUBSCRIBE_TIMEOUT_MS = 3_000;
+/** Shutdown must not wait on a bus that never answered in the first place. */
+const BUS_UNSUBSCRIBE_TIMEOUT_MS = 1_000;
 /**
  * Per-socket inbound frame ceiling: @fastify/rate-limit only guards REST, so
  * WS floods (webrtc.* signaling spam, sync churn) need their own gate — every
@@ -72,7 +96,7 @@ export class RoomHub implements HubApi {
   private deps: Deps | null = null;
   private readonly rooms = new Map<string, Set<Conn>>();
   private readonly handlers = new Map<string, WsHandler>();
-  private readonly busSubs = new Map<string, () => Promise<void>>();
+  private readonly busSubs = new Map<string, BusSub>();
   private readonly heartbeat: NodeJS.Timeout;
 
   constructor(deps: Omit<Deps, 'hub'>) {
@@ -233,16 +257,11 @@ export class RoomHub implements HubApi {
         frameCount: 0,
       };
       this.addConn(roomId, conn);
-      await this.ensureBusSub(roomId);
-
-      socket.off('message', onEarlyFrame);
-      socket.on('message', (data: unknown, isBinary: boolean) => {
-        void this.onFrame(conn, roomId as RoomId, data, isBinary);
-      });
-      // Replay handshake-window frames in arrival order.
-      for (const [data, isBinary] of earlyFrames) {
-        await this.onFrame(conn, roomId as RoomId, data, isBinary);
-      }
+      // Lifecycle listeners go on BEFORE the awaited bus subscribe. addConn
+      // already made this socket a broadcast target, and the subscribe can
+      // stall; a socket registered without close/error/pong listeners would
+      // keep receiving fanout, never be unregistered when the client hangs up,
+      // and never answer the heartbeat.
       socket.on('pong', () => {
         conn.alive = true;
       });
@@ -253,6 +272,29 @@ export class RoomHub implements HubApi {
         log.warn({ err, roomId, userId: auth.userId }, 'websocket error');
         this.removeConn(roomId, conn);
       });
+
+      // The MESSAGE listener stays behind the subscribe, deliberately: a
+      // handler that emits before this instance is subscribed publishes into a
+      // channel it is not listening on, so the sender never sees its own
+      // event. Inbound frames keep buffering into earlyFrames until then, so
+      // waiting costs nothing. Bounded, because waiting FOREVER costs a socket.
+      const subscribed = await this.ensureBusSub(roomId);
+      if (!subscribed) {
+        this.removeConn(roomId, conn);
+        // 1013 "try again later" — honest: the client should reconnect, and
+        // this instance is the thing that is broken, not the request.
+        socket.close(1013, 'realtime bus unavailable');
+        return;
+      }
+
+      socket.off('message', onEarlyFrame);
+      socket.on('message', (data: unknown, isBinary: boolean) => {
+        void this.onFrame(conn, roomId as RoomId, data, isBinary);
+      });
+      // Replay handshake-window frames in arrival order.
+      for (const [data, isBinary] of earlyFrames) {
+        await this.onFrame(conn, roomId as RoomId, data, isBinary);
+      }
     } catch (err) {
       log.error({ err }, 'websocket handshake failed');
       socket.close(1011, 'internal error');
@@ -268,9 +310,19 @@ export class RoomHub implements HubApi {
       }
     }
     this.rooms.clear();
-    const unsubs = [...this.busSubs.values()];
+    const subs = [...this.busSubs.values()];
     this.busSubs.clear();
-    await Promise.all(unsubs.map((unsub) => unsub()));
+    // allSettled: a subscription that failed to establish must not turn
+    // shutdown into a rejection. The ceiling on top of that is a backstop for
+    // a bus whose UNSUBSCRIBE itself hangs — unsub() no longer awaits the
+    // original subscribe, so a subscribe that never settles is already free.
+    await Promise.race([
+      Promise.allSettled(subs.map((sub) => sub.unsub())),
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, BUS_UNSUBSCRIBE_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -289,33 +341,104 @@ export class RoomHub implements HubApi {
     if (conns === undefined || !conns.delete(conn)) return;
     if (conns.size === 0) {
       this.rooms.delete(roomId);
-      const unsub = this.busSubs.get(roomId);
+      const sub = this.busSubs.get(roomId);
       this.busSubs.delete(roomId);
-      if (unsub !== undefined) {
-        void unsub().catch((err: unknown) => {
+      if (sub !== undefined) {
+        void sub.unsub().catch((err: unknown) => {
           this.baseDeps.log.warn({ err, roomId }, 'bus unsubscribe failed');
         });
       }
     }
   }
 
-  /** Subscribe the room's bus channel on first local connection. */
-  private async ensureBusSub(roomId: string): Promise<void> {
-    if (this.busSubs.has(roomId)) return;
-    const subscribing = this.baseDeps.bus.subscribe(roomChannel(roomId), (raw) => {
-      this.onBusMessage(roomId, raw);
+  /**
+   * Subscribe the room's bus channel on first local connection, and wait for
+   * it — bounded by BUS_SUBSCRIBE_TIMEOUT_MS. Returns false when the channel
+   * is not live in time; the caller must not keep the socket.
+   */
+  private async ensureBusSub(roomId: string): Promise<boolean> {
+    let sub = this.busSubs.get(roomId);
+    if (sub === undefined) {
+      const subscribing = this.baseDeps.bus.subscribe(roomChannel(roomId), (raw) => {
+        this.onBusMessage(roomId, raw);
+      });
+      // The teardown is ARMED on the subscribe rather than awaiting it: on an
+      // unreachable Redis the subscribe never settles, and an unsub() that
+      // awaited it would never resolve — one leaked pending chain per
+      // timed-out handshake, and a shutdown that only returns when its own
+      // ceiling expires. If the SUBSCRIBE does land later, this still undoes it.
+      const state: { landed: (() => Promise<void>) | null; disposed: boolean } = {
+        landed: null,
+        disposed: false,
+      };
+      subscribing.then(
+        (undo) => {
+          state.landed = undo;
+          if (state.disposed) {
+            void undo().catch((err: unknown) => {
+              this.baseDeps.log.warn({ err, roomId }, 'late bus unsubscribe failed');
+            });
+          }
+        },
+        () => undefined,
+      );
+      // Stash immediately (behind the pending promise) so concurrent first
+      // connections for one room cannot double-subscribe — and so the second
+      // one WAITS for the same promise instead of assuming it already landed.
+      const entry: BusSub = {
+        ready: subscribing,
+        unsub: async () => {
+          state.disposed = true;
+          const undo = state.landed;
+          if (undo !== null) await undo();
+        },
+      };
+      sub = entry;
+      this.busSubs.set(roomId, entry);
+      // A subscribe that REJECTS is dropped so the next connection retries it.
+      // A subscribe that merely hangs keeps its entry on purpose: the
+      // underlying SUBSCRIBE may still land, and re-issuing it would deliver
+      // every event to this room's sockets twice.
+      subscribing.catch((err: unknown) => {
+        this.baseDeps.log.error({ err, roomId }, 'bus subscribe failed');
+        if (this.busSubs.get(roomId) === entry) this.busSubs.delete(roomId);
+      });
+    }
+    let expire: (late: false) => void = () => undefined;
+    const expiry = new Promise<false>((resolve) => {
+      expire = resolve;
     });
-    // Stash immediately (behind the pending promise) so concurrent first
-    // connections for one room cannot double-subscribe.
-    this.busSubs.set(roomId, async () => {
-      const unsub = await subscribing;
-      await unsub();
-    });
-    await subscribing;
+    const expiryTimer = setTimeout(() => expire(false), BUS_SUBSCRIBE_TIMEOUT_MS);
+    expiryTimer.unref();
+    try {
+      return await Promise.race([sub.ready.then(() => true).catch(() => false), expiry]);
+    } finally {
+      // Losing the race does not disarm the timer: without this every healthy
+      // handshake leaves a live 3s timer behind for its full window.
+      clearTimeout(expiryTimer);
+    }
   }
 
-  /** Fan a bus message out to this instance's sockets for the room. Events
-   *  were validated/typed at emit time — no re-validation on the hot path. */
+  /**
+   * Fan a bus message out to this instance's sockets for the room. Events
+   * were validated/typed at emit time — no re-validation on the hot path.
+   *
+   * A DIRECT event goes to EVERY socket the target user has open here, and
+   * that is load-bearing rather than lazy. One person legitimately holds more
+   * than one socket in a room: the web tab carrying their call, and the
+   * extension's offscreen document carrying their screen share, both
+   * authenticated as the same user. Only the client knows which of its meshes
+   * a given webrtc.* frame belongs to, and it decides from the `connectionId`
+   * this hub relays through untouched (@gather/p2p mesh lanes) — a frame for
+   * the other mesh is dropped there, cheaply, by design.
+   *
+   * Narrowing this to one socket would break the share outright. Routing by
+   * connection instead would mean the hub learning which socket owns which
+   * connectionId: per-socket state any client could grow without bound, that
+   * every instance would have to hold separately for sockets it cannot see,
+   * bought for nothing more than sparing the wrong socket a frame it already
+   * knows to ignore.
+   */
   private onBusMessage(roomId: string, raw: unknown): void {
     const msg = raw as RoomBusMessage;
     const conns = this.rooms.get(roomId);

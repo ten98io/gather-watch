@@ -32,7 +32,6 @@ export const configSchema = z.object({
   // null ⇒ the in-memory adapters are used (see adapters/index.ts).
   mongoUrl: z.string().min(1).nullable().default(null),
   redisUrl: z.string().min(1).nullable().default(null),
-  turnStaticAuthSecret: z.string().min(1).nullable().default(null),
   s3: z
     .object({
       endpoint: z.string().min(1).default('http://localhost:9000'),
@@ -42,8 +41,6 @@ export const configSchema = z.object({
       publicBaseUrl: z.string().min(1).default('http://localhost:9000/gather-media'),
     })
     .default({}),
-  ffmpegPath: z.string().min(1).default('ffmpeg'),
-  storageQuotaGb: z.coerce.number().int().min(1).default(10),
   cloudflare: z
     .object({
       turnKeyId: z.string().min(1).nullable().default(null),
@@ -56,14 +53,6 @@ export const configSchema = z.object({
       emailAccountId: z.string().min(1).nullable().default(null),
       emailApiToken: z.string().min(1).nullable().default(null),
       emailFrom: z.string().min(1).default('Gather <no-reply@gather.local>'),
-    })
-    .default({}),
-  freeTurnCapGbPerMonth: z.coerce.number().int().min(0).default(20),
-  stripe: z
-    .object({
-      secretKey: z.string().min(1).nullable().default(null),
-      webhookSecret: z.string().min(1).nullable().default(null),
-      pricePremiumMonthly: z.string().min(1).nullable().default(null),
     })
     .default({}),
   enableMediaPipeline: z.boolean().default(false),
@@ -132,7 +121,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     mongoUrl: envStr(env, 'MONGO_URL'),
     redisUrl: envStr(env, 'REDIS_URL'),
-    turnStaticAuthSecret: envStr(env, 'TURN_STATIC_AUTH_SECRET'),
     s3: {
       endpoint: envStr(env, 'S3_ENDPOINT'),
       accessKey: envStr(env, 'S3_ACCESS_KEY'),
@@ -140,8 +128,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       bucket: envStr(env, 'S3_BUCKET'),
       publicBaseUrl: envStr(env, 'S3_PUBLIC_BASE_URL'),
     },
-    ffmpegPath: envStr(env, 'FFMPEG_PATH'),
-    storageQuotaGb: envStr(env, 'STORAGE_QUOTA_GB'),
     cloudflare: {
       turnKeyId: envStr(env, 'CF_TURN_KEY_ID'),
       turnApiToken: envStr(env, 'CF_TURN_API_TOKEN'),
@@ -150,12 +136,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       emailAccountId: envStr(env, 'CF_EMAIL_ACCOUNT_ID'),
       emailApiToken: envStr(env, 'CF_EMAIL_API_TOKEN'),
       emailFrom: envStr(env, 'CF_EMAIL_FROM'),
-    },
-    freeTurnCapGbPerMonth: envStr(env, 'FREE_TURN_CAP_GB_PER_MONTH'),
-    stripe: {
-      secretKey: envStr(env, 'STRIPE_SECRET_KEY'),
-      webhookSecret: envStr(env, 'STRIPE_WEBHOOK_SECRET'),
-      pricePremiumMonthly: envStr(env, 'STRIPE_PRICE_PREMIUM_MONTHLY'),
     },
     enableMediaPipeline: envBool(env, 'ENABLE_MEDIA_PIPELINE'),
     tenorApiKey: envStr(env, 'TENOR_API_KEY'),

@@ -273,7 +273,10 @@ function pcIdFromSdp(sdp: string | undefined): number | null {
 export class MockPeerConnection implements RtcPeerConnectionLike {
   readonly pcId: number;
   readonly ownerTag: string;
-  readonly config: RtcConfigLike;
+  /** Live configuration: the constructor's, or the last setConfiguration(). */
+  config: RtcConfigLike;
+  /** Every config this pc has run with, construction first. */
+  readonly configHistory: RtcConfigLike[] = [];
 
   localDescription: SessionDescriptionLike | null = null;
   remoteDescription: SessionDescriptionLike | null = null;
@@ -313,6 +316,7 @@ export class MockPeerConnection implements RtcPeerConnectionLike {
     this.pcId = pcId;
     this.ownerTag = ownerTag;
     this.config = config;
+    this.configHistory.push(config);
     this.restartIce = () => {
       this.restartCount += 1;
       this.nextOfferIsRestart = true;
@@ -447,6 +451,15 @@ export class MockPeerConnection implements RtcPeerConnectionLike {
 
   getStats(): Promise<unknown> {
     return Promise.resolve({ pcId: this.pcId, ownerTag: this.ownerTag });
+  }
+
+  /** Swap the ICE configuration of a LIVE connection (spec: takes effect on the
+   *  next ICE gathering, i.e. after restartIce()). Not part of
+   *  RtcPeerConnectionLike — the mesh probes for it structurally. */
+  setConfiguration(config: RtcConfigLike): void {
+    this.assertNotClosed();
+    this.config = config;
+    this.configHistory.push(config);
   }
 
   close(): void {
@@ -692,7 +705,16 @@ export class SignalRouter {
 
   private readonly clock: VirtualClock;
   private readonly roomId: RoomId;
-  private readonly handlers = new Map<UserId, (ev: InboundSignal) => void>();
+  /**
+   * Every registered SOCKET per user, not one handler per user.
+   *
+   * The real hub fans a direct signal out to every socket the target user has
+   * open in the room (services/api/src/ws/hub.ts), and one person can be in a
+   * room twice over — the web tab holding the call, the extension's offscreen
+   * document holding the screen share. Modelling that as a single handler hid
+   * the collision the two used to cause.
+   */
+  private readonly handlers = new Map<UserId, Set<(ev: InboundSignal) => void>>();
   private readonly partitions = new Set<string>();
   private seq = 0;
   /** Every outbound client event that crossed the hub (for assertions). */
@@ -703,28 +725,38 @@ export class SignalRouter {
     this.roomId = roomId;
   }
 
-  /** Register a user's inbound handler; returns their outbound SignalSend. */
+  /** Register one of a user's sockets; returns that socket's outbound
+   *  SignalSend. Called once per socket, so a user may be attached twice. */
   attach(userId: UserId, onSignal: (ev: InboundSignal) => void): (ev: OutboundSignal) => void {
-    this.handlers.set(userId, onSignal);
+    let sockets = this.handlers.get(userId);
+    if (sockets === undefined) {
+      sockets = new Set();
+      this.handlers.set(userId, sockets);
+    }
+    sockets.add(onSignal);
     return (ev) => {
       if (ev.seq !== 0) return;
       this.sentEvents.push(ev);
       const target = ev.payload.targetUserId;
       if (this.isPartitioned(userId, target)) return;
-      const handler = this.handlers.get(target);
-      if (handler === undefined) return;
+      const targetSockets = this.handlers.get(target);
+      if (targetSockets === undefined) return;
       this.seq += 1;
       const seq = this.seq;
       const serverEvent = {
         type: ev.type,
         roomId: this.roomId,
         seq,
+        // fromUserId is stamped from the sending socket's authenticated
+        // identity, exactly as the hub does — never from the payload.
         ts: Math.floor(this.clock.now()),
         payload: { ...ev.payload, fromUserId: userId },
       } as InboundSignal;
-      this.clock.setTimeoutFn(() => {
-        handler(serverEvent);
-      }, this.delayMs);
+      for (const handler of [...targetSockets]) {
+        this.clock.setTimeoutFn(() => {
+          handler(serverEvent);
+        }, this.delayMs);
+      }
     };
   }
 

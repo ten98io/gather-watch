@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaRef } from '@gather/contracts';
-import { adapterKindFor, isHlsRef, mediaKey, stageGate } from '@/lib/player/adapter';
+import { adapterKindFor, isFullSyncKind, isHlsRef, mediaKey, stageGate } from '@/lib/player/adapter';
 
 describe('adapterKindFor', () => {
   it('routes youtube to the iframe adapter, everything else native', () => {
@@ -10,6 +10,20 @@ describe('adapterKindFor', () => {
     expect(
       adapterKindFor({ kind: 'hls', assetId: 'a1' as never, url: 'https://x/y.m3u8' }),
     ).toBe('native');
+  });
+
+  /**
+   * A page ref is the one MediaRef the web cannot play at all: it is a link to
+   * an arbitrary HTML document, and only the extension can drive whatever
+   * player that document mounts. 'native' here would hand an HTML URL to a
+   * <video> element AND — since isFullSyncKind('native') is true — start the
+   * drift engine seeking a player that never loads.
+   */
+  it('reports a page ref as nothing this browser can play', () => {
+    expect(adapterKindFor({ kind: 'page', url: 'https://blog.example.com/the-film' })).toBeNull();
+    expect(isFullSyncKind(adapterKindFor({ kind: 'page', url: 'https://blog.example.com/x' }))).toBe(
+      false,
+    );
   });
 });
 

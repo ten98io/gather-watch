@@ -383,3 +383,173 @@ export function TheaterIcon(props: IconProps) {
     </svg>
   );
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Replacements for the emoji still being used AS CONTROLS.
+
+   DESIGN.md §8 has always said icons come from this file and that "emoji are
+   content (reactions, chat), never controls" — and the product shipped `⚙` as
+   the room-settings button, `📌` as pin, `👑` as the host marker, `☾`/`☀` as
+   the theme toggle, `🔕` as mute, `📱`/`💻` as device markers, `🔑`/`🛡` on the
+   admin gates. Each of those is a control drawn in whatever the user's emoji
+   font happens to be: it ignores `currentColor`, ignores `stroke-width`, sits
+   on the text baseline rather than optically centred in its hit area, and
+   changes shape per platform. They also come out full-colour, which is why a
+   greyscale toolbar suddenly has a yellow crown in it.
+
+   Every icon below exists because a specific call site needs it. The call sites
+   are in other files (components/room, components/chat, components/people,
+   app/home, app/settings, app/admin) — see `crossScopeNeeds` — so these are
+   here first, ready, rather than each surface inventing its own.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/** components/room/RoomMenu.tsx — the `⚙` room-settings trigger. */
+export function SettingsIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+/** components/chat/ChatPane.tsx + MessageBubble.tsx — the `📌` pin controls. */
+export function PinIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
+
+/** The collapsed twin of ChevronDownIcon — ChatPane's `▸` disclosure. */
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
+/** components/people/PeoplePane.tsx — the `👑` host marker. */
+export function CrownIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
+      <path d="M5 21h14" />
+    </svg>
+  );
+}
+
+/** app/home/page.tsx — the `☀`/`☾` theme toggle. */
+export function SunIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </svg>
+  );
+}
+
+export function MoonIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+    </svg>
+  );
+}
+
+/** app/home/page.tsx — the `🔕` "notifications muted" marker. */
+export function BellOffIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+      <path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742" />
+      <path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05" />
+      <path d="m2 2 20 20" />
+    </svg>
+  );
+}
+
+/** app/settings/page.tsx — the `📱`/`💻` session device markers. */
+export function SmartphoneIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect width="14" height="20" x="5" y="2" rx="2" ry="2" />
+      <path d="M12 18h.01" />
+    </svg>
+  );
+}
+
+export function MonitorIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <line x1="8" x2="16" y1="21" y2="21" />
+      <line x1="12" x2="12" y1="17" y2="21" />
+    </svg>
+  );
+}
+
+/** app/admin/page.tsx — the `🔑` sign-in and `🛡` not-an-owner gates. */
+export function KeyIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4" />
+      <path d="m21 2-9.6 9.6" />
+      <circle cx="7.5" cy="15.5" r="5.5" />
+    </svg>
+  );
+}
+
+export function ShieldIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
+
+/** Queue reordering — the `↑`/`↓` controls. */
+export function ArrowUpIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m5 12 7-7 7 7" />
+      <path d="M12 19V5" />
+    </svg>
+  );
+}
+
+export function ArrowDownIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 5v14" />
+      <path d="m19 12-7 7-7-7" />
+    </svg>
+  );
+}
+
+/**
+ * The error / not-found illustration, replacing the `🌌` those pages render at
+ * `text-4xl`. An emoji at 36px is the single least professional thing on a page
+ * whose whole job is to say "something went wrong, calmly".
+ */
+export function OrbitIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85" />
+      <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152" />
+      <circle cx="12" cy="12" r="3" />
+      <circle cx="19" cy="5" r="2" />
+      <circle cx="5" cy="19" r="2" />
+    </svg>
+  );
+}

@@ -5,9 +5,6 @@ import type { ApiError, ErrorCode } from '@gather/contracts';
 export const ERROR_STATUS: Record<ErrorCode, number> = {
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
-  // 402 is what turns a plan gate into an upgrade prompt client-side; never
-  // use FORBIDDEN for an entitlement check.
-  PAYMENT_REQUIRED: 402,
   NOT_FOUND: 404,
   RATE_LIMITED: 429,
   ROOM_POLICY: 403,

@@ -1,9 +1,9 @@
 /**
- * Chat attachment uploads: entitlement caps, key sanitization, MinIO/S3
- * SigV4 presigned PUT URLs, and upload completion. The billing module isn't
- * built yet — the FREE/PREMIUM constant pair below is the documented interim
- * source of truth for the chat attachment cap (read from the subscriptions
- * collection, which billing will own).
+ * Chat attachment uploads: the object size limit, key sanitization, MinIO/S3
+ * SigV4 presigned PUT URLs, upload completion — and the check that turns a
+ * client's CLAIM about an attachment into a fact (resolveMessageAttachment).
+ * The size limit is a storage-sanity ceiling that applies to every account —
+ * nothing lifts it.
  */
 import { createHash, createHmac } from 'node:crypto';
 import type {
@@ -12,25 +12,23 @@ import type {
   CreateUploadBody,
   CreateUploadResponse,
   MediaAsset,
+  MessageAttachment,
   RoomId,
   UserId,
 } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { AppConfig } from '../../config';
-import type { AssetDoc, StorePort } from '../../adapters/ports';
+import type { AssetDoc } from '../../adapters/ports';
 import type { Deps } from '../types';
 
-export const FREE_ATTACHMENT_MAX_MB = 25;
-export const PREMIUM_ATTACHMENT_MAX_MB = 200;
-
-/** Per-user attachment cap: premium+active subscribers get the higher cap. */
-export async function attachmentMaxMb(store: StorePort, userId: string): Promise<number> {
-  const sub = await store.subscriptions.findById(userId);
-  return sub !== null && sub.plan === 'premium' && sub.status === 'active'
-    ? PREMIUM_ATTACHMENT_MAX_MB
-    : FREE_ATTACHMENT_MAX_MB;
-}
+/**
+ * Hard ceiling on a single chat attachment, identical for every account.
+ * This is a storage-sanity limit — a multi-gigabyte object arriving through a
+ * presigned PUT is a bug or an abuse, not a purchase decision — so it is
+ * enforced at ticket time AND against the real uploaded bytes at completion.
+ */
+export const ATTACHMENT_MAX_MB = 200;
 
 /** Storage-safe filename: [A-Za-z0-9._-] only, max 100 chars, never empty. */
 export function sanitizeFilename(name: string): string {
@@ -51,8 +49,8 @@ function hmac(key: string | Buffer, data: string): Buffer {
 }
 
 /**
- * S3 addressing (mirrors services/media/src/storage/url.ts — the two services
- * MUST agree, and this package cannot import that one). MinIO serves
+ * S3 addressing. This used to mirror services/media/src/storage/url.ts; that
+ * service is deleted, so this is now the only copy. MinIO serves
  * path-style `/bucket/key`; AWS, Cloudflare R2 and Tigris — which is what
  * Railway Buckets run on — serve virtual-hosted `bucket.host/key`, and the
  * bucket's position changes the canonical URI and the signed Host header, so
@@ -170,8 +168,8 @@ export function presignObjectUrl(
 }
 
 /**
- * Create an upload ticket: entitlement check, AssetDoc in 'uploading' state,
- * and a single presigned PUT part covering the whole object.
+ * Create an upload ticket: size check, AssetDoc in 'uploading' state, and a
+ * single presigned PUT part covering the whole object.
  */
 export async function createAttachmentTicket(
   deps: Deps,
@@ -179,9 +177,11 @@ export async function createAttachmentTicket(
   userId: UserId,
   body: CreateUploadBody,
 ): Promise<CreateUploadResponse> {
-  const cap = await attachmentMaxMb(deps.store, userId);
-  if (body.sizeBytes > cap * 1024 * 1024) {
-    throw new AppError('QUOTA_EXCEEDED', `attachment exceeds the ${cap} MB plan limit`);
+  if (body.sizeBytes > ATTACHMENT_MAX_MB * 1024 * 1024) {
+    throw new AppError(
+      'QUOTA_EXCEEDED',
+      `attachment exceeds the ${ATTACHMENT_MAX_MB} MB upload limit`,
+    );
   }
   const assetId = newId() as AssetId;
   const uploadId = newId();
@@ -239,7 +239,7 @@ function serializeAsset(doc: AssetDoc): MediaAsset {
 //
 // The presigned PUT is UNSIGNED-PAYLOAD with only `host` signed — S3/MinIO
 // accept an object of ANY size through it, so the create-time sizeBytes check
-// is advisory only. Completion HEADs the object and enforces the plan cap
+// is advisory only. Completion HEADs the object and enforces the size limit
 // against the actual byte count (deleting oversize objects), then records the
 // actual size. Tests inject fake ops per Deps.
 
@@ -329,10 +329,69 @@ function objectOps(deps: Deps): AttachmentObjectOps {
 }
 
 /**
+ * THE url a chat message may carry for an asset — one per asset, derived, and
+ * never taken from a client. A STABLE capability URL, not a bucket URL: the
+ * bucket is private (a Railway bucket has no anonymous read) and a presigned
+ * GET expires while a chat message lives forever, so messages store the api's
+ * own content route, which redirects to a fresh short-lived presign per view.
+ * The asset id is unguessable, which is the same access model as
+ * Discord/Slack attachment links; possession of the link is possession of the
+ * file.
+ */
+export function attachmentContentUrl(config: Deps['config'], assetId: AssetId): string {
+  return `${config.apiUrl}/assets/${assetId}/content`;
+}
+
+/**
+ * Turn the attachment a client SENT into the attachment the server will store.
+ *
+ * Everything in MessageAttachment was previously taken on trust and persisted
+ * verbatim, so a message could name an asset belonging to somebody else (the
+ * id is the whole capability — attaching a stranger's private upload to a
+ * message in a room they are not in re-publishes it), or point `url` anywhere
+ * at all, which is a stored redirect for every reader of the room.
+ *
+ * So: the ASSET is the authority for everything the server can know — owner,
+ * mime, filename, byte count, and the one legal url — and only the intrinsics
+ * we never learn server-side (pixel dimensions, media duration; there is no
+ * probing pipeline) survive from the client, already bounded by the contract.
+ * A caller may only attach an asset that is theirs and finished uploading.
+ */
+export async function resolveMessageAttachment(
+  deps: Deps,
+  userId: UserId,
+  claimed: MessageAttachment,
+): Promise<MessageAttachment> {
+  const asset = await deps.store.assets.findById(claimed.assetId);
+  if (asset === null) {
+    throw new AppError('NOT_FOUND', 'attachment asset not found');
+  }
+  if (asset.ownerId !== userId) {
+    throw new AppError('FORBIDDEN', 'attachment belongs to another account');
+  }
+  if (asset.status !== 'ready') {
+    throw new AppError('VALIDATION', 'attachment upload is not complete');
+  }
+  return {
+    assetId: asset.id,
+    url: attachmentContentUrl(deps.config, asset.id),
+    mime: asset.mime,
+    name: asset.filename,
+    sizeBytes: asset.sizeBytes,
+    width: claimed.width,
+    height: claimed.height,
+    // Voice notes carry a duration the client measured while recording and
+    // nothing server-side has ever measured; prefer a stored one if a
+    // transcode pipeline ever produces one.
+    durationMs: asset.durationMs ?? claimed.durationMs,
+  };
+}
+
+/**
  * Mark an upload complete. Owner + uploadId must match; already-'ready' is
- * an idempotent success. The plan size cap is enforced HERE against the
- * actual object (see AttachmentObjectOps above) — oversize objects are
- * deleted and the ticket fails. Returns the serialized asset + public URL.
+ * an idempotent success. The size limit is enforced HERE against the actual
+ * object (see AttachmentObjectOps above) — oversize objects are deleted and
+ * the ticket fails. Returns the serialized asset + public URL.
  */
 export async function completeAttachment(
   deps: Deps,
@@ -356,14 +415,14 @@ export async function completeAttachment(
     if (stat === null) {
       throw new AppError('VALIDATION', 'attachment object was never uploaded');
     }
-    const cap = await attachmentMaxMb(deps.store, userId);
-    if (stat.sizeBytes > cap * 1024 * 1024) {
+    if (stat.sizeBytes > ATTACHMENT_MAX_MB * 1024 * 1024) {
+      const message = `attachment exceeds the ${ATTACHMENT_MAX_MB} MB upload limit`;
       await ops.remove(doc.storageKey ?? '').catch(() => undefined);
       await deps.store.assets.updateOne(
         { id: doc.id },
-        { status: 'failed', sizeBytes: 0, error: `attachment exceeds the ${cap} MB plan limit` },
+        { status: 'failed', sizeBytes: 0, error: message },
       );
-      throw new AppError('QUOTA_EXCEEDED', `attachment exceeds the ${cap} MB plan limit`);
+      throw new AppError('QUOTA_EXCEEDED', message);
     }
     const updated = await deps.store.assets.updateOne(
       { id: doc.id },
@@ -374,12 +433,7 @@ export async function completeAttachment(
     }
     asset = updated;
   }
-  // A STABLE capability URL, not a bucket URL. The bucket is private (a
-  // Railway bucket has no anonymous read), and a presigned GET expires while a
-  // chat message lives forever — so messages store the api's own content
-  // route, which redirects to a fresh short-lived presign per view. The asset
-  // id is unguessable, which is the same access model as Discord/Slack
-  // attachment links; possession of the link is possession of the file.
-  const url = `${deps.config.apiUrl}/assets/${asset.id}/content`;
-  return { asset: serializeAsset(asset), url };
+  // The same one url resolveMessageAttachment will re-derive when the message
+  // that carries it is sent — see attachmentContentUrl.
+  return { asset: serializeAsset(asset), url: attachmentContentUrl(deps.config, asset.id) };
 }

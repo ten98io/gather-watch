@@ -90,6 +90,53 @@ describe('MeshProvider', () => {
     await provider.close();
     expect(closed).toBe(true);
   });
+
+  it('publishes a capture on the share roles, never over the microphone', async () => {
+    const calls: Array<[TrackRole, MediaStreamTrackLike | null]> = [];
+    const provider = new MeshProvider({
+      setLocalTrack: (role: TrackRole, t: MediaStreamTrackLike | null) => {
+        calls.push([role, t]);
+      },
+    } as unknown as MeshManager);
+
+    // A role is a SENDER. Publishing a screen capture's soundtrack on 'mic'
+    // replaced the person's live microphone for the whole room, and taking it
+    // away when the share stopped left them silent with the mic button still
+    // reading "on". A caller that knows what it is holding says so.
+    const screen = track('screen', 'video');
+    const screenAudio = track('screen-audio', 'audio');
+    await provider.publishTracks([
+      { role: 'share', track: screen },
+      { role: 'share-audio', track: screenAudio },
+    ]);
+    expect(calls).toEqual([
+      ['share', screen],
+      ['share-audio', screenAudio],
+    ]);
+  });
+
+  it('infers a capture from untagged tracks rather than doubling up on mic', async () => {
+    const calls: Array<[TrackRole, MediaStreamTrackLike | null]> = [];
+    const provider = new MeshProvider({
+      setLocalTrack: (role: TrackRole, t: MediaStreamTrackLike | null) => {
+        calls.push([role, t]);
+      },
+    } as unknown as MeshManager);
+
+    // Bare tracks: the camera and microphone come first, and everything past
+    // them belongs to a capture. There is only ever one microphone.
+    const mic = track('mic', 'audio');
+    const cam = track('cam', 'video');
+    const screen = track('screen', 'video');
+    const screenAudio = track('screen-audio', 'audio');
+    await provider.publishTracks([mic, cam, screen, screenAudio]);
+    expect(calls).toEqual([
+      ['mic', mic],
+      ['cam', cam],
+      ['share', screen],
+      ['share-audio', screenAudio],
+    ]);
+  });
 });
 
 describe('CfSfuProvider', () => {

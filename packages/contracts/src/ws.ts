@@ -19,6 +19,7 @@ import {
   RoomId,
   Timestamp,
   UserId,
+  WebUrl,
 } from './entities';
 
 export const WsEnvelope = z.object({
@@ -55,7 +56,10 @@ export const ClientChatSend = clientEvent(
     .object({
       kind: ClientMessageKind,
       body: z.string().max(8000),
-      gifUrl: z.string().url().nullable(),
+      // Message.gifUrl reads back as WebUrl — the write door MUST NOT be
+      // looser, or one accepted `javascript:` value makes the whole chat
+      // history unparseable for every member of the room.
+      gifUrl: WebUrl.nullable(),
       attachment: MessageAttachment.nullable(),
       replyTo: MessageId.nullable(),
       mentions: z.array(UserId),
@@ -239,6 +243,18 @@ export const ClientPresenceUpdate = clientEvent(
     micOn: z.boolean().optional(),
     camOn: z.boolean().optional(),
     sharing: z.boolean().optional(),
+    /**
+     * "Send the room back to me." A page refresh is NOT a leave: the presence
+     * entry outlives the 1-5s reload, so the server sees an ordinary
+     * heartbeat and replies with nothing — and the reloaded tab sits on an
+     * empty queue, no playback and an EMPTY roster (which then tears down
+     * every call peer). Saying so explicitly is the only reliable signal:
+     * a bare/empty heartbeat is indistinguishable from a no-op keepalive.
+     *
+     * Set on the FIRST presence.update of every socket open, never on the
+     * periodic beats — each one costs a full presence + sync + queue reply.
+     */
+    wantSnapshot: z.boolean().optional(),
   }),
 );
 export type ClientPresenceUpdate = z.infer<typeof ClientPresenceUpdate>;
@@ -417,6 +433,49 @@ export type ServerRoomUpdated = z.infer<typeof ServerRoomUpdated>;
 export const ServerMemberUpdated = serverEvent('member.updated', Member);
 export type ServerMemberUpdated = z.infer<typeof ServerMemberUpdated>;
 
+/** Why a member stopped being part of the room's roster. */
+export const MemberRemovalReason = z.enum(['left', 'kicked', 'banned', 'roomDeleted']);
+export type MemberRemovalReason = z.infer<typeof MemberRemovalReason>;
+
+/** The prose the server puts on the 4403 close frame when it removes someone,
+ *  and the only place the client is allowed to learn it from.
+ *
+ *  A WebSocket close reason is a free-text string, not the enum — so the two
+ *  sides were string-coupled through nothing but two copies of the same
+ *  literals, and editing one would have silently degraded the removed
+ *  member's screen back to the generic "your access ended" sentence with
+ *  every test still green. One table, both sides. */
+export const MEMBER_REMOVAL_CLOSE_TEXT: Record<MemberRemovalReason, string> = {
+  left: 'left',
+  kicked: 'kicked',
+  banned: 'banned',
+  roomDeleted: 'room deleted',
+};
+
+/** The inverse of MEMBER_REMOVAL_CLOSE_TEXT: the reason behind a close frame,
+ *  or null when the socket closed for anything else (the hub's own 4403s —
+ *  'not a member', 'guest token is room-scoped' — land here). */
+export function memberRemovalReasonFromCloseText(text: string): MemberRemovalReason | null {
+  for (const reason of MemberRemovalReason.options) {
+    if (MEMBER_REMOVAL_CLOSE_TEXT[reason] === text) return reason;
+  }
+  return null;
+}
+
+/** A member is gone from the roster (left, kicked, banned, room deleted), so
+ *  every remaining client refreshes its member list.
+ *
+ *  ALWAYS emitted ephemerally (seq 0). A client built before this type exists
+ *  fails ServerEvent.safeParse and returns without advancing its SeqTracker;
+ *  a persisted seq would then read as a gap on every later event and drag
+ *  that client into a full replay on every kick. Seq 0 frames are dropped
+ *  harmlessly instead. */
+export const ServerMemberRemoved = serverEvent(
+  'member.removed',
+  z.object({ userId: UserId, reason: MemberRemovalReason }),
+);
+export type ServerMemberRemoved = z.infer<typeof ServerMemberRemoved>;
+
 export const ServerClockPong = serverEvent(
   'clock.pong',
   z.object({ clientTs: Timestamp, serverTs: Timestamp }),
@@ -448,6 +507,7 @@ export const ServerEvent = z.discriminatedUnion('type', [
   ServerMediaStatus,
   ServerRoomUpdated,
   ServerMemberUpdated,
+  ServerMemberRemoved,
   ServerClockPong,
   ServerError,
 ]);

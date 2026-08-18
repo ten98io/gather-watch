@@ -165,8 +165,23 @@ const light: Readonly<Record<ColorTokenName, ColorToken>> = {
     'measured floor: 0.55 fell to 3.83:1 on --surface-3; 0.50 holds >=4.72:1 across the ladder',
   ),
   // Aurora hues persist — chroma dialed down ~15% for WCAG AA on light.
-  aurora1: solid(0.55, 0.2, 295, 'electric violet'),
-  aurora2: solid(0.58, 0.22, 340, 'fuchsia'),
+  //
+  // LIGHTNESS RAISED (2026-08-18), and this is the fix for the failure the
+  // guard test used to merely RECORD: the primary button's fill is the 135°
+  // aurora gradient, so one ink has to clear all three stops, and on light the
+  // best single ink measured 3.96:1 — under the 4.5:1 text bar. Black is the
+  // ink that can win here (light `aurora3` is amber at 7.69:1 with black and
+  // 2.73:1 with white, so white can never serve the gradient), and black gets
+  // better as the fill gets LIGHTER. aurora1 0.55→0.59 takes black from 3.96 to
+  // 4.72:1; aurora2 0.58→0.60 takes it from 4.33 to 4.74:1. Chroma comes down
+  // one notch with each so the hue does not go neon as it lightens.
+  //
+  // The cost, stated: `accent` aliases `aurora1`, and as a standalone UI colour
+  // its worst rung on the light ladder falls 4.17 → 3.49:1 (`surface3`), still
+  // clear of the 3:1 non-text bar. And light `--ink-on-accent` flips white →
+  // black, 5.31 → 4.72:1, still clear of the 4.5:1 text bar.
+  aurora1: solid(0.59, 0.19, 295, 'electric violet'),
+  aurora2: solid(0.6, 0.21, 340, 'fuchsia'),
   aurora3: solid(0.7, 0.14, 75, 'solar amber'),
   accent: alias('aurora1', 'listen rooms rebind this to the artwork colour at runtime'),
   accentInk: solid(0.98, 0.01, 295, 'ink on aurora gradients'),
@@ -387,13 +402,43 @@ export function inkForFill(fillHex: string): Ink {
 /**
  * The ink to put on one fill token in one theme.
  *
- * Per FILL, not per gradient: the primary button's fill is three stops, and a
- * single ink has to clear all three. Dark's do (black is ≥5.21:1 on every
- * stop); light's do not — see the guard in test/palette.test.ts.
+ * Per FILL, and deliberately NOT the answer for the gradient — a gradient is
+ * three fills under one label, so it gets `inkOnGradient` below.
  */
 export function inkOn(theme: ThemeName, fill: FillTokenName): Ink {
   return inkForFill(resolveColorToken(theme, fill).hex);
 }
+
+/**
+ * The three stops of the 135° aurora gradient (DESIGN.md §2), in gradient
+ * order. The primary button, the brand mark and the playing indicator are all
+ * painted with exactly this and nothing else.
+ */
+export const AURORA_GRADIENT_STOPS: readonly FillTokenName[] = ['aurora1', 'aurora2', 'aurora3'];
+
+/**
+ * The ink for a label drawn ACROSS the aurora gradient.
+ *
+ * `inkOn` cannot answer this. A label on the primary button crosses all three
+ * stops, so the ink that matters is the one whose WORST stop is best — a
+ * maximin, not a per-colour choice. Picking per stop is exactly how the
+ * shipped button ended up with `--accent-ink` (a near-white in both themes) on
+ * dark's vivid fills at a floor of 1.79:1 against `aurora3`.
+ *
+ * Ties go to `inkBlack`, matching `inkForFill`, so the two stay consistent.
+ */
+export function inkOnGradient(theme: ThemeName): Ink {
+  const floor = (ink: Ink): number =>
+    Math.min(
+      ...AURORA_GRADIENT_STOPS.map((stop) =>
+        contrastRatio(ink.hex, resolveColorToken(theme, stop).hex),
+      ),
+    );
+  return floor(INKS.inkBlack) >= floor(INKS.inkWhite) ? INKS.inkBlack : INKS.inkWhite;
+}
+
+/** `--ink-on-aurora-gradient`. Named apart from `inkOnCssVarName`'s per-fill set. */
+export const INK_ON_GRADIENT_CSS_VAR = '--ink-on-aurora-gradient';
 
 /** A surface as text actually meets it: opaque, with any wash already composited. */
 export interface EffectiveSurface {

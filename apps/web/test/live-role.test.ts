@@ -22,7 +22,14 @@ import { ME, ROOM_ID, h, makeMember, makeRoom, renderInRoom } from './helpers/ro
 
 const { QueuePane } = await import('@/components/queue/QueuePane');
 
-/** QueuePane's library picker uses react-query; SSR needs a client in scope. */
+/**
+ * The provider is a LEFTOVER, kept only so this test keeps testing one thing.
+ * It was here for QueuePane's library picker; that picker is gone (history
+ * replaced it) and QueuePane imports nothing from react-query any more, so
+ * wrapping it changes no behaviour. Dropping the wrapper — and the two imports
+ * above it — is a tidy-up that belongs in its own change, not in a test about
+ * role propagation.
+ */
 function queuePane(roomId: RoomId) {
   return h(
     QueryClientProvider,

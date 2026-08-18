@@ -83,8 +83,17 @@ export interface RtpSenderLike {
   replaceTrack?(track: MediaStreamTrackLike | null): Promise<void>;
 }
 
-/** Local media roles a mesh participant can publish. */
-export type TrackRole = 'share' | 'cam' | 'mic';
+/**
+ * Local media roles a mesh participant can publish.
+ *
+ * 'share-audio' is a role of its own for one reason: it is NOT a microphone.
+ * A role is a sender, so publishing a screen capture's soundtrack on 'mic' —
+ * which is what the web app did — REPLACED the host's live microphone for the
+ * whole room the moment they shared, and withdrawing it when the share stopped
+ * left them silent with their mic button still reading "on". Two roles, two
+ * senders, and neither can stand on the other.
+ */
+export type TrackRole = 'share' | 'share-audio' | 'cam' | 'mic';
 
 // ---------- peer connection ----------
 

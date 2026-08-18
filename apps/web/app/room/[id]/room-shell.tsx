@@ -5,15 +5,20 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '@gather/api-client';
-import { SetTheaterResponse, formatInviteCode } from '@gather/contracts';
+import {
+  SetTheaterResponse,
+  formatInviteCode,
+  memberRemovalReasonFromCloseText,
+} from '@gather/contracts';
 import type { RoomId } from '@gather/contracts';
 import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { describeError } from '@/lib/describe-error';
 import { ROLE_LABEL } from '@/lib/labels';
 import { toast } from '@/components/ui/toast';
-import { ExpiryChip, RoomMenu } from '@/components/room/RoomMenu';
+import { RoomMenu } from '@/components/room/RoomMenu';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
+import { unreadChatCount } from '@/lib/room-connection';
 import { mediaKindFor } from '@/lib/media-kind';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -30,7 +35,7 @@ import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/cn';
-import type { ConnectionStatus } from '@/lib/room-connection';
+import type { ConnectionStatus, RoomClosedInfo } from '@/lib/room-connection';
 
 type RailTab = 'chat' | 'queue' | 'people';
 
@@ -71,6 +76,13 @@ function ConnectionPill() {
  * Chat/Queue/People. Solid `surface-1` normally — glass is reserved for things
  * that float over moving video, which the rail only does in theater mode
  * (`floating`), where it overlays the stage.
+ *
+ * Theater is a PROP, never a different element. This used to be rendered by
+ * two branches — `<Rail>` in one and a `<>…</>` fragment in the other — at the
+ * same child slot, and React cannot reconcile a fragment against a component:
+ * every theater flip destroyed the whole rail and built it again, taking the
+ * call dock's `<video>` tiles, chat's scroll position and the queue with it.
+ * One element, one slot, props for the rest.
  */
 function Rail({
   roomId,
@@ -85,8 +97,12 @@ function Rail({
 }) {
   return (
     <aside
+      aria-label="Room panel"
       className={cn(
         'm-3 ml-0 flex w-rail shrink-0 flex-col overflow-hidden',
+        // Mutually exclusive on purpose: cn() is a plain joiner, so a floating
+        // rail that also kept `rounded-panel bg-surface-1` would paint a solid
+        // panel over the picture instead of glass.
         floating
           ? 'glass-panel absolute inset-y-0 right-0 z-20'
           : 'rounded-panel bg-surface-1',
@@ -164,14 +180,45 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
    *  Selecting the classified kind (a primitive) keeps this render quiet
    *  across the position-only playback updates every sync tick sends. */
   const stageKind = connection.useRoomState((s) => mediaKindFor(s.playback?.mediaRef ?? null));
+  /** Set only when the room refused this session for good — never by a
+   *  dropped connection, which reconnects on its own. */
+  const closed = connection.useRoomState((s) => s.closed);
   /**
-   * Theater is a video-stage concept: it collapses the rail so the picture can
-   * fill the room. While music (or nothing) plays the stage is an artwork
-   * hero, so the control is absent rather than present-and-pointless — and a
-   * stored `theater` flag must not collapse the rail either.
+   * Unread chat, for the mobile surface.
+   *
+   * The desktop badge is published by ChatPane onto its own TabsTrigger, which
+   * is exactly the mechanism a phone does not have: the tab bar lives inside a
+   * closed <Sheet>, SheetContent renders NOTHING while it is closed, and
+   * TabsContent mounts lazily — so before the first open there is no chat
+   * component in the tree at all, and after every close there is none again.
+   * A phone could take chat all evening and never once say so, then wipe the
+   * backlog the instant the sheet opened onto Chat.
+   *
+   * So the shell reads it itself, off the store that outlives every pane. The
+   * SELECTOR RETURNS THE NUMBER, not the message array: this component renders
+   * the stage, and re-rendering it on every position tick — or on every
+   * message, unread or not — is the cost the rail was careful to avoid.
    */
-  const theaterActive = room.theater && stageKind === 'video';
-  const canToggleTheater = canManage && stageKind === 'video';
+  const unreadChat = connection.useRoomState((s) =>
+    unreadChatCount(s.messages, s.chatSeenSeq, member.userId),
+  );
+  /**
+   * Theater is the USER'S LATCH, not a property of the playing item.
+   *
+   * It used to be `room.theater && stageKind === 'video'`, re-derived from
+   * whatever was on the stage — so a mixed queue re-laid-out the entire room
+   * once per item, hiding and re-showing the rail as it flowed video → music →
+   * video while nobody touched anything. A layout that changes under you
+   * because a song came on is not a mode, it is a twitch.
+   *
+   * So the flag itself decides the layout, and the ITEM decides only whether
+   * the control is worth offering: theater is turned ON over a picture, where
+   * filling the room means something. It stays offered while it is on, whatever
+   * is playing — a switch that can be flipped one way and not the other is a
+   * trap, and the queue can move to music while theater is on.
+   */
+  const theaterActive = room.theater;
+  const canToggleTheater = canManage && (stageKind === 'video' || theaterActive);
 
   const toggleTheater = (): void => {
     void apiFetch(`/rooms/${roomId}/theater`, {
@@ -181,13 +228,8 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
     })
       .then(() => toast.success(room.theater ? 'Theater off' : 'Theater on'))
       .catch((err: unknown) => {
-        // Plan gates arrive as 402; everything else gets curated copy. The raw
-        // server body is never shown.
-        if (err instanceof ApiError && err.status === 402) {
-          toast.error('Theater mode is a Premium feature — upgrade to enable it');
-        } else {
-          toast.error(describeError(err, 'Could not switch theater mode'));
-        }
+        // Curated copy only — the raw server body is never shown.
+        toast.error(describeError(err, 'Could not switch theater mode'));
       });
   };
 
@@ -207,6 +249,14 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
   /** Theater collapses the rail; the call tiles float over the stage instead. */
   const railCollapsed = theaterActive && !railOpen;
 
+  // The room ended this session for good (kicked, banned, room gone, token
+  // dead). No reconnect is coming, so the panes below would sit on a stale
+  // room behind a status pill that says nothing — say what happened instead.
+  if (closed !== null) {
+    const { title, detail } = closedNotice(closed);
+    return <RoomNotice title={title} detail={detail} />;
+  }
+
   return (
     <CallSessionProvider>
       <div className="flex h-dvh flex-col">
@@ -222,7 +272,6 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
           <Badge variant="muted" className="hidden font-mono sm:inline-flex">
             {formatInviteCode(room.inviteCode)}
           </Badge>
-          <ExpiryChip room={room} />
           {member.role !== 'member' && <Badge variant="default">{ROLE_LABEL[member.role]}</Badge>}
           <RoomMenu room={room} canManage={canManage} />
           {canToggleTheater && (
@@ -246,6 +295,17 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
               }}
             >
               Chat &amp; queue
+              {unreadChat > 0 && (
+                <>
+                  <Badge variant="aurora" aria-hidden className="shrink-0">
+                    {unreadChat > 99 ? '99+' : unreadChat}
+                  </Badge>
+                  {/* Same shape as TabsTrigger: the digit says nothing out
+                      loud, and an aria-label here would replace the button's
+                      identity with a count. */}
+                  <span className="sr-only">{unreadChat} unread</span>
+                </>
+              )}
             </Button>
           )}
         </header>
@@ -260,21 +320,27 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
                   hidden for the session. */}
               {railCollapsed && <CallOverlay roomId={roomId} />}
             </main>
-            {theaterActive ? (
-              <>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="absolute bottom-4 right-4 z-30"
-                  onClick={() => setRailOpen((v) => !v)}
-                  aria-expanded={railOpen}
-                >
-                  {railOpen ? 'Hide panel' : 'Chat & queue'}
-                </Button>
-                {railOpen && <Rail floating roomId={roomId} tab={tab} onTabChange={setTab} />}
-              </>
-            ) : (
-              <Rail roomId={roomId} tab={tab} onTabChange={setTab} />
+            {/* Its own slot, so it can appear and disappear without moving the
+                rail below it out of position. */}
+            {theaterActive && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="absolute bottom-4 right-4 z-30"
+                onClick={() => setRailOpen((v) => !v)}
+                aria-expanded={railOpen}
+              >
+                {railOpen ? 'Hide panel' : 'Chat & queue'}
+              </Button>
+            )}
+            {/* ONE rail, in ONE slot, for every layout it has. Theater changes
+                what it looks like, never what it is: docked → floating is a
+                prop change React can reconcile, so the call tiles keep their
+                tracks and chat keeps its scroll across the flip. It is absent
+                only when it is genuinely off screen — theater with the panel
+                closed, where CallOverlay above carries the tiles instead. */}
+            {!railCollapsed && (
+              <Rail roomId={roomId} tab={tab} onTabChange={setTab} floating={theaterActive} />
             )}
           </div>
         ) : (
@@ -301,6 +367,87 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
   );
 }
 
+/**
+ * The room's one blocking state: a headline, a plain sentence, and a way out.
+ * Both the join failure and a session the room ended mid-visit land here, so
+ * they read as the same kind of dead end rather than two inventions.
+ */
+function RoomNotice({
+  title,
+  detail,
+  onRetry,
+}: {
+  title: string;
+  detail: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <main className="flex min-h-dvh items-center justify-center px-4">
+      <div className="glass-panel flex w-full max-w-md flex-col items-center gap-4 p-8 text-center shadow-glow">
+        <span aria-hidden className="text-4xl">🌌</span>
+        <h1 className="font-display text-2xl font-bold">{title}</h1>
+        <p className="text-sm text-mid">{detail}</p>
+        <div className="flex gap-2">
+          {onRetry !== undefined && (
+            <Button variant="secondary" onClick={onRetry}>Retry</Button>
+          )}
+          <Link href="/home">
+            <Button>Back to your rooms</Button>
+          </Link>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+/**
+ * One plain sentence for why the room ended this session. A kick has to read
+ * as a kick: until now the only consumer of a terminal close was a stage
+ * watchdog, so a removed member saw an "Offline" pill — identical to dropped
+ * wifi. The server sends prose on the close frame ('kicked', 'banned',
+ * 'room deleted', …); this turns it into something a person would say, and
+ * never shows the code.
+ */
+export function closedNotice(info: RoomClosedInfo): { title: string; detail: string } {
+  // Keyed on the contract enum, not on the prose: the close frame carries a
+  // free-text string, and matching literals here against literals in the API
+  // meant an edit to either one degraded this to the generic sentence with
+  // every test still passing.
+  switch (memberRemovalReasonFromCloseText(info.reason)) {
+    case 'kicked':
+      return {
+        title: 'You were removed from this room',
+        detail: 'A host or moderator removed you.',
+      };
+    case 'banned':
+      return {
+        title: 'You were banned from this room',
+        detail: 'A host or moderator banned this account.',
+      };
+    case 'left':
+      return { title: 'You left this room', detail: 'You are no longer a member here.' };
+    case 'roomDeleted':
+      return { title: 'This room is gone', detail: 'A host deleted the room.' };
+    default:
+      break;
+  }
+  if (info.code === 4404) {
+    return { title: 'This room is gone', detail: 'The room no longer exists.' };
+  }
+  if (info.code === 4401) {
+    return { title: 'Your session ended', detail: 'Sign in again to come back.' };
+  }
+  if (info.code === 4403) {
+    // The hub's own refusals — 'not a member', 'guest token is room-scoped' —
+    // are not removals, so they carry no reason we can name.
+    return {
+      title: 'This room is not open to you',
+      detail: 'Ask a member for a fresh invite link.',
+    };
+  }
+  return { title: 'You are no longer in this room', detail: 'Your access to this room ended.' };
+}
+
 function RoomError({ error, onRetry }: { error: unknown; onRetry(): void }) {
   const apiError = error instanceof ApiError ? error : null;
   const banned =
@@ -321,22 +468,9 @@ function RoomError({ error, onRetry }: { error: unknown; onRetry(): void }) {
         : apiError?.code === 'FORBIDDEN'
           ? 'Ask a member for a fresh invite link.'
           : 'Check your connection and try again.';
+  // A curated API error is final; only an unrecognised failure is worth a retry.
   return (
-    <main className="flex min-h-dvh items-center justify-center px-4">
-      <div className="glass-panel flex w-full max-w-md flex-col items-center gap-4 p-8 text-center shadow-glow">
-        <span aria-hidden className="text-4xl">🌌</span>
-        <h1 className="font-display text-2xl font-bold">{title}</h1>
-        <p className="text-sm text-mid">{detail}</p>
-        <div className="flex gap-2">
-          {apiError === null && (
-            <Button variant="secondary" onClick={onRetry}>Retry</Button>
-          )}
-          <Link href="/home">
-            <Button>Back to your rooms</Button>
-          </Link>
-        </div>
-      </div>
-    </main>
+    <RoomNotice title={title} detail={detail} {...(apiError === null ? { onRetry } : {})} />
   );
 }
 

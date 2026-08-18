@@ -172,7 +172,9 @@ describe('auth', () => {
     expect(body.room).not.toHaveProperty('restream');
     expect(body.room).not.toHaveProperty('master');
     expect(body.member.role).toBe('guest');
-    expect(body.lastEventSeq).toBe(0);
+    // The join emits the guest's own `member.updated` arrival before reading
+    // the tip, so the seeded room's tip is that arrival (seq 1), not 0.
+    expect(body.lastEventSeq).toBe(1);
     expect(typeof body.accessToken).toBe('string');
     expect(res.cookies.find((c) => c.name === 'gather_rt')).toBeDefined();
   });

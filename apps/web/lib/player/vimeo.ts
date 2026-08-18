@@ -4,6 +4,7 @@
  */
 import type { MediaRef } from '@gather/contracts';
 import type { AdapterEvent, PlayerAdapter } from './adapter';
+import { VolumeMixer } from './ducking';
 
 interface VimeoPlayer {
   play(): Promise<void>;
@@ -47,6 +48,9 @@ export class VimeoAdapter implements PlayerAdapter {
   readonly kind = 'vimeo' as const;
 
   private readonly listeners = new Map<AdapterEvent, Set<() => void>>();
+  /** player.js has no mute of its own either — mute, the user's volume and the
+   *  duck gain resolve here and only the product is sent (lib/player/ducking.ts). */
+  private readonly mixer = new VolumeMixer();
   private player: VimeoPlayer | null = null;
   private position = 0;
   private duration = 0;
@@ -72,6 +76,8 @@ export class VimeoAdapter implements PlayerAdapter {
 
         player.on('loaded', () => {
           this.hardenIframe();
+          // Anything set before the player existed went nowhere; replay it.
+          this.applyVolume();
           // player.js reports SECONDS; the adapter contract is milliseconds.
           void player.getDuration().then((seconds) => {
             this.duration = seconds * 1000;
@@ -128,14 +134,25 @@ export class VimeoAdapter implements PlayerAdapter {
     return this.duration;
   }
   setMuted(muted: boolean): void {
-    void this.player?.setVolume(muted ? 0 : 1).catch(() => undefined);
+    this.mixer.setMuted(muted);
+    this.applyVolume();
   }
   isMuted(): boolean {
-    // player.js getVolume is async; the controls track mute state themselves.
-    return false;
+    // player.js getVolume is async, so the answer comes from what we last
+    // asked for rather than a round trip — which is also what makes unmuting
+    // restore the user's volume instead of slamming to 1.
+    return this.mixer.isMuted();
   }
   setVolume(volume: number): void {
-    void this.player?.setVolume(Math.min(1, Math.max(0, volume))).catch(() => undefined);
+    this.mixer.setUserVolume(volume);
+    this.applyVolume();
+  }
+  setDuck(gain: number): void {
+    this.mixer.setDuck(gain);
+    this.applyVolume();
+  }
+  private applyVolume(): void {
+    void this.player?.setVolume(this.mixer.effective()).catch(() => undefined);
   }
 
   on(evt: AdapterEvent, cb: () => void): () => void {

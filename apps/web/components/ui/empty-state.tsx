@@ -31,7 +31,7 @@ export function EmptyState({ icon, title, description, action, className }: Empt
     >
       <span
         aria-hidden
-        className="grid h-12 w-12 place-items-center rounded-full bg-surface-2 text-low"
+        className="grid h-10 w-10 place-items-center rounded-full bg-surface-2 text-low"
       >
         {icon}
       </span>

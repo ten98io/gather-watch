@@ -6,9 +6,9 @@
 #   docker build -f services/api/Dockerfile .
 #
 # STRATEGY — simple full-workspace build, NOT `turbo prune`, on purpose: with
-# three small services sharing the same packages/* deps, pruned graphs would be
-# nearly identical to the full workspace; simple keeps all Dockerfiles uniform.
-# See apps/web/Dockerfile for the full rationale.
+# two small services sharing the same packages/* deps, pruned graphs would be
+# nearly identical to the full workspace; simple keeps both Dockerfiles
+# uniform. See apps/web/Dockerfile for the full rationale.
 
 FROM node:22-alpine AS base
 # corepack-free by design: pin pnpm via npm instead.

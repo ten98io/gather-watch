@@ -1,12 +1,15 @@
 # Gather — infra
 
 One `docker compose` file = the full self-hosted production stack: Caddy (TLS
-edge), Next.js web, Fastify API, media worker, MongoDB, Redis, MinIO.
+edge), Next.js web, Fastify API, MongoDB, Redis, MinIO.
 
-The media plane needs no self-hosted service: calls run p2p mesh (default) or
-Cloudflare Realtime SFU (premium Theater mode), with Cloudflare TURN as the
-relay for clients behind hostile NATs — all reached directly by clients, with
-the API minting short-lived credentials.
+The media plane needs no self-hosted service. Calls and screen shares run as a
+p2p **mesh**, with Cloudflare **TURN** as the relay for clients behind hostile
+NATs — reached directly by clients, with the API minting short-lived
+credentials. Cloudflare's Realtime **SFU** is in the design as the capacity
+fallback and is not dialled by anything today (theater mode is a layout, not a
+transport). Nothing here transcodes: content plays from its own source on each
+viewer's device, or travels peer-to-peer as a screen share.
 
 ```
 infra/
@@ -16,7 +19,7 @@ infra/
 ```
 
 Dockerfiles live with their services (`apps/web/Dockerfile`,
-`services/api/Dockerfile`, `services/media/Dockerfile`) and are all built from
+`services/api/Dockerfile`) and are all built from
 the **repo root** context (simple full-workspace pnpm build — rationale
 documented in each Dockerfile).
 
@@ -27,28 +30,30 @@ documented in each Dockerfile).
 | caddy      | 80, 443, 443/udp, 8080       | 80, 443, 443/udp, 127.0.0.1:8080 | TLS termination + reverse proxy; 8080 = plain-HTTP dev block (loopback only) |
 | web        | 3000                         | — (via caddy)           | Next.js PWA                                                |
 | api        | 4000                         | — (via caddy)           | Fastify REST + room WebSocket (`/api/*`, `/ws`)            |
-| media      | 4500                         | —                       | health endpoint only; ffmpeg worker (in-process queue — run ONE replica) |
 | mongo      | 27017                        | —                       | MongoDB 7 (volume `mongo_data`)                            |
 | redis      | 6379                         | —                       | Redis 7 (pubsub; volume `redis_data`)                      |
 | minio      | 9000, 9001                   | 9000, 127.0.0.1:9001    | S3 API (public; presigned PUTs hit it directly) / admin console (loopback only) |
 
 Cross-file invariant (change one → change all): health endpoints are a
-contract with the app code — the API serves `GET /healthz` → 200 on `:4000`;
-the media worker serves `GET /healthz` → 200 on `:4500` (`MEDIA_PORT`).
-Compose gating and Docker HEALTHCHECKs both probe these.
+contract with the app code — the API serves `GET /healthz` → 200 on `:4000`.
+Compose gating and Docker HEALTHCHECKs both probe this.
 
 ## First boot
 
 1. **Env.** At the repo root: `cp .env.example .env`, then set real values for
    `JWT_SECRET`, `JWT_REFRESH_SECRET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY`.
-   Compose uses required-variable interpolation (`${VAR:?}`) for every
-   credential, so a missing or empty value fails the deploy loudly instead of
-   booting on the dev placeholders printed in this public repo.
+   Two of those four fail loudly on their own: `S3_ACCESS_KEY` and
+   `S3_SECRET_KEY` use compose's required-variable interpolation
+   (`${VAR:?set … in .env}`) on the `minio` and `minio-init` services, so a
+   missing value stops the stack rather than booting MinIO on the placeholders
+   printed in this public repo. The two JWT secrets arrive via `env_file` and
+   are enforced one layer up instead: the api runs with `NODE_ENV=production`,
+   and `loadConfig` refuses to boot unless both are set and ≥32 chars. Either
+   way, a placeholder never reaches a running container silently.
 
    For TURN relay in production, set `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN`
-   (Cloudflare TURN keys). Without them the API falls back to
-   `TURN_STATIC_AUTH_SECRET` (an EXTERNAL coturn you run yourself — none ships
-   in this compose file) and finally to STUN-only.
+   (Cloudflare TURN keys). Without them the API serves STUN-only — there is no
+   second relay to fall back to. See "TURN notes" below.
 
    Leave `MONGO_URL`/`REDIS_URL` alone — compose pins the in-network
    `mongodb://mongo:27017/gather` and `redis://redis:6379` per service, so the
@@ -96,23 +101,31 @@ as a belt-and-braces guard.
 ## TURN notes
 
 Only 80/443 (tcp, +443/udp for HTTP/3) need to be open inbound — the media
-plane (mesh WebRTC, Cloudflare SFU, Cloudflare TURN) never terminates on this
-host.
+plane (mesh WebRTC, Cloudflare TURN) never terminates on this host.
 
-The API hands clients ICE servers from `GET /rtc/turn-credentials` with a
-strategy chain:
+The API hands clients ICE servers from `GET /rtc/turn-credentials`. There are
+exactly two outcomes:
 
 1. **Cloudflare TURN** (`CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN` set): the API
    mints short-lived credentials via Cloudflare's TURN-keys API, tagged per
-   user for usage attribution.
-2. **External coturn** (`TURN_STATIC_AUTH_SECRET` set): time-limited
-   `timestamp:user` / HMAC-SHA1 credential pairs in the coturn REST
-   convention — for a coturn instance you operate outside this compose stack.
-3. **STUN-only** fallback (no relay; direct/NAT-traversable paths only).
+   user for usage attribution. If that call fails for any reason the API logs
+   it and falls through to (2) rather than erroring the join.
+2. **STUN-only** (no relay; direct/NAT-traversable paths only) — this is what
+   you get with no Cloudflare keys, so a client behind a symmetric NAT simply
+   cannot connect.
 
-Free-plan TURN relay is fair-use capped per account
-(`FREE_TURN_CAP_GB_PER_MONTH`); over the cap the API strips `turn:`/`turns:`
-URLs and keeps STUN.
+There is **no self-hosted coturn option**. An earlier build accepted
+`TURN_STATIC_AUTH_SECRET` and minted `timestamp:user` / HMAC-SHA1 pairs in the
+coturn REST convention for a coturn you ran yourself; that strategy and its
+config key were both deleted. Setting the variable today does nothing at all —
+`services/api/test/config-coturn.test.ts` pins that absence at the config
+layer, precisely so an operator can't set it and get a silently relay-less
+deploy. Bringing coturn back means writing the strategy again, not restoring
+an env var.
+
+TURN relay is unmetered: every account gets relay URLs whenever a relay is
+configured. Per-user credential tagging exists for attribution in your
+provider's analytics, not to ration anyone.
 
 ## Scaling notes
 
@@ -129,11 +142,14 @@ URLs and keeps STUN.
   (`dynamic a { name api port 4000 }`) so it re-resolves. No sticky sessions
   needed: a reconnecting WS client replays missed events via
   `GET /rooms/{id}/events?since=seq` regardless of which replica it lands on.
-- **media must run exactly ONE replica.** Its job queue is an in-process
-  promise chain — there is no BullMQ (and it never reads `REDIS_URL`), so
-  nothing coordinates job ownership across replicas; a second replica would
-  double-process uploads. Scale it vertically, or build real queue
-  coordination first.
+- **there is no media service to scale.** The old transcoder container had a
+  one-replica constraint (its job queue was an in-process promise chain — never
+  BullMQ, and it never read `REDIS_URL` — so nothing coordinated job ownership
+  and a second replica double-processed uploads). `services/media` is deleted:
+  Gather never transcodes, because nobody uploads a stream. Playback is the
+  source's own player, driven by the browser extension, or a peer-to-peer
+  screen share. If a transcoder ever comes back, the one-replica rule comes
+  back with it — it was a property of that queue, not of this compose file.
 - **web** (Next.js) is stateless; scale like api if it's ever the bottleneck
   (it usually isn't — Caddy gzips and the heavy traffic is media).
 - **mongo/redis/minio** are single-node here by design (one-box self-host).

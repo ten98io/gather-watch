@@ -1,8 +1,11 @@
-import { ApiError, RoomSocket } from '@gather/api-client';
+import { ApiError, RoomSocket, defaultClearTimeout, defaultSetTimeout } from '@gather/api-client';
 import type {
+  ClearTimeoutFn,
   ClockEstimator,
   RoomSocketOptions,
+  SetTimeoutFn,
   SocketStatus,
+  TimeoutHandle,
 } from '@gather/api-client';
 import type {
   ClientEvent,
@@ -67,6 +70,12 @@ export interface RoomConnectionOptions {
   api: RestClient;
   roomId: RoomId;
   /**
+   * The signed-in member's id. The presence keepalive uses it to read this
+   * member's CURRENT presence out of the room store, so the beat re-asserts
+   * 'in-call'/'away' instead of overwriting them with an idle default.
+   */
+  userId?: UserId;
+  /**
    * Access-token provider. Defaults to the web auth store's
    * {@link ensureAccessToken} (in-memory token, httpOnly-cookie refresh).
    */
@@ -85,6 +94,8 @@ export interface RoomConnectionOptions {
   socketOptions?: RoomConnectionSocketOptions;
   /** Test hook: how long emote bursts stay on screen. Default EMOTE_TTL_MS. */
   emoteTtlMs?: number;
+  /** Presence keepalive cadence. Default PRESENCE_KEEPALIVE_MS. */
+  presenceKeepaliveMs?: number;
 }
 
 /* ── Room state (server-authoritative projection for the panes) ─────────────
@@ -118,6 +129,14 @@ export interface RoomState {
   /** True once the server returned a short (< 50) oldest page — nothing
    *  earlier exists, so the "Load earlier" affordance should hide. */
   chatHistoryExhausted: boolean;
+  /**
+   * Newest chat seq this member has actually LOOKED AT. The unread badge is
+   * `messages after this that someone else wrote`, so it has to live here and
+   * not in ChatPane: the pane is one tab of three and the whole point of the
+   * badge is to be right about the time you were not on it. Advanced only by
+   * {@link RoomConnection.markChatSeen}; monotonic.
+   */
+  chatSeenSeq: number;
   /** userId → typing-expiry timestamp (ms). */
   typing: Record<UserId, number>;
   readCursors: Record<UserId, number>;
@@ -128,14 +147,42 @@ export interface RoomState {
   emotes: EmoteBurst[];
   /** Bumped when a seq gap could not be backfilled — panes should refetch. */
   gapLossCount: number;
-  /** Bumped on member.updated — People pane refetches the member list. */
+  /** Bumped on member.updated / member.removed — People pane refetches the
+   *  member list (the REST roster carries profiles the events do not). */
   membersVersion: number;
   lastError: string | null;
+  /**
+   * Set once the room has refused this session for good (kicked, banned, the
+   * room is gone, the token is dead). Null while the connection is merely
+   * down — a dropped wifi is not a refusal, and the two must not look alike.
+   */
+  closed: RoomClosedInfo | null;
+}
+
+/** Why the room ended this session: the ws close code and the server's text. */
+export interface RoomClosedInfo {
+  code: number;
+  reason: string;
 }
 
 export const MAX_MESSAGES = 300;
 export const TYPING_TTL_MS = 4000;
 export const EMOTE_TTL_MS = 2500;
+/**
+ * Presence heartbeat cadence. The server expires any member whose presence is
+ * older than 45s EVEN WITH THE SOCKET STILL OPEN (services/api …/presence.ts,
+ * ttlMs) — and the roster it drops is what CallMesh reconciles peers from, so
+ * a silent client tears its own call down. 15s survives two lost beats.
+ */
+export const PRESENCE_KEEPALIVE_MS = 15_000;
+
+/** The slice of its own presence a client may assert. */
+export interface PresencePatch {
+  state?: PresenceEntry['state'];
+  micOn?: boolean;
+  camOn?: boolean;
+  sharing?: boolean;
+}
 
 function initialRoomState(): RoomState {
   return {
@@ -146,6 +193,7 @@ function initialRoomState(): RoomState {
     presence: {},
     messages: [],
     chatHistoryExhausted: false,
+    chatSeenSeq: 0,
     typing: {},
     readCursors: {},
     deliveredCursors: {},
@@ -156,6 +204,7 @@ function initialRoomState(): RoomState {
     gapLossCount: 0,
     membersVersion: 0,
     lastError: null,
+    closed: null,
   };
 }
 
@@ -194,6 +243,23 @@ export function insertMessage(list: readonly Message[], msg: Message): Message[]
   }
   next.splice(i, 0, msg);
   return next.length > MAX_MESSAGES ? next.slice(next.length - MAX_MESSAGES) : next;
+}
+
+/**
+ * Messages someone ELSE wrote after the last seq this member looked at.
+ *
+ * Deliberately a projection over state that outlives the chat pane, so the
+ * count is right for exactly the window it exists to describe: the time the
+ * pane was not the tab you were on.
+ */
+export function unreadChatCount(
+  messages: readonly Message[],
+  chatSeenSeq: number,
+  me: UserId,
+): number {
+  return messages.filter(
+    (m) => m.seq > chatSeenSeq && m.authorId !== me && m.deletedAt === null,
+  ).length;
 }
 
 /** Applies a reaction op to a message's reactions map (immutably). */
@@ -252,6 +318,13 @@ export class RoomConnection {
   private readonly initialSeq: number | undefined;
   private readonly socket: RoomSocket;
   private readonly emoteTtlMs: number;
+  private readonly selfUserId: UserId | null;
+  private readonly presenceKeepaliveMs: number;
+  private readonly setTimeoutFn: SetTimeoutFn;
+  private readonly clearTimeoutFn: ClearTimeoutFn;
+  private presenceKeepaliveHandle: TimeoutHandle | null = null;
+  /** Everything this client has told the server about its own presence. */
+  private lastPresenceSent: PresencePatch = {};
   private activeToken: string | null = null;
   private closedIntentionally = false;
   private tokenRefreshInFlight = false;
@@ -263,6 +336,10 @@ export class RoomConnection {
     this.getToken = opts.getToken ?? ensureAccessToken;
     this.initialSeq = opts.initialSeq;
     this.emoteTtlMs = opts.emoteTtlMs ?? EMOTE_TTL_MS;
+    this.selfUserId = opts.userId ?? null;
+    this.presenceKeepaliveMs = opts.presenceKeepaliveMs ?? PRESENCE_KEEPALIVE_MS;
+    this.setTimeoutFn = opts.socketOptions?.setTimeoutFn ?? defaultSetTimeout;
+    this.clearTimeoutFn = opts.socketOptions?.clearTimeoutFn ?? defaultClearTimeout;
     this.useStatus = create<ConnectionStatus>()(() => 'connecting');
     this.useLastSeq = create<number>()(() => opts.initialSeq ?? 0);
     this.useRoomState = create<RoomState>()(() => initialRoomState());
@@ -278,10 +355,25 @@ export class RoomConnection {
         void this.loadRecentMessages().catch(() => undefined);
         opts.onGapLoss?.(info);
       },
+      onTerminalClose: (info) => {
+        // The server refused this session for good (auth / removed / gone).
+        // No reconnect follows, so the panes must be told why rather than
+        // sitting on a "reconnecting…" that will never resolve — and a kick
+        // has to read as a kick, not as the same "Offline" pill a lost wifi
+        // shows. `closed` is the blocking-state signal; `lastError` stays as
+        // the ambient one that any server error can also set.
+        this.useRoomState.setState({ lastError: info.reason, closed: { ...info } });
+      },
     });
 
     this.socket.onStatus((status) => {
       this.useStatus.setState(toConnectionStatus(status));
+      if (status === 'open') {
+        this.requestRoomSnapshot();
+        this.startPresenceKeepalive();
+      } else {
+        this.stopPresenceKeepalive();
+      }
       if (status === 'reconnecting') {
         void this.rotateTokenForReconnect();
       }
@@ -306,6 +398,15 @@ export class RoomConnection {
     return this.useLastSeq.getState();
   }
 
+  /**
+   * Why the room refused this session, once it has (auth expired, removed,
+   * room gone). Null while the connection is merely down — a 'closed' status
+   * WITH a reason is final, without one it is an ordinary intentional close.
+   */
+  get closeInfo(): { code: number; reason: string } | null {
+    return this.socket.closeInfo;
+  }
+
   /** Shared sync-core clock estimator (fed by socket heartbeats). */
   get clock(): ClockEstimator {
     return this.socket.clock;
@@ -322,6 +423,12 @@ export class RoomConnection {
    */
   async connect(): Promise<void> {
     this.closedIntentionally = false;
+    // Re-entering clears the last refusal, the same way RoomSocket clears its
+    // own closeInfo — otherwise the blocking notice would outlive the attempt
+    // that is meant to replace it.
+    if (this.useRoomState.getState().closed !== null) {
+      this.useRoomState.setState({ closed: null });
+    }
     const token = await this.getToken();
     if (token === null) {
       throw new ApiError(
@@ -340,6 +447,7 @@ export class RoomConnection {
   /** Intentional close: no reconnect; queued sends are dropped. */
   close(): void {
     this.closedIntentionally = true;
+    this.stopPresenceKeepalive();
     this.socket.close();
   }
 
@@ -392,6 +500,14 @@ export class RoomConnection {
         messages: messages.slice(-MAX_MESSAGES),
         // A short newest page means the window already holds everything.
         chatHistoryExhausted: ascending.length < 50,
+        // The backlog that was already there when you arrived is not unread —
+        // "unread" means "arrived while you were here and looking elsewhere".
+        // Only the FIRST load seeds the anchor; later calls must never rewind
+        // or fast-forward a cursor the pane is maintaining.
+        chatSeenSeq:
+          s.chatSeenSeq === 0
+            ? (messages[messages.length - 1]?.seq ?? 0)
+            : s.chatSeenSeq,
       };
     });
   }
@@ -436,6 +552,30 @@ export class RoomConnection {
     this.socket.send('chat.read', { lastReadSeq });
   }
 
+  /**
+   * "I have now seen chat up to `seq`." Advances the store's unread anchor and
+   * sends the read receipt, once, for each new high-water mark.
+   *
+   * Both halves belong here rather than in ChatPane. The anchor has to outlive
+   * the pane (it is what the unread badge is measured against while you are on
+   * another tab), and the receipt has to be deduped against something that
+   * outlives it too — a `useRef` in the pane re-armed on every remount and
+   * re-sent a cursor the server already had.
+   */
+  markChatSeen(seq: number): void {
+    if (seq <= 0 || seq <= this.useRoomState.getState().chatSeenSeq) return;
+    this.useRoomState.setState({ chatSeenSeq: seq });
+    try {
+      this.chatRead(seq);
+    } catch {
+      // The anchor is local truth and has advanced either way; the receipt is
+      // a courtesy to other members. RoomSocket QUEUES sends while the socket
+      // is merely down, but throws outright before the first connect() has
+      // resolved a token — and the chat pane can render inside that window.
+      // Losing one receipt is nothing; taking down the room with it is not.
+    }
+  }
+
   syncPlay(positionMs?: number): void {
     this.socket.send('sync.play', positionMs === undefined ? {} : { positionMs });
   }
@@ -476,12 +616,10 @@ export class RoomConnection {
     this.socket.send('queue.voteSkip', { itemId });
   }
 
-  presenceUpdate(patch: {
-    state?: PresenceEntry['state'];
-    micOn?: boolean;
-    camOn?: boolean;
-    sharing?: boolean;
-  }): void {
+  presenceUpdate(patch: PresencePatch): void {
+    // Remembered so the keepalive can re-assert this member's real state even
+    // before the server's own diff has come back into the store.
+    this.lastPresenceSent = { ...this.lastPresenceSent, ...patch };
     this.socket.send('presence.update', patch);
   }
 
@@ -495,6 +633,88 @@ export class RoomConnection {
 
   restreamStop(): void {
     this.socket.send('restream.stop', {});
+  }
+
+  // ── Presence keepalive ───────────────────────────────────────────────────
+
+  /**
+   * The one frame every open owes the server: this member's current presence
+   * WITH `wantSnapshot`, so the reply carries the room back.
+   *
+   * A refresh is not a leave. Nothing evicts a reloading tab — but the
+   * presence entry outlives the 1-5s reload (15s disconnect grace, 45s TTL),
+   * so the server sees an ordinary heartbeat, `created` is false, and without
+   * the flag it replies with NOTHING. The fresh store then stays at
+   * initialRoomState(): empty queue, null playback, no restream, and an EMPTY
+   * roster — which makes CallMesh.applyPresence([]) tear down every peer, so
+   * from the other machines the guests really did get kicked. Replay cannot
+   * cover this: it closes GAPS, and a reloaded client has no state to gap
+   * from. The snapshot is the vehicle.
+   *
+   * Exactly one of these per open, and never on the periodic beats: each one
+   * costs a full presence + sync + queue reply.
+   */
+  private requestRoomSnapshot(): void {
+    // 'offline' would ask the server to DELETE the entry (and reply nothing),
+    // so a member who last said offline still rejoins as a watcher.
+    const patch = this.presenceBeat() ?? { state: 'watching' as const };
+    // Remembered like any other assertion — minus the flag, which belongs to
+    // this frame alone and must not leak into the keepalive beats.
+    this.lastPresenceSent = { ...this.lastPresenceSent, ...patch };
+    this.socket.send('presence.update', { ...patch, wantSnapshot: true });
+  }
+
+  /**
+   * Beats presence while the socket is live. The server's presence TTL is
+   * 45s and expiry is NOT gated on the socket being closed, so a member who
+   * only ever sends discrete UI events (join call, mic toggle) silently rots
+   * out of the roster — taking their WebRTC peers with them.
+   *
+   * The beat carries the member's CURRENT state, never an empty payload: an
+   * empty presence.update means "send me the roster" server-side and would
+   * make every beat cost a full presence.state + sync.state + queue.state
+   * reply. An unchanged state is silent — the tracker only diffs when a
+   * client-visible field actually changes.
+   */
+  private startPresenceKeepalive(): void {
+    this.stopPresenceKeepalive();
+    const tick = () => {
+      this.presenceKeepaliveHandle = null;
+      if (this.closedIntentionally || this.status !== 'live') return;
+      const patch = this.presenceBeat();
+      if (patch !== null) this.presenceUpdate(patch);
+      this.presenceKeepaliveHandle = this.setTimeoutFn(tick, this.presenceKeepaliveMs);
+    };
+    // The first beat waits a full interval: requestRoomSnapshot() has just
+    // sent this member's current state on the open frame, so an immediate
+    // beat would be the same assertion twice.
+    this.presenceKeepaliveHandle = this.setTimeoutFn(tick, this.presenceKeepaliveMs);
+  }
+
+  private stopPresenceKeepalive(): void {
+    if (this.presenceKeepaliveHandle !== null) {
+      this.clearTimeoutFn(this.presenceKeepaliveHandle);
+      this.presenceKeepaliveHandle = null;
+    }
+  }
+
+  /**
+   * This member's presence as the server should still see it: the store's own
+   * row when we know our userId (it already reflects every surface — call,
+   * share, away), else whatever we last sent. Null means "do not beat"
+   * ('offline' would delete the entry we are trying to keep alive).
+   */
+  private presenceBeat(): PresencePatch | null {
+    const mine =
+      this.selfUserId === null ? undefined : this.useRoomState.getState().presence[this.selfUserId];
+    if (mine !== undefined) {
+      if (mine.state === 'offline') return null;
+      return { state: mine.state, micOn: mine.micOn, camOn: mine.camOn, sharing: mine.sharing };
+    }
+    const sent = this.lastPresenceSent;
+    if (sent.state === 'offline') return null;
+    // Never an empty payload — that is the server's roster-snapshot request.
+    return { ...sent, state: sent.state ?? 'watching' };
   }
 
   // ── Server event reducers ────────────────────────────────────────────────
@@ -577,7 +797,17 @@ export class RoomConnection {
     });
 
     this.socket.on('queue.state', (ev) => {
-      set({ queue: { items: ev.payload.items, version: ev.payload.version } });
+      // Version-guarded for the same reason applyServerState is seq-guarded.
+      // The snapshot reply to our wantSnapshot ask is stamped seq 0, so the
+      // tracker classifies it 'ephemeral' and applies it immediately — past
+      // gap detection, buffering and replay. The server reads the room BEFORE
+      // awaiting the presence heartbeat, so that reply can carry a queue that
+      // is already stale by the time it lands; without this guard a track
+      // added during the ask would vanish from the refreshed tab and, because
+      // there is no seq gap, replay would never put it back.
+      set((s) => (ev.payload.version < s.queue.version
+        ? {}
+        : { queue: { items: ev.payload.items, version: ev.payload.version } }));
     });
 
     this.socket.on('presence.state', (ev) => {
@@ -588,6 +818,15 @@ export class RoomConnection {
 
     this.socket.on('presence.diff', (ev) => {
       set((s) => {
+        // A no-op diff must not produce a new object. The server's grace
+        // handling re-publishes an entry whose visible fields are unchanged
+        // (only server-side reachability moved), and a fresh `presence` map
+        // re-renders every subscriber and re-runs the call mesh's peer
+        // reconciliation for nothing — per member, per flap.
+        const changed =
+          ev.payload.removed.some((userId) => s.presence[userId] !== undefined) ||
+          ev.payload.upserts.some((entry) => !jsonEqual(s.presence[entry.userId], entry));
+        if (!changed) return {};
         const presence = { ...s.presence };
         for (const entry of ev.payload.upserts) presence[entry.userId] = entry;
         for (const userId of ev.payload.removed) delete presence[userId];
@@ -615,6 +854,22 @@ export class RoomConnection {
         // The version still bumps: the People pane refetches its roster (the
         // REST list carries profiles this event does not).
         return { members, membersVersion: s.membersVersion + 1 };
+      });
+    });
+
+    this.socket.on('member.removed', (ev) => {
+      // The server has emitted this since the roster fix; nothing on the
+      // client listened, so a kick, a ban or someone leaving stayed invisible
+      // until a manual refresh. Drop the row AND the presence entry (an
+      // absent member is not a silent one), then bump the version — that is
+      // what makes PeoplePane and CallSurface refetch.
+      set((s) => {
+        const { userId } = ev.payload;
+        const members = { ...s.members };
+        delete members[userId];
+        const presence = { ...s.presence };
+        delete presence[userId];
+        return { members, presence, membersVersion: s.membersVersion + 1 };
       });
     });
 
@@ -647,7 +902,9 @@ export class RoomConnection {
         return;
       }
       this.activeToken = token;
-      this.socket.close();
+      // A bounce, not a goodbye: whatever the user typed or queued while the
+      // socket was down must survive the swap, so the queue is preserved.
+      this.socket.close({ preserveQueue: true });
       this.socket.connect(this.roomIdValue, token);
     } catch {
       // Token refresh failed; RoomSocket's backoff keeps retrying with the

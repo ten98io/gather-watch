@@ -46,13 +46,19 @@ export type TypeStepName = 'display' | 'title' | 'body' | 'label' | 'caption' | 
  * a pre-redesign shape. `mono` is not a step — it is a family, see `fontFamily`.
  */
 export const typeRamp: Readonly<Record<TypeStepName, TypeStep>> = {
-  display: { fontSize: 32, lineHeight: 36, fontWeight: 600, letterSpacing: -0.02 },
-  title: { fontSize: 20, lineHeight: 26, fontWeight: 600, letterSpacing: -0.01 },
+  // LEADING RETUNED (2026-08-18): 32/36 is 1.125 — a poster setting, and one of
+  // the things that made the product read as a toy at a glance. A page title is
+  // a document, not a banner; 32/40 is 1.25.
+  display: { fontSize: 32, lineHeight: 40, fontWeight: 600, letterSpacing: -0.02 },
+  // Same correction one step down: 20/26 (1.30) → 20/28 (1.40).
+  title: { fontSize: 20, lineHeight: 28, fontWeight: 600, letterSpacing: -0.01 },
   // Web additionally scales the <body> font-size 15→17px at ≥1440px; that is
   // this step's `maxFontSize`. RN has no viewport unit and uses 15.
   body: { fontSize: 15, lineHeight: 22, fontWeight: 400, letterSpacing: 0, maxFontSize: 17 },
   label: { fontSize: 13, lineHeight: 18, fontWeight: 500, letterSpacing: 0 },
-  caption: { fontSize: 11, lineHeight: 14, fontWeight: 500, letterSpacing: 0.04, uppercase: true },
+  // Tracking 0.04 → 0.06em: 11px uppercase is the one place in the ramp where
+  // under-tracking reads as cramped rather than tight.
+  caption: { fontSize: 11, lineHeight: 14, fontWeight: 500, letterSpacing: 0.06, uppercase: true },
   // Marketing/auth heroes only — the one genuinely fluid step in the system.
   hero: {
     fontSize: 28,
@@ -89,21 +95,147 @@ export const SPACING_RAMP: readonly number[] = [4, 8, 12, 16, 24, 32, 48];
 export type RadiusName = 'sm' | 'control' | 'card' | 'panel' | 'pill';
 
 /**
- * Radii (DESIGN.md §4): 8 chips-in-rows, 12 controls AND cards, 20
- * panels/sheets, pill.
+ * Radii: 6 chips, 8 controls, 10 cards/rows, 14 panels/sheets, pill.
  *
- * DISAGREEMENT RESOLVED: mobile still carried the pre-redesign card 16 and
- * panel 24. DESIGN.md records the change explicitly ("card 16→12, panel 24→20
- * — tighter corners read as more precise") and web's tailwind.config.ts
- * already moved. Mobile's values are the stale ones and are dropped.
+ * ── Why these moved again (2026-08-18) ────────────────────────────────────
+ * A corner radius is only ever legible RELATIVE to the height of the thing it
+ * is cut into. The previous ladder (8 / 12 / 12 / 20) was authored against
+ * touch-sized controls, and once `controlSizes` below tightened the desktop
+ * button to 32px, a 12px corner was 0.38 of the control's height — the ratio a
+ * toy has. This ladder holds every rung between 0.18 and 0.25 of its owner's
+ * height, which is the band consumer software actually sits in.
+ *
+ *   sm      6   chips, badges in rows, menu items       6/28  = 0.21
+ *   control 8   buttons, inputs, selects, icon buttons  8/32  = 0.25
+ *   card    10  media rows, cards, popovers             10/56 = 0.18
+ *   panel   14  glass panels, sheets, dialogs
+ *
+ * `control` and `card` were the SAME value before, so a 32px button and a 56px
+ * row were cut identically; separating them is what makes a control read as a
+ * control. Radii are only ever tightened here — never loosened — because a
+ * looser corner is the single cheapest way back to looking cartoonish.
+ *
+ * DISAGREEMENT RESOLVED (kept from the earlier reconciliation): mobile still
+ * carried the pre-redesign card 16 and panel 24, and lost.
  */
 export const radii: Readonly<Record<RadiusName, number>> = {
-  sm: 8,
-  control: 12,
-  card: 12,
-  panel: 20,
+  sm: 6,
+  control: 8,
+  card: 10,
+  panel: 14,
   pill: 999,
 };
+
+export type ControlSizeName = 'sm' | 'md' | 'lg';
+
+/**
+ * One control size: everything a button, input or select needs to be drawn.
+ *
+ * `height` and `touchHeight` are the whole point — see `controlSizes`.
+ */
+export interface ControlSize {
+  /** px. The height where the primary pointer is FINE (mouse/trackpad). */
+  readonly height: number;
+  /**
+   * px. The height where the primary pointer is COARSE (finger). Never below
+   * `layout.tap`; a guard test enforces that, because tightening desktop
+   * density must not be paid for out of the touch target.
+   */
+  readonly touchHeight: number;
+  /** px, horizontal padding. */
+  readonly paddingX: number;
+  /** px, icon-to-label gap. */
+  readonly gap: number;
+  /** The ramp step the label takes. */
+  readonly text: TypeStepName;
+  /** The corner it is cut with. */
+  readonly radius: RadiusName;
+}
+
+/**
+ * Control geometry — the token that carries "desktop density" across web,
+ * mobile and the extension overlay at once.
+ *
+ * ── The problem this replaces ─────────────────────────────────────────────
+ * apps/web hard-coded `h-9 / h-11 / h-12` (36 / 44 / 48px) in
+ * components/ui/button.tsx, so the DEFAULT button was 44px tall on a desktop
+ * beside 15px body text. 44px is a touch target, not a desktop control: it is
+ * the single loudest reason the product read as "cartoonish". Professional
+ * desktop density is 32–36px (Linear, GitHub Primer and Figma all sit at 32).
+ *
+ * ── Why two heights and not one ───────────────────────────────────────────
+ * The honest answer to "tighten desktop without hurting touch" is that these
+ * are two different questions with two different right answers, and the
+ * platform already tells us which one it is being asked. `height` applies
+ * under `(pointer: fine)`, `touchHeight` under `(pointer: coarse)` — a media
+ * query, so it costs nothing at runtime and needs no JS, no breakpoint guess,
+ * and no "is this a phone" heuristic. A desktop browser resized narrow keeps
+ * the tight controls (it still has a mouse); a tablet at 1024px gets the
+ * 44px ones (it does not). Emitted by `emitCssControlMetrics`.
+ */
+export const controlSizes: Readonly<Record<ControlSizeName, ControlSize>> = {
+  sm: { height: 28, touchHeight: 44, paddingX: 10, gap: 6, text: 'label', radius: 'sm' },
+  md: { height: 32, touchHeight: 44, paddingX: 12, gap: 8, text: 'label', radius: 'control' },
+  lg: { height: 40, touchHeight: 48, paddingX: 20, gap: 8, text: 'body', radius: 'control' },
+};
+
+/** Emission order, smallest first. */
+export const CONTROL_SIZE_NAMES: readonly ControlSizeName[] = ['sm', 'md', 'lg'];
+
+export type ElevationName = 'e1' | 'e2' | 'e3';
+
+/** One shadow layer. `x` is always 0 — light in this system comes from above. */
+export interface ShadowLayer {
+  /** px, downward offset. */
+  readonly y: number;
+  /** px, blur radius. */
+  readonly blur: number;
+  /** px, spread. Negative — it is what keeps a shadow from haloing. */
+  readonly spread: number;
+  /** 0–1, alpha of `INKS.inkBlack`. */
+  readonly alpha: number;
+}
+
+/**
+ * The elevation ladder — three neutral, directional shadows.
+ *
+ * ── Why this exists at all ────────────────────────────────────────────────
+ * DESIGN.md §4 says "elevation is glow, not shadow", and the product took that
+ * literally everywhere: a 40px aurora glow sat under the dropdown menu, the
+ * dialog, the toast, the extension's floating panel, AND under a SECONDARY
+ * button on hover. A coloured glow under ordinary chrome is a toy tell — it
+ * says "look at me" about a context menu. Glow is still in the system and is
+ * still the right answer for a signature moment (the listen-room hero artwork,
+ * the playing indicator); it is no longer the answer for "this thing floats".
+ *
+ * Two layers each, because one layer cannot be both a contact shadow (short,
+ * tight, says the edge is real) and an ambient one (long, soft, says how far
+ * off the ground it is). Alphas are of the ABSOLUTE black ink, not of a theme
+ * token: a shadow is an absence of light, and it must not invert with the
+ * palette. In the dark theme these land quietly on a near-black ground, which
+ * is correct — dark UIs separate by the surface ladder and use shadow only to
+ * confirm an edge.
+ */
+export const elevation: Readonly<Record<ElevationName, readonly ShadowLayer[]>> = {
+  /** Resting raised: a hovered card, an inline popover, a raised row. */
+  e1: [
+    { y: 1, blur: 2, spread: -1, alpha: 0.16 },
+    { y: 2, blur: 6, spread: -2, alpha: 0.1 },
+  ],
+  /** Floating: dropdown menus, tooltips, toasts, the extension overlay panel. */
+  e2: [
+    { y: 4, blur: 10, spread: -4, alpha: 0.2 },
+    { y: 12, blur: 24, spread: -10, alpha: 0.12 },
+  ],
+  /** Modal: dialogs and sheets — the only things allowed to look this far off the page. */
+  e3: [
+    { y: 8, blur: 20, spread: -8, alpha: 0.24 },
+    { y: 28, blur: 56, spread: -20, alpha: 0.16 },
+  ],
+};
+
+/** Emission order, nearest the page first. */
+export const ELEVATION_NAMES: readonly ElevationName[] = ['e1', 'e2', 'e3'];
 
 /** Spring parameters shared by Framer Motion (web) and Reanimated (mobile). */
 export interface Spring {

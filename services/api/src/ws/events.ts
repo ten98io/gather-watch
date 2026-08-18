@@ -16,7 +16,35 @@ import type {
   ServerEventType,
   ServerPayloadOf,
 } from '../modules/types';
-import { FREE_ROOM_TTL_MS } from '../modules/rooms/service';
+
+/**
+ * Publish ceiling. RedisBus.publish can hang without ever rejecting (ioredis
+ * queues commands while the connection is down, and maxRetriesPerRequest is
+ * null), and on the persisted path that await sits INSIDE the per-room emit
+ * chain — one unbounded stall would wedge chat, sync, queue and roster for
+ * that room permanently, for every instance, until a restart.
+ */
+const PUBLISH_TIMEOUT_MS = 2_000;
+
+/** Reject-on-expiry wrapper. `work` keeps its own rejection handler so losing
+ *  the race never surfaces as an unhandled rejection. */
+async function withTimeout(work: Promise<unknown>, label: string): Promise<void> {
+  void work.catch(() => undefined);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      work,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${PUBLISH_TIMEOUT_MS}ms`));
+        }, PUBLISH_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /** Build a server envelope. The generic cast is safe: ServerPayloadOf<T> is
  *  exactly the payload of ServerEventOf<T> by construction. */
@@ -41,19 +69,19 @@ export function createEventWriter(deps: {
   const { store, bus, log } = deps;
   // roomId → tail of the per-room emit chain.
   const chains = new Map<string, Promise<unknown>>();
-  // roomId → last activity-bump ts (free-plan room TTL resets on activity,
-  // throttled to one store write per room per minute).
+  // roomId → last activity-bump ts (throttle: one store write per room per
+  // minute).
   const lastActivityBump = new Map<string, number>();
 
+  /** Stamp room.lastActivityAt. Nothing expires on this timestamp — it is the
+   *  signal the idle-room sweeper reads to tell a room someone still uses from
+   *  one abandoned months ago. */
   const bumpRoomActivity = (roomId: string): void => {
     const now = Date.now();
     if (now - (lastActivityBump.get(roomId) ?? 0) < 60_000) return;
     lastActivityBump.set(roomId, now);
     void store.rooms
-      .updateOne(
-        { id: roomId as RoomId, expiresAt: { $ne: null } },
-        { expiresAt: now + FREE_ROOM_TTL_MS },
-      )
+      .updateOne({ id: roomId as RoomId }, { lastActivityAt: now })
       .catch((err: unknown) => {
         log.warn({ err, roomId }, 'room activity bump failed');
       });
@@ -66,7 +94,7 @@ export function createEventWriter(deps: {
       payload: ServerPayloadOf<T>,
     ): Promise<ServerEventOf<T>> {
       const previous = chains.get(roomId) ?? Promise.resolve();
-      const next = previous.then(async (): Promise<ServerEventOf<T>> => {
+      const run = async (): Promise<ServerEventOf<T>> => {
         const seq = await store.nextSeq(`room:${roomId}`);
         const event = envelope(roomId, type, seq, payload);
         await store.events.insertOne({
@@ -79,9 +107,26 @@ export function createEventWriter(deps: {
         });
         bumpRoomActivity(roomId);
         const message: RoomBusMessage = { event, targetUserId: null };
-        await bus.publish(roomChannel(roomId), message);
+        // Bounded, and never rethrown. Ordering is preserved because the
+        // bounded await still sits inside the chain: seq N's publish is
+        // resolved (or given up on) before seq N+1 is even allocated, so
+        // publish order matches seq order whenever publishing works at all.
+        // A publish that fails is not a lost event — the event is already
+        // persisted with its seq, so the next event that DOES arrive shows
+        // clients a seq gap and api-client's SeqTracker backfills it over
+        // the replay endpoint. Failing the emit instead would tell callers a
+        // durable write never happened, and stalling it would wedge the room.
+        try {
+          await withTimeout(bus.publish(roomChannel(roomId), message), 'bus.publish');
+        } catch (err) {
+          log.error({ err, roomId, type, seq }, 'event publish failed; clients recover by seq-gap replay');
+        }
         return event;
-      });
+      };
+      // Chain off the SETTLEMENT of the previous emit, not its success: a
+      // predecessor that rejected (store outage) must not skip the emits
+      // queued behind it, which `previous.then(run)` would do silently.
+      const next = previous.then(run, run);
       chains.set(roomId, next);
       // Drop the chain entry once it settles, unless a newer emit has already
       // extended it.
@@ -101,9 +146,13 @@ export function createEventWriter(deps: {
     ): void {
       const event = envelope(roomId, type, 0, payload);
       const message: RoomBusMessage = { event, targetUserId: null };
-      void bus.publish(roomChannel(roomId), message).catch((err: unknown) => {
-        log.warn({ err, roomId, type }, 'ephemeral event publish failed');
-      });
+      // Bounded like the persisted path: an ephemeral publish that hangs is
+      // not blocking anyone, but it would also never be reported.
+      void withTimeout(bus.publish(roomChannel(roomId), message), 'bus.publish').catch(
+        (err: unknown) => {
+          log.warn({ err, roomId, type }, 'ephemeral event publish failed');
+        },
+      );
     },
 
     emitDirect<T extends ServerEventType>(
@@ -114,9 +163,11 @@ export function createEventWriter(deps: {
     ): void {
       const event = envelope(roomId, type, 0, payload);
       const message: RoomBusMessage = { event, targetUserId };
-      void bus.publish(roomChannel(roomId), message).catch((err: unknown) => {
-        log.warn({ err, roomId, type, targetUserId }, 'direct event publish failed');
-      });
+      void withTimeout(bus.publish(roomChannel(roomId), message), 'bus.publish').catch(
+        (err: unknown) => {
+          log.warn({ err, roomId, type, targetUserId }, 'direct event publish failed');
+        },
+      );
     },
   };
 }

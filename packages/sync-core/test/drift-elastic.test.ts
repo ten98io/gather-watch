@@ -335,7 +335,7 @@ describe('DriftController — adaptive band for live voice', () => {
     expect(d.state().voiceBlend).toBe(1);
   });
 
-  it('never escalates to a seek while voice is active, however far apart', () => {
+  it('never escalates to a seek while voice is active, up to the ceiling', () => {
     const d = new DriftController(WATCH_ELASTIC);
     d.setVoiceActive(true);
     const decisions = ticks(d, 30_000, 60); // 2.5× the seek threshold, for 30 s
@@ -346,6 +346,75 @@ describe('DriftController — adaptive band for live voice', () => {
     // The anchor is squeezed to the voice target: a 1 s band is meaningless if
     // the viewer is still anchored 8 s back.
     expect(Math.abs(d.anchorOffsetMs())).toBeLessThanOrEqual(1000);
+  });
+
+  /**
+   * The rescue clause. Suppression protects a live reaction; a viewer minutes
+   * behind is not having one, and rate alone can never bring them back — 5
+   * minutes at the watch band's ±3% is over two hours of playback. Tightening
+   * must raise the bar for a seek, not remove it.
+   */
+  it('still rescues a viewer 5 minutes behind, mic open or not', () => {
+    const d = new DriftController(WATCH_ELASTIC);
+    d.setVoiceActive(true);
+    const decision = tick(d, 300_000, 0);
+    expect(decision).toEqual({ action: 'seek', toMs: BASE, rate: 1 });
+    expect(d.isVoiceTightening()).toBe(true);
+  });
+
+  it('rescues a listen room the same way — the ceiling is not per-band', () => {
+    const d = new DriftController(LISTEN_ELASTIC);
+    d.setVoiceActive(true);
+    expect(tick(d, 300_000, 0).action).toBe('seek');
+  });
+
+  it('holds the line exactly at the ceiling and breaks it one tick past', () => {
+    const at = new DriftController({ ...WATCH_ELASTIC, anchorEnabled: false });
+    at.setVoiceActive(true);
+    expect(at.decide(BASE, BASE - 30_000, { nowMs: 0 }).action).toBe('nudge');
+
+    const past = new DriftController({ ...WATCH_ELASTIC, anchorEnabled: false });
+    past.setVoiceActive(true);
+    expect(past.decide(BASE, BASE - 30_001, { nowMs: 0 }).action).toBe('seek');
+  });
+
+  it('the ceiling is configurable, and Infinity restores absolute suppression', () => {
+    const tight = new DriftController({
+      ...WATCH_ELASTIC,
+      anchorEnabled: false,
+      voiceSeekCeilingMs: 15_000,
+    });
+    tight.setVoiceActive(true);
+    expect(tick(tight, 20_000, 0).action).toBe('seek');
+
+    const absolute = new DriftController({
+      ...WATCH_ELASTIC,
+      anchorEnabled: false,
+      voiceSeekCeilingMs: Number.POSITIVE_INFINITY,
+    });
+    absolute.setVoiceActive(true);
+    expect(ticks(absolute, 600_000, 20).some((x) => x.action === 'seek')).toBe(false);
+  });
+
+  it('the ceiling measures the ANCHORED drift, so a held anchor is not double-counted', () => {
+    // The viewer is deliberately parked 10 s back and the room is 10 s ahead of
+    // them: the raw lag is 20 s but the drift against their own anchor is 10 s.
+    // A ceiling read off the raw lag would rescue a viewer who is exactly where
+    // the controller put them.
+    const d = new DriftController({ ...WATCH_ELASTIC, voiceSeekCeilingMs: 15_000 });
+    d.noteSettledLag(10_000);
+    d.setVoiceActive(true);
+    expect(d.decide(BASE, BASE - 20_000, { nowMs: 0 }).action).toBe('nudge');
+  });
+
+  it('the rescue lands on the anchored position, like every other seek', () => {
+    const d = new DriftController({ ...WATCH_ELASTIC, anchorMaxMs: 40_000 });
+    d.noteSettledLag(40_000);
+    d.setVoiceActive(true);
+    // Squeezing the anchor toward the voice target takes the full attack ramp,
+    // so the first tick still holds a large anchor and the seek must respect it.
+    const decision = d.decide(BASE, BASE - 300_000, { nowMs: 0 });
+    expect(decision).toEqual({ action: 'seek', toMs: BASE - 40_000, rate: 1 });
   });
 
   it('squeezes an existing anchor down smoothly, not in a step', () => {

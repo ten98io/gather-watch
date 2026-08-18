@@ -94,7 +94,7 @@ function OverviewPanel() {
         <Badge variant={o.counts.reportsOpen > 0 ? 'aurora' : 'muted'}>
           {o.counts.reportsOpen} open report(s)
         </Badge>
-        {(['mediaPipeline', 'gifs', 'stripe', 'push'] as const).map((f) => (
+        {(['mediaPipeline', 'gifs', 'push'] as const).map((f) => (
           <Badge key={f} variant={o.features[f] ? 'default' : 'muted'}>
             {f}: {o.features[f] ? 'on' : 'off'}
           </Badge>

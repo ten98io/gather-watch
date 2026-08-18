@@ -133,6 +133,29 @@ export function PlayerControls({
     return () => clearInterval(h);
   }, [adapter]);
 
+  /**
+   * VOLUME AND MUTE ARE THIS BAR'S STATE, NOT THE ADAPTER'S — so they have to
+   * be re-asserted onto every adapter this bar is handed.
+   *
+   * A track change across kinds (mp4 → YouTube, or the music/video flip, which
+   * moves the <video> to a different container) destroys the player and builds
+   * a fresh one at its factory defaults: full volume, unmuted. The bar kept
+   * rendering the old settings — the slider still down, the icon still crossed
+   * out — while the new player blasted a room that had deliberately turned it
+   * off. Late at night, in someone's headphones.
+   *
+   * Deliberately keyed on the adapter alone. It is not a sync of "whatever the
+   * user last set" on every render; it is the one moment a new player exists
+   * and has never been told anything.
+   */
+  useEffect(() => {
+    if (adapter === null) return;
+    adapter.setVolume(volume);
+    adapter.setMuted(muted);
+    // Deps: the PLAYER only. The values are pushed straight to the adapter by
+    // their own handlers when they change; this is the other direction.
+  }, [adapter]);
+
   // The scrub preview holds until the server's new state lands (seq bump), so
   // the readout never snaps back to the pre-seek position for a frame.
   useEffect(() => {

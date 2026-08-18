@@ -3,9 +3,11 @@
  * the store. The response shape is EXACTLY MeExportResponse — server-only doc
  * fields (RoomDoc realtime snapshots, AssetDoc object-storage bookkeeping)
  * are serialized away, and session token hashes never leave the sessions
- * collection. playbackHistory and usage surface the metering rows the sync
- * and rtc/billing modules persist (contracts PlaybackHistoryEntry /
- * RelayUsageMonth). Anything beyond the contract shape (sessions, raw usage
+ * collection. playbackHistory and usage surface the telemetry rows the sync
+ * module persists, plus any historical TURN relay samples (contracts
+ * PlaybackHistoryEntry / RelayUsageMonth) — these are records of what the
+ * account did, never a meter anyone is billed against: Gather is free for
+ * everyone. Anything beyond the contract shape (sessions, raw usage
  * samples, push subs) still needs a contracts change first — contracts are
  * orchestrator-owned.
  */

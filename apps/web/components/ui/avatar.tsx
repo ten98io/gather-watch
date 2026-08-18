@@ -22,7 +22,10 @@ export function Avatar({ src, name, size = 40, accentColor, speaking = false, cl
   return (
     <span
       className={cn(
-        'relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full glass-raised font-display font-medium text-hi',
+        // `bg-surface-2`, not `glass-raised`: an avatar is not floating over
+        // video, and glass here meant the initials' legibility depended on
+        // whatever happened to be behind the orb.
+        'relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full bg-surface-2 font-display font-medium text-hi',
         speaking === true && 'animate-pulse-ring',
         className,
       )}

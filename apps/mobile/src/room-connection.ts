@@ -14,6 +14,7 @@ import type {
   RestClient,
   SetTimeoutFn,
   SocketStatus,
+  TimeoutHandle,
   WebSocketCtor,
 } from '@gather/api-client';
 import { applyServerState, initialQueueState } from '@gather/sync-core';
@@ -71,6 +72,21 @@ export interface RoomState {
 export const MAX_MESSAGES = 300;
 export const TYPING_TTL_MS = 4000;
 export const EMOTE_TTL_MS = 2500;
+/**
+ * Presence heartbeat cadence — mirrors the web client. The server expires any
+ * member whose presence is older than 45s EVEN WITH THE SOCKET STILL OPEN
+ * (services/api …/rooms/presence.ts, ttlMs), and discrete UI events alone
+ * never reach that far; 15s survives two lost beats.
+ */
+export const PRESENCE_KEEPALIVE_MS = 15_000;
+
+/** The slice of its own presence a client may assert. */
+export interface PresencePatch {
+  state?: PresenceEntry['state'];
+  micOn?: boolean;
+  camOn?: boolean;
+  sharing?: boolean;
+}
 
 function initialRoomState(): RoomState {
   return {
@@ -108,6 +124,14 @@ export interface RoomConnectionOptions {
   replayRetryDelayMs?: number;
   /** Test hook: how long emote bursts stay on screen. Default EMOTE_TTL_MS. */
   emoteTtlMs?: number;
+  /** Presence keepalive cadence. Default PRESENCE_KEEPALIVE_MS. */
+  presenceKeepaliveMs?: number;
+  /**
+   * The signed-in member's id. When set, the presence keepalive re-asserts
+   * this member's CURRENT presence from the store instead of the last patch
+   * this client sent.
+   */
+  userId?: UserId;
 }
 
 /** Insert ascending-by-seq, deduping by message id; caps the window. */
@@ -157,7 +181,13 @@ export class RoomConnection {
   private readonly rest: Pick<RestClient, 'events' | 'messages'>;
   private readonly now: () => number;
   private readonly setTimeoutFn: SetTimeoutFn;
+  private readonly clearTimeoutFn: ClearTimeoutFn;
   private readonly emoteTtlMs: number;
+  private readonly presenceKeepaliveMs: number;
+  private readonly selfUserId: UserId | null;
+  private presenceKeepaliveHandle: TimeoutHandle | null = null;
+  /** Everything this client has told the server about its own presence. */
+  private lastPresenceSent: PresencePatch = {};
   private emoteCounter = 0;
   private roomId: RoomId | null = null;
 
@@ -165,7 +195,10 @@ export class RoomConnection {
     this.rest = opts.rest;
     this.now = opts.now ?? (() => Date.now());
     this.setTimeoutFn = opts.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms));
+    this.clearTimeoutFn = opts.clearTimeoutFn ?? ((handle) => clearTimeout(handle as never));
     this.emoteTtlMs = opts.emoteTtlMs ?? EMOTE_TTL_MS;
+    this.presenceKeepaliveMs = opts.presenceKeepaliveMs ?? PRESENCE_KEEPALIVE_MS;
+    this.selfUserId = opts.userId ?? null;
     this.store = createStore<RoomState>(() => initialRoomState());
 
     this.socket = new RoomSocket(opts.wsUrl, {
@@ -193,7 +226,15 @@ export class RoomConnection {
         : {}),
     });
 
-    this.socket.onStatus((status) => this.store.setState({ status }));
+    this.socket.onStatus((status) => {
+      this.store.setState({ status });
+      if (status === 'open') {
+        this.requestRoomSnapshot();
+        this.startPresenceKeepalive();
+      } else {
+        this.stopPresenceKeepalive();
+      }
+    });
     this.bindEvents();
   }
 
@@ -212,8 +253,10 @@ export class RoomConnection {
   }
 
   close(): void {
+    this.stopPresenceKeepalive();
     this.socket.close();
     this.roomId = null;
+    this.lastPresenceSent = {};
     this.store.setState(initialRoomState());
   }
 
@@ -307,17 +350,89 @@ export class RoomConnection {
     this.socket.send('queue.voteSkip', { itemId });
   }
 
-  presenceUpdate(patch: {
-    state?: PresenceEntry['state'];
-    micOn?: boolean;
-    camOn?: boolean;
-    sharing?: boolean;
-  }): void {
+  presenceUpdate(patch: PresencePatch): void {
+    // Remembered so the keepalive can re-assert this member's real state even
+    // before the server's own diff has come back into the store.
+    this.lastPresenceSent = { ...this.lastPresenceSent, ...patch };
     this.socket.send('presence.update', patch);
   }
 
   emoteBurst(emoji: string, xPct: number, yPct: number): void {
     this.socket.send('emote.burst', { emoji, xPct, yPct });
+  }
+
+  // ── Presence keepalive ───────────────────────────────────────────────────
+
+  /**
+   * The one frame every open owes the server: this member's current presence
+   * WITH `wantSnapshot`, so the reply carries the room back. Mirrors the web
+   * client.
+   *
+   * Backgrounding the app (or any reconnect) is not a leave, and the presence
+   * entry outlives it — so the server sees an ordinary heartbeat, `created`
+   * is false, and without the flag it replies with NOTHING, leaving the
+   * screen on an empty queue, no playback and an empty roster. Exactly one
+   * per open: the periodic beats must stay cheap.
+   */
+  private requestRoomSnapshot(): void {
+    // 'offline' would ask the server to DELETE the entry (and reply nothing),
+    // so a member who last said offline still rejoins as a watcher.
+    const patch = this.presenceBeat() ?? { state: 'watching' as const };
+    // Remembered like any other assertion — minus the flag, which belongs to
+    // this frame alone and must not leak into the keepalive beats.
+    this.lastPresenceSent = { ...this.lastPresenceSent, ...patch };
+    this.socket.send('presence.update', { ...patch, wantSnapshot: true });
+  }
+
+  /**
+   * Beats presence while the socket is open. The server's presence TTL is 45s
+   * and expiry is NOT gated on the socket being closed, so a client that only
+   * sends discrete UI events silently rots out of the roster.
+   *
+   * The beat carries the member's CURRENT state, never an empty payload: an
+   * empty presence.update means "send me the roster" server-side and would
+   * make every beat cost a full presence.state + sync.state + queue.state
+   * reply. An unchanged state is silent — the tracker only diffs when a
+   * client-visible field actually changes.
+   */
+  private startPresenceKeepalive(): void {
+    this.stopPresenceKeepalive();
+    const tick = () => {
+      this.presenceKeepaliveHandle = null;
+      if (this.store.getState().status !== 'open') return;
+      const patch = this.presenceBeat();
+      if (patch !== null) this.presenceUpdate(patch);
+      this.presenceKeepaliveHandle = this.setTimeoutFn(tick, this.presenceKeepaliveMs);
+    };
+    // The first beat waits a full interval: requestRoomSnapshot() has just
+    // sent this member's current state on the open frame, so an immediate
+    // beat would be the same assertion twice.
+    this.presenceKeepaliveHandle = this.setTimeoutFn(tick, this.presenceKeepaliveMs);
+  }
+
+  private stopPresenceKeepalive(): void {
+    if (this.presenceKeepaliveHandle !== null) {
+      this.clearTimeoutFn(this.presenceKeepaliveHandle);
+      this.presenceKeepaliveHandle = null;
+    }
+  }
+
+  /**
+   * This member's presence as the server should still see it: the store's own
+   * row when we know our userId, else whatever we last sent. Null means "do
+   * not beat" ('offline' would delete the entry we are keeping alive).
+   */
+  private presenceBeat(): PresencePatch | null {
+    const mine =
+      this.selfUserId === null ? undefined : this.store.getState().presence[this.selfUserId];
+    if (mine !== undefined) {
+      if (mine.state === 'offline') return null;
+      return { state: mine.state, micOn: mine.micOn, camOn: mine.camOn, sharing: mine.sharing };
+    }
+    const sent = this.lastPresenceSent;
+    if (sent.state === 'offline') return null;
+    // Never an empty payload — that is the server's roster-snapshot request.
+    return { ...sent, state: sent.state ?? 'watching' };
   }
 
   // ── Server event reducers ────────────────────────────────────────────────
@@ -400,7 +515,13 @@ export class RoomConnection {
     });
 
     this.socket.on('queue.state', (ev) => {
-      set({ queue: { items: ev.payload.items, version: ev.payload.version } });
+      // Version-guarded, mirroring web. The snapshot reply to the wantSnapshot
+      // ask is seq 0 (applied immediately, no gap detection), and the server
+      // reads the room before awaiting the heartbeat — so a late reply can
+      // carry an older queue than the broadcast that already landed.
+      set((s) => (ev.payload.version < s.queue.version
+        ? {}
+        : { queue: { items: ev.payload.items, version: ev.payload.version } }));
     });
 
     this.socket.on('presence.state', (ev) => {
@@ -428,6 +549,19 @@ export class RoomConnection {
 
     this.socket.on('member.updated', () => {
       set((s) => ({ membersVersion: s.membersVersion + 1 }));
+    });
+
+    this.socket.on('member.removed', (ev) => {
+      // The server has emitted this since the roster fix; nothing on the
+      // client listened, so a kick, a ban or someone leaving stayed invisible
+      // until a manual refresh. Clear the presence entry (an absent member is
+      // not a silent one) and bump the version — that is what makes the
+      // People tab refetch the roster.
+      set((s) => {
+        const presence = { ...s.presence };
+        delete presence[ev.payload.userId];
+        return { presence, membersVersion: s.membersVersion + 1 };
+      });
     });
 
     this.socket.on('emote.burst', (ev) => {

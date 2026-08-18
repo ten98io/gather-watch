@@ -7,11 +7,11 @@
 #
 # STRATEGY — simple full-workspace build, NOT `turbo prune`, on purpose:
 # turbo prune buys smaller build contexts and tighter cache keys, but costs a
-# two-phase json/full copy dance and a pruned lockfile per app. With three
-# small services sharing the same packages/* deps, the pruned graphs would be
-# nearly identical to the full workspace anyway. Simple keeps all three
-# Dockerfiles uniform and boring; revisit only if context size or cache-miss
-# build times become a real problem.
+# two-phase json/full copy dance and a pruned lockfile per app. With two small
+# services sharing the same packages/* deps, the pruned graphs would be nearly
+# identical to the full workspace anyway. Simple keeps both Dockerfiles
+# uniform and boring; revisit only if context size or cache-miss build times
+# become a real problem.
 #
 # The repo-root .dockerignore keeps .git, node_modules, build output and all
 # .env* files out of this context — do not remove it.
@@ -34,11 +34,42 @@ RUN --mount=type=cache,id=s/bbe6d6c1-5dcf-4426-bb94-f7d023060230-pnpm-store,targ
 # --fail-if-no-match: an image built before the app package exists must fail
 # loudly at build time, not ship a no-op container that restart-loops.
 ENV NEXT_TELEMETRY_DISABLED=1
-# NEXT_PUBLIC_* vars are inlined at `next build` time — Railway (and plain
-# docker build) only pass service variables into the build through declared
-# ARGs. Without this, every image bakes the localhost default from lib/api.ts.
+# ── NEXT_PUBLIC_* ─────────────────────────────────────────────────────────────
+# These are INLINED into the client bundle at `next build` time, so a value
+# supplied at container start does nothing at all — Railway (and plain
+# docker build) only reach the build through declared ARGs. An undeclared one
+# does not fail: it silently ships whatever fallback the source has, which is
+# how an image ends up telling every visitor's browser to call
+# http://localhost:4000.
+#
+# EVERY variable the web app reads must be listed here. Adding a
+# `process.env.NEXT_PUBLIC_*` read in apps/web without adding it below is the
+# bug this block exists to prevent, and
+# services/api/test/web-dockerfile-env.test.ts fails when the two drift.
+#
+#   NEXT_PUBLIC_API_URL                       REQUIRED — apps/web/lib/api.ts
+#   NEXT_PUBLIC_GATHER_EXTENSION_ID           optional — pins the extension id
+#                                             (apps/web/lib/extension-bridge.ts);
+#                                             unset, the content script still
+#                                             announces its own id
+#   NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL  optional — install-funnel link
+#                                             (apps/web/lib/player/extension-driver.ts);
+#                                             unset, it is derived from the id
 ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ARG NEXT_PUBLIC_GATHER_EXTENSION_ID
+ARG NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_PUBLIC_GATHER_EXTENSION_ID=${NEXT_PUBLIC_GATHER_EXTENSION_ID} \
+    NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL=${NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL}
+# Fail HERE, where the message can name the variable. The alternative is an
+# image that builds, deploys, goes green, and is broken only in the browser.
+RUN if [ -z "$NEXT_PUBLIC_API_URL" ]; then \
+      echo "ERROR: build arg NEXT_PUBLIC_API_URL is required." >&2; \
+      echo "  It is inlined into the client bundle at build time; without it the" >&2; \
+      echo "  shipped site calls http://localhost:4000 from every visitor's browser." >&2; \
+      echo "  docker build --build-arg NEXT_PUBLIC_API_URL=https://api.example.com ..." >&2; \
+      exit 1; \
+    fi
 RUN pnpm --filter '{./apps/web}...' --fail-if-no-match run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────

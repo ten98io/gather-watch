@@ -7,6 +7,8 @@
 import type { BusHandler, BusPort } from './ports';
 
 export class MemoryBus implements BusPort {
+  readonly mode = 'memory' as const;
+
   private readonly handlers = new Map<string, Set<BusHandler>>();
 
   async publish(channel: string, message: unknown): Promise<void> {
@@ -41,6 +43,15 @@ export class MemoryBus implements BusPort {
       current.delete(handler);
       if (current.size === 0) this.handlers.delete(channel);
     };
+  }
+
+  /** Always live — an in-memory bus has no connection to lose, so reporting
+   *  anything else here would be a lie. The honest complaint about running
+   *  this bus in a multi-instance deploy belongs to /readyz, which knows
+   *  whether an in-memory bus was CONFIGURED (dev) or fallen back into
+   *  (empty REDIS_URL in production). */
+  async ping(): Promise<boolean> {
+    return true;
   }
 
   async close(): Promise<void> {

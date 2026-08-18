@@ -248,7 +248,7 @@ export const api = new RestClient(API_URL, {
 });
 
 /* ── apiFetch: typed raw calls for endpoints outside RestClient's surface
-      (sessions, billing, GDPR). Same auth rules as the RestClient. ── */
+      (sessions, GDPR). Same auth rules as the RestClient. ── */
 
 export async function apiFetch<T>(
   path: string,

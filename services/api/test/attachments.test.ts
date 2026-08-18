@@ -1,13 +1,14 @@
 /**
- * Chat attachment completion: the plan size cap is enforced against the
- * ACTUAL uploaded object (presigned PUTs are unsigned-payload, so claimed
- * sizeBytes is untrusted); oversize objects are deleted and the doc fails.
+ * Chat attachment completion: the storage-sanity size limit is enforced
+ * against the ACTUAL uploaded object (presigned PUTs are unsigned-payload, so
+ * claimed sizeBytes is untrusted); oversize objects are deleted and the doc
+ * fails. The limit is the same for every account.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { StorePort } from '../src/adapters/ports';
 import type { Deps } from '../src/modules/types';
-import { setAttachmentObjectOps } from '../src/modules/chat/attachments';
+import { ATTACHMENT_MAX_MB, setAttachmentObjectOps } from '../src/modules/chat/attachments';
 import { addMember, makeApp, seedRoom, signupUser } from './helpers';
 
 const MB = 1024 * 1024;
@@ -63,12 +64,28 @@ describe('chat attachments', () => {
     expect(asset.sizeBytes).toBe(3 * MB);
   });
 
-  it('rejects + deletes an object whose actual size busts the plan cap', async () => {
-    // Free cap is 25 MB: claim 1 MB, actually PUT 200 MB.
+  it('accepts a 100 MB object — the size limit is the same for every account', async () => {
+    const { token, roomId, assetId, uploadId } = await ticketFor(1 * MB);
+    setAttachmentObjectOps(deps, {
+      stat: async () => ({ sizeBytes: 100 * MB }),
+      remove: async () => undefined,
+    });
+    const done = await app.inject({
+      method: 'POST',
+      url: `/rooms/${roomId}/attachments/complete`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { assetId, uploadId, parts: [{ partNumber: 1, etag: '"e"' }] },
+    });
+    expect(done.statusCode).toBe(200);
+    expect((done.json() as { asset: { sizeBytes: number } }).asset.sizeBytes).toBe(100 * MB);
+  });
+
+  it('rejects + deletes an object whose actual size busts the storage limit', async () => {
+    // Limit is 200 MB: claim 1 MB, actually PUT well past it.
     const { token, roomId, assetId, uploadId } = await ticketFor(1 * MB);
     const removed: string[] = [];
     setAttachmentObjectOps(deps, {
-      stat: async () => ({ sizeBytes: 200 * MB }),
+      stat: async () => ({ sizeBytes: (ATTACHMENT_MAX_MB + 60) * MB }),
       remove: async (key) => {
         removed.push(key);
       },
@@ -83,6 +100,26 @@ describe('chat attachments', () => {
     expect((done.json() as { code: string }).code).toBe('QUOTA_EXCEEDED');
     expect(removed).toHaveLength(1);
     expect((await store.assets.findById(assetId))?.status).toBe('failed');
+    expect((await store.assets.findById(assetId))?.error).toBe(
+      `attachment exceeds the ${ATTACHMENT_MAX_MB} MB upload limit`,
+    );
+  });
+
+  it('rejects an oversize ticket at create time without naming a plan', async () => {
+    const { roomId } = await seedRoom(store);
+    const account = await signupUser(app, 'big-uploader@example.com');
+    await addMember(store, roomId, account.user.id, 'member');
+    const created = await app.inject({
+      method: 'POST',
+      url: `/rooms/${roomId}/attachments`,
+      headers: { authorization: `Bearer ${account.accessToken}` },
+      payload: { filename: 'huge.bin', mime: 'image/png', sizeBytes: (ATTACHMENT_MAX_MB + 1) * MB },
+    });
+    expect(created.statusCode).toBe(413);
+    const body = created.json() as { code: string; message: string };
+    expect(body.code).toBe('QUOTA_EXCEEDED');
+    expect(body.message).toBe(`attachment exceeds the ${ATTACHMENT_MAX_MB} MB upload limit`);
+    expect(body.message).not.toMatch(/plan|premium|upgrade/i);
   });
 
   it('rejects completion when the object was never uploaded', async () => {

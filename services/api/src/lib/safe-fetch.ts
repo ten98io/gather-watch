@@ -16,6 +16,12 @@
  *     APIs): a hop to any other host is refused before a socket is opened.
  *   • one deadline across all hops, and a hard byte cap on the body.
  *
+ * Every `.catch(() => {})` in this file is body TEARDOWN — cancelling a
+ * response we have already decided to discard. None of them sits on a fetch or
+ * a read; those two are caught explicitly and converted to AppError. Each
+ * teardown site says at the call why a rejection there changes nothing, so a
+ * swallow added on a real failure path stands out as the undocumented one.
+ *
  * Injecting `fetchImpl` bypasses pinning and `allowPrivateAddresses` skips the
  * address guard entirely; BOTH exist for tests only. Every failure surfaces as
  * AppError('VALIDATION') — this module never throws anything else on purpose.
@@ -291,6 +297,11 @@ export function createSafeFetcher(options: SafeFetchOptions = {}): SafeFetcher {
             if (hops + 1 > maxRedirects) {
               throw new AppError('VALIDATION', 'too many redirects');
             }
+            // Free the 3xx body before dialling the next hop. The fetch itself
+            // already succeeded and `location` is the only thing we wanted, so
+            // a cancel() rejection tells us nothing and must not abort a
+            // redirect chain that is otherwise fine. Failing loudly here would
+            // turn a harmless already-closed stream into a refused unfurl.
             await response.body?.cancel().catch(() => {});
             try {
               current = new URL(location, url).toString();
@@ -319,6 +330,11 @@ export function createSafeFetcher(options: SafeFetchOptions = {}): SafeFetcher {
           contentType !== null &&
           !contentType.includes(expectContentType)
         ) {
+          // Wrong content-type: `unread` is already the full answer, and the
+          // cancel exists only so a 500 MB video is not pulled down to look
+          // for a <title>. Whether the stream tears down cleanly cannot change
+          // what we return, so a rejection is swallowed rather than promoted
+          // into a failure the caller would have to handle.
           await response.body?.cancel().catch(() => {});
           return unread;
         }
@@ -350,6 +366,12 @@ export function createSafeFetcher(options: SafeFetchOptions = {}): SafeFetcher {
               chunks.push(value);
               total += value.byteLength;
               if (total >= maxBytes) {
+                // Cap reached — every byte we intend to decode is already in
+                // `chunks`, so this cancel is teardown of a stream we are done
+                // with. Letting it reject would throw away a body that was
+                // read SUCCESSFULLY and report the truncation as an error.
+                // Read failures are a different thing entirely and are caught
+                // around reader.read() a few lines up.
                 await reader.cancel().catch(() => {});
                 break;
               }
