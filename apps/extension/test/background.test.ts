@@ -126,29 +126,41 @@ interface ChromeFake {
   /** Make the offscreen API reject, as it does once the document is gone. */
   offscreenBroken: boolean;
   activeTab: { id: number; url: string } | null;
+  /** Tabs the browser no longer has. `chrome.tabs.get` refuses these, which is
+   *  how the worker learns a tab it remembers is gone. */
+  closedTabs: Set<number>;
   /** chrome.storage.session, for real — see the storage fake. */
   store: Record<string, unknown>;
   onMessage: FakeEvent<MessageListener>;
   onRemoved: FakeEvent<(tabId: number) => void>;
   /** The web app's event port arrives here — see openEventPort. */
   onConnectExternal: FakeEvent<(port: unknown) => void>;
-}
-
-function evt<F = () => void>(): FakeEvent<F> {
-  const listeners: F[] = [];
-  return {
-    listeners,
-    addListener: (fn: F) => {
-      listeners.push(fn);
-    },
-    removeListener: () => undefined,
-  };
+  /** Chrome's notice that it is about to terminate the worker. The worker
+   *  stops its own timers on it, which is how a simulated recycle stops them. */
+  onSuspend: FakeEvent<() => void>;
+  /** Every event the fake exposes, so a simulated worker death can drop the
+   *  dead worker's listeners the way terminating one really does. */
+  allEvents: Array<{ listeners: unknown[] }>;
 }
 
 function installChromeFake(): ChromeFake {
+  const allEvents: Array<{ listeners: unknown[] }> = [];
+  function evt<F = () => void>(): FakeEvent<F> {
+    const listeners: F[] = [];
+    allEvents.push({ listeners: listeners as unknown[] });
+    return {
+      listeners,
+      addListener: (fn: F) => {
+        listeners.push(fn);
+      },
+      removeListener: () => undefined,
+    };
+  }
+
   const onMessage = evt<MessageListener>();
   const onRemoved = evt<(tabId: number) => void>();
   const onConnectExternal = evt<(port: unknown) => void>();
+  const onSuspend = evt<() => void>();
   const state: ChromeFake = {
     desktopCalls: [],
     tabCaptureCalls: [],
@@ -164,10 +176,13 @@ function installChromeFake(): ChromeFake {
     stopBeforeClose: null,
     offscreenBroken: false,
     activeTab: { id: 7, url: 'https://example.com/watch' },
+    closedTabs: new Set<number>(),
     store: {},
     onMessage,
     onRemoved,
     onConnectExternal,
+    onSuspend,
+    allEvents,
   };
 
   const chrome = {
@@ -175,7 +190,7 @@ function installChromeFake(): ChromeFake {
       onMessage,
       onMessageExternal: evt(),
       onConnectExternal,
-      onSuspend: evt(),
+      onSuspend,
       getManifest: () => ({ version: '0.1.0' }),
       sendMessage: async (msg: Record<string, unknown>) => {
         state.sent.push(msg);
@@ -188,7 +203,12 @@ function installChromeFake(): ChromeFake {
       onActivated: evt(),
       onUpdated: evt(),
       onRemoved,
-      get: async () => ({}),
+      // A closed tab is not a tab: Chrome rejects, and that rejection is the
+      // only way the worker can tell a remembered tab id from an open one.
+      get: async (tabId: number) => {
+        if (state.closedTabs.has(tabId)) throw new Error(`No tab with id: ${String(tabId)}`);
+        return {};
+      },
       query: async () => (state.activeTab === null ? [] : [state.activeTab]),
       sendMessage: async (
         tabId: number,
@@ -336,6 +356,10 @@ beforeEach(() => {
   fake.stopBeforeClose = null;
   fake.offscreenBroken = false;
   fake.activeTab = { id: 7, url: 'https://example.com/watch' };
+  fake.closedTabs.clear();
+  // Hang up the previous test's pages: an open port is a surface, and a leaked
+  // one would tell the worker somebody is still watching.
+  for (const close of livePorts.splice(0)) close();
 });
 
 /* ── talking to the worker the way the popup does ── */
@@ -383,10 +407,17 @@ const connectRoom = (): Promise<unknown> => ask({ kind: 'popup:connect', code: '
 const share = (surface: string): Promise<ShareResult> =>
   ask<ShareResult>({ kind: 'popup:share', surface });
 
+/** Chrome removing a tab: it stops existing, and the event fires. Synchronous
+ *  so a fake-timer test can settle it on its own clock. */
+function removeTab(tabId: number): void {
+  fake.closedTabs.add(tabId);
+  for (const listener of fake.onRemoved.listeners) listener(tabId);
+}
+
 /** Chrome removing a tab. The teardown it triggers is fire-and-forget, so the
  *  caller waits a turn for it, exactly as the popup's next poll would. */
 async function closeTab(tabId: number): Promise<void> {
-  for (const listener of fake.onRemoved.listeners) listener(tabId);
+  removeTab(tabId);
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
@@ -1269,8 +1300,22 @@ describe("a user's gesture on the driven player becomes room intent", () => {
  * origin produces one: a name that carries the protocol version, a sender the
  * browser populated, and somewhere for the worker's events to land.
  */
-function openEventPort(): { posted: Array<Record<string, unknown>> } {
+/**
+ * Every port a test opened, so the next test starts with none.
+ *
+ * A real port dies with its tab. These have to be hung up on purpose, and
+ * leaving them open is not a harmless leak: an open port IS one of the
+ * surfaces the presence beat reads, so a port left behind by an earlier test
+ * makes every later one look like somebody is still in the room.
+ */
+const livePorts: Array<() => void> = [];
+
+function openEventPort(): { posted: Array<Record<string, unknown>>; close(): void } {
   const posted: Array<Record<string, unknown>> = [];
+  // A real port hangs up when its tab closes or navigates. The fake carries
+  // its disconnect listeners for the same reason: that hang-up is the only
+  // notice the worker gets that a web surface is gone.
+  const hangUp: Array<() => void> = [];
   const port = {
     name: 'gather.ext.events.v1',
     sender: { origin: 'http://localhost:3000', url: 'http://localhost:3000/room/room_1' },
@@ -1278,13 +1323,21 @@ function openEventPort(): { posted: Array<Record<string, unknown>> } {
       posted.push(msg);
     },
     disconnect: () => undefined,
-    onDisconnect: { addListener: () => undefined },
+    onDisconnect: {
+      addListener: (fn: () => void) => {
+        hangUp.push(fn);
+      },
+    },
   };
   for (const listener of fake.onConnectExternal.listeners) {
     (listener as unknown as (p: unknown) => void)(port);
   }
   posted.length = 0; // drop the opening status snapshot
-  return { posted };
+  const close = (): void => {
+    for (const fn of hangUp.splice(0)) fn();
+  };
+  livePorts.push(close);
+  return { posted, close };
 }
 
 describe('the driven item running out', () => {
@@ -1331,7 +1384,13 @@ describe('the driven item running out', () => {
     expect(payload['durationMs']).toBe(5_400_000);
     expect(payload['mediaKey']).toBe('url:https://cdn.example.com/feature.m3u8');
     // The end is a fact about the media. Nobody paused anything.
-    expect(room.sent.filter((m) => m.type.startsWith('sync.'))).toEqual([]);
+    //
+    // Named transports rather than every `sync.*`: the end DOES now put
+    // `sync.advance` on this socket once the worker knows the room's queue
+    // (see "the end of an item reaches the room from the worker itself"), and
+    // a blanket prefix assertion here would have quietly forbidden it.
+    const transports = ['sync.play', 'sync.pause', 'sync.seek', 'sync.setTrack'];
+    expect(room.sent.filter((m) => transports.includes(m.type))).toEqual([]);
   });
 
   it('takes the end from the elected frame of the driven tab only', async () => {
@@ -1356,6 +1415,188 @@ describe('the driven item running out', () => {
     const payload = endEvents(web.posted)[0]?.['payload'] as Record<string, unknown>;
     expect(payload['positionMs']).toBe(0);
     expect(payload['durationMs']).toBe(0);
+  });
+});
+
+/* ── the worker reports the end to the ROOM, not only to the page ── */
+
+/**
+ * The stall this closes: a user who connected from the POPUP has no Gather tab
+ * at all, so `ports.broadcast('ended')` reaches nobody, and the relay the web
+ * app performs — bridge → StagePane → `sync.advance` — does not exist. The
+ * room sat on a finished item forever. The worker holds its own room socket
+ * (presence and re-stream ride it already), so it sends the intent itself.
+ */
+describe('the end of an item reaches the room from the worker itself', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  /** A queue item, in the shape queue.state delivers it. */
+  const item = (id: string, mediaRef: Record<string, unknown>): Record<string, unknown> => ({
+    id,
+    mediaRef,
+    title: id,
+    durationMs: null,
+    artworkUrl: null,
+    addedBy: 'user_1',
+    votesToSkip: [],
+  });
+
+  const FEATURE = { kind: 'url', url: 'https://cdn.example.com/feature.m3u8', mime: 'video/mp4' };
+  const SECOND = { kind: 'url', url: 'https://cdn.example.com/second.m3u8', mime: 'video/mp4' };
+
+  /** The room's queue, as the server broadcasts it. */
+  function queueOf(items: Array<Record<string, unknown>>, version = 1): void {
+    room.emit('queue.state', { items, version });
+  }
+
+  /** Playback carrying the queue row it was set from — what the server sends. */
+  function onQueueItem(index: number, mediaRef: Record<string, unknown>): Record<string, unknown> {
+    return { ...playbackAt(600_000, mediaRef), queueIndex: index };
+  }
+
+  const advances = (): unknown[] =>
+    room.sent.filter((m) => m.type === 'sync.advance').map((m) => m.payload);
+
+  function endedFromDriver(): void {
+    notify(
+      { kind: 'mediaEnded', positionMs: 5_400_000, durationMs: 5_400_000 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+  }
+
+  async function openDrivenRoom(): Promise<void> {
+    await connectRoom();
+    claimFrom(7, 3);
+  }
+
+  it('sends sync.advance naming the ended item, with no web tab open', async () => {
+    await openDrivenRoom();
+    queueOf([item('q_a', FEATURE), item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+
+    endedFromDriver();
+
+    // Nothing relayed it: no event port was ever opened in this test.
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
+  });
+
+  it('names the item BY ID even when the recorded index has gone stale', async () => {
+    await openDrivenRoom();
+    // The playing item was at index 1; something ahead of it was then removed,
+    // so index 1 now names a different row and only the media identifies it.
+    queueOf([item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(1, SECOND));
+
+    endedFromDriver();
+
+    expect(advances()).toEqual([{ endedItemId: 'q_b' }]);
+  });
+
+  it('fires once per item, however many ends arrive', async () => {
+    await openDrivenRoom();
+    queueOf([item('q_a', FEATURE), item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+
+    endedFromDriver();
+    endedFromDriver();
+    endedFromDriver();
+
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
+  });
+
+  it('does not latch: the NEXT item is reportable too', async () => {
+    await openDrivenRoom();
+    queueOf([item('q_a', FEATURE), item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+    endedFromDriver();
+
+    // The room moved on — the server's own answer to that first report.
+    room.emit('sync.state', onQueueItem(1, SECOND));
+    endedFromDriver();
+
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }, { endedItemId: 'q_b' }]);
+  });
+
+  it('names a PAGE item, the kind only this extension can play', async () => {
+    await openDrivenRoom();
+    const page = PAGE_REF('https://some.site/film');
+    queueOf([item('q_page', page), item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, page));
+
+    endedFromDriver();
+
+    // A page has no embed and no position API: nothing but this extension
+    // reaches the end of one, so if the worker cannot name it, nothing can.
+    expect(advances()).toEqual([{ endedItemId: 'q_page' }]);
+  });
+
+  it('tells apart the same media queued twice, by the index', async () => {
+    await openDrivenRoom();
+    queueOf([item('q_first', FEATURE), item('q_again', FEATURE)]);
+    room.emit('sync.state', onQueueItem(1, FEATURE));
+
+    endedFromDriver();
+
+    expect(advances()).toEqual([{ endedItemId: 'q_again' }]);
+  });
+
+  it('stays silent when the finished item is not in the room queue', async () => {
+    await openDrivenRoom();
+    // Vote-skip carried the playing item off while it was still on the stage.
+    queueOf([item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+
+    endedFromDriver();
+
+    // Saying nothing is the safe answer: naming the row now at that index
+    // would advance PAST it, skipping an item nobody skipped.
+    expect(advances()).toEqual([]);
+  });
+
+  it('stays silent for an end that did not come from the driven frame', async () => {
+    await openDrivenRoom();
+    queueOf([item('q_a', FEATURE), item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+
+    notify({ kind: 'mediaEnded', positionMs: 1, durationMs: 2 }, { tab: { id: 7 }, frameId: 9 });
+    notify({ kind: 'mediaEnded', positionMs: 1, durationMs: 2 }, { tab: { id: 8 }, frameId: 3 });
+
+    expect(advances()).toEqual([]);
+  });
+
+  /**
+   * WITH a web tab the extension still sends — see background.ts. The relayed
+   * web path sends one too, and the server's compare-and-set makes the loser a
+   * silent no-op; suppressing on "a port is open" would be an inference about
+   * a surface that may be mid-navigation, which is the advancer election this
+   * whole mechanism replaced.
+   */
+  it('sends its own intent even while the web app is listening', async () => {
+    const web = openEventPort();
+    await openDrivenRoom();
+    queueOf([item('q_a', FEATURE), item('q_b', SECOND)]);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+
+    endedFromDriver();
+
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
+    // And the page still hears it: the overlay and the web stage both read it.
+    expect(web.posted.filter((m) => m['event'] === 'ended')).toHaveLength(1);
+  });
+
+  it('takes the newer queue when a snapshot reply lands behind a broadcast', async () => {
+    await openDrivenRoom();
+    queueOf([item('q_a', FEATURE), item('q_b', SECOND)], 4);
+    // The wantSnapshot reply is written from a room read that raced the
+    // broadcast — older, and it must not overwrite what already landed.
+    queueOf([item('q_old', FEATURE)], 2);
+    room.emit('sync.state', onQueueItem(0, FEATURE));
+
+    endedFromDriver();
+
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
   });
 });
 
@@ -1598,5 +1839,194 @@ describe('a share outlives the worker, but not the room', () => {
 
     expect(fake.offscreenClosed).toBeGreaterThan(0);
     expect((await status()).sharing).toBe(false);
+  });
+});
+
+/* ── the presence beat and the surfaces it belongs to ── */
+
+/**
+ * The beat is this extension telling the room "that person is still here". The
+ * room believes it: the server's 45s presence TTL is what decides somebody has
+ * gone, and that departure is what releases the screen share they left behind.
+ *
+ * So the beat has to mean something. It was made unconditional to stop a share
+ * being declared over forty-five seconds after it started, and an unconditional
+ * beat outlives every surface a person can close — the room then holds an
+ * immortal member and an orphaned share. These tests pin both ends: the beat
+ * stops when the last surface goes, and it does NOT stop for the one thing
+ * that looks like leaving and is not — MV3 recycling the worker.
+ */
+describe('the presence beat belongs to a surface the user can close', () => {
+  const PRESENCE_BEAT_MS = 15_000;
+
+  /** Beats written to the room since the last reset. */
+  const beats = (): number => room.sent.filter((m) => m.type === 'presence.update').length;
+
+  /**
+   * The worker is terminated, and something wakes it.
+   *
+   * Everything the worker held in memory goes: its module variables, its
+   * timers, its listeners, the ports pages had open on it. Everything the
+   * BROWSER holds stays: chrome.storage.session, the offscreen document, the
+   * user's tabs. Re-importing the module reproduces exactly that split — and
+   * the import is itself the wake, because background.ts ends in
+   * `void restoreSession()`.
+   *
+   * Callers hold the fake clock BEFORE the recycle, always: the revived worker
+   * arms a fresh beat timer, and a timer armed while the clock is real is a
+   * timer `advanceTimersByTime` can never reach.
+   */
+  async function recycleWorker(): Promise<void> {
+    // Chrome's notice before it terminates. The worker's own handler stops its
+    // timers on it — without that, `vi.resetModules()` leaves the dead
+    // worker's intervals running and two workers beat for one room.
+    for (const listener of [...fake.onSuspend.listeners]) listener();
+    for (const event of fake.allEvents) event.listeners.length = 0;
+    room.handlers.clear();
+    vi.resetModules();
+    bg = await import('../src/background');
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    if ((await status()).connected) await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('beats while the driven tab — the tab the overlay is on — is open', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    room.sent.length = 0;
+
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 3);
+
+    expect(beats()).toBe(3);
+  });
+
+  it('stops beating, and lets the room go, once the last surface closes', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 2);
+    expect(beats()).toBeGreaterThan(0);
+
+    // The user closes the tab they were watching on. Nothing is being shared
+    // and no web app page is connected: there is no surface left at all.
+    removeTab(7);
+    await vi.advanceTimersByTimeAsync(0);
+    const written = beats();
+
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 4);
+
+    // Not one more beat. The entry now expires on the server's own clock,
+    // which is what fires onDeparture and releases anything held for them.
+    expect(beats()).toBe(written);
+    // And the socket goes with it, once the reload window has passed.
+    expect((await status()).connected).toBe(false);
+  });
+
+  it('treats the web app tab hanging up as a surface closing', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    const web = openEventPort();
+    // The driven tab is gone, so the web app's port is the only surface left.
+    removeTab(7);
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS);
+    const withPort = beats();
+    expect(withPort).toBeGreaterThan(0);
+
+    // onConnectExternal registered no onDisconnect handler at all, so a closed
+    // web tab was never noticed and the beat ran on without it.
+    web.close();
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 4);
+
+    expect(beats()).toBe(withPort);
+    expect((await status()).connected).toBe(false);
+  });
+
+  it('holds the room through a reload — a port that comes back is not a departure', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    const web = openEventPort();
+    removeTab(7);
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS);
+
+    // The room page navigates: the port drops, and a new one opens a beat later.
+    web.close();
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS);
+    openEventPort();
+    room.sent.length = 0;
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 3);
+
+    expect(beats()).toBe(3);
+    expect((await status()).connected).toBe(true);
+  });
+
+  /**
+   * The original bug, still fixed: an extension-hosted share was declared over
+   * about forty-five seconds in, because the socket read presence and never
+   * wrote it.
+   */
+  it('keeps an extension-hosted share alive well past the 45s TTL', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    expect((await share('screen')).shared).toBe(true);
+    room.sent.length = 0;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // Four beats inside a 45s window: the entry never lapses, so onDeparture
+    // never fires, so the share is never released out from under the sharer.
+    expect(beats()).toBe(4);
+    expect((await status()).sharing).toBe(true);
+    expect((await status()).connected).toBe(true);
+  });
+
+  /**
+   * The trap in the fix. A recycled worker has forgotten `sharingSource` and
+   * every open port; if "is anybody here?" were answered out of memory it would
+   * answer "no" on every wake, stop the beat, and bring the original bug back.
+   * It is answered by the browser instead — the offscreen document is still
+   * there, and the offscreen document exists only to capture.
+   */
+  it('does not stop the beat when the worker is recycled under a live share', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    expect((await share('screen')).shared).toBe(true);
+    // Strip every surface except the share, so the share alone decides.
+    removeTab(7);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await recycleWorker();
+
+    room.sent.length = 0;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(beats()).toBe(4);
+    expect((await status()).sharing).toBe(true);
+    expect((await status()).connected).toBe(true);
+  });
+
+  /**
+   * The other half of that trap. The absence clock is persisted precisely
+   * because MV3 wakes this worker every ~30s: a clock kept in memory would be
+   * reset by every wake, the grace window would never elapse, and the room
+   * would be held open forever by the mechanism written to release it.
+   */
+  it('releases a room the user left even though the worker keeps waking up', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    removeTab(7); // the last surface; the absence clock starts
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Wake after wake after wake, each a fresh worker with no memory at all.
+    await recycleWorker();
+    await recycleWorker();
+    await recycleWorker();
+
+    room.sent.length = 0;
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 2);
+
+    expect(beats()).toBe(0);
+    expect((await status()).connected).toBe(false);
   });
 });

@@ -46,9 +46,6 @@ export type {
   SyncChannelMessage,
 } from './channels';
 
-export { MasterElection } from './election';
-export type { ElectionPeer, MasterElectionEvents, MasterElectionOptions } from './election';
-
 export { BeaconFollower, BeaconSender } from './beacon';
 export type { BeaconFollowerOptions, BeaconSenderOptions, BeaconState } from './beacon';
 

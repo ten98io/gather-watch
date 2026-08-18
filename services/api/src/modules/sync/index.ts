@@ -31,12 +31,12 @@ const syncModule: ModulePlugin = {
       serviceFor(ctx.deps).setRate(ctx.roomId, ctx.auth.userId, event.payload),
     'sync.setTrack': (event, ctx) =>
       serviceFor(ctx.deps).setTrack(ctx.roomId, ctx.auth.userId, event.payload),
+    'sync.advance': (event, ctx) =>
+      serviceFor(ctx.deps).advance(ctx.roomId, ctx.auth.userId, event.payload.endedItemId),
     'sync.waitForAll': (event, ctx) =>
       serviceFor(ctx.deps).setWaitForAll(ctx.roomId, ctx.auth.userId, event.payload.enabled),
     'sync.buffering': (event, ctx) =>
       serviceFor(ctx.deps).setBuffering(ctx.roomId, ctx.auth.userId, event.payload.buffering),
-    'sync.claimMaster': (event, ctx) =>
-      serviceFor(ctx.deps).claimMaster(ctx.roomId, ctx.auth.userId, event.payload.epoch),
   },
 };
 

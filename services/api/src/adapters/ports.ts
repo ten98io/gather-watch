@@ -107,8 +107,8 @@ export interface AuthTokenDoc {
   usedAt: number | null;
 }
 
-/** Room + persisted realtime snapshots (master-election state, last playback
- *  state for late joiners, shared queue, Mode B state).
+/** Room + persisted realtime snapshots (last playback state for late joiners,
+ *  shared queue, Mode B state).
  *
  *  lastActivityAt is SERVER-ONLY (never serialized to clients): the last time
  *  a persisted event was written for this room, throttled to one write per
@@ -119,7 +119,6 @@ export type RoomDoc = Room & {
   playback: PlaybackState | null;
   queue: { items: QueueItem[]; version: number };
   restream: RestreamState | null;
-  master: { userId: string; epoch: number } | null;
   lastActivityAt?: number;
 };
 

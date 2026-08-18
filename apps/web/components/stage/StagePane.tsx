@@ -19,20 +19,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { motion } from '@gather/design';
-import type { RoomId, UserId } from '@gather/contracts';
+import type { RoomId } from '@gather/contracts';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { RELAY_LABEL } from '@/lib/labels';
 import { canAct } from '@/lib/permissions';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { adapterKindFor, isFullSyncKind, mediaKey, stageGate } from '@/lib/player/adapter';
-import {
-  isAdvancerClient,
-  masterClaimDelayMs,
-  masterClaimEpoch,
-  masterSeatVacant,
-  nextTrackOnEnd,
-} from '@/lib/player/advance';
+import { endedQueueItemId } from '@/lib/player/advance';
 import { mediaKindFor } from '@/lib/media-kind';
 import type { PlayerAdapter, StageGate } from '@/lib/player/adapter';
 import { NativeAdapter } from '@/lib/player/native';
@@ -390,8 +384,6 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const restream = connection.useRoomState((s) => s.restream);
   const waitingOn = connection.useRoomState((s) => s.waitingOn);
   const queueItems = connection.useRoomState((s) => s.queue.items);
-  const master = connection.useRoomState((s) => s.master);
-  const presence = connection.useRoomState((s) => s.presence);
   const reduced = useReducedMotion();
 
   const mediaRef = playback?.mediaRef ?? null;
@@ -539,86 +531,24 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
    */
   const trackKey = `${mediaIdentity}#${playback?.queueIndex ?? -1}`;
 
-  /** Everyone the room lists as here. Derived through a key rather than
-   *  straight into an array so its IDENTITY tracks the set: presence churns on
-   *  every mic toggle, and a fresh array on each of those would re-arm the
-   *  claim timer below forever and never let it fire. */
-  const presentKey = useMemo(() => {
-    const ids: string[] = [];
-    for (const entry of Object.values(presence)) {
-      if (entry.state !== 'offline') ids.push(entry.userId);
-    }
-    return ids.sort().join(' ');
-  }, [presence]);
-  const presentUserIds = useMemo(
-    () => (presentKey === '' ? [] : (presentKey.split(' ') as UserId[])),
-    [presentKey],
-  );
   /**
-   * WHO ADVANCES THE QUEUE. Elastic sync leaves viewers deliberately out of
-   * step by up to ~15 s, so in an N-person room the item ends at N different
-   * moments. If every client advanced, whoever reached the credits first would
-   * yank everyone still ten seconds out into the next item. Exactly ONE client
-   * advances; the rest follow the setTrack it sends — which is correct, because
-   * a track change is HOST INTENT (docs/EXTENSION_FIRST.md Part 1) and applies
-   * immediately and unbanded, while drift correction stays comfort-banded.
+   * NOBODY IS ELECTED TO ADVANCE ANY MORE, and this is where the election used
+   * to be: a presence roster, `isAdvancerClient` over the room's master seat
+   * with a host fallback, and a staggered `sync.claimMaster` on mount to fill
+   * the seat. All of it deleted.
    *
-   * The predicate must name ONE client, never "anyone permitted to": the room's
-   * playbackControl policy can be 'everyone', which would re-open the race. So
-   * it is the room's master seat — server-elected by compare-and-set — with the
-   * old host rule as the fallback that covers the moment before the seat is
-   * filled. See lib/player/advance.ts for why the seat and not the roster.
+   * The seat was an inference — "who SHOULD advance this room" out of presence
+   * plus role — and it was wrong in ordinary topologies. A host watching on
+   * their phone beat presence every 15 s while mounting no advancer at all, so
+   * they held the seat and the queue stopped. A host transfer left the seat
+   * naming the old host. The claim gate here was narrower than the server's, so
+   * the fallback it was supposed to cover was unreachable. Three patches, three
+   * new ways to strand a room on a finished item.
+   *
+   * What replaced it is not a better inference, it is the absence of one: every
+   * client reports the ending it saw, naming the item, and the server
+   * compare-and-sets. See `advanceRef` below and lib/player/advance.ts.
    */
-  const isAdvancer = isAdvancerClient({
-    selfUserId: member.userId,
-    selfIsHost: member.role === 'host',
-    master,
-    presentUserIds,
-  });
-
-  /**
-   * CLAIMING THE SEAT. Nothing anywhere sent sync.claimMaster, so the seat the
-   * server was built to arbitrate stayed empty forever and the fallback was the
-   * whole election. A mounted StagePane is by definition a client that CAN
-   * advance — it holds both 'ended' subscriptions, the adapter's and the
-   * extension bridge's — so it is a legitimate candidate, and it says so.
-   *
-   * Claimed on mount rather than at the end of an item: the seat has to be
-   * settled BEFORE the credits, and a claim landing in the last second would
-   * change the advancer mid-decision.
-   *
-   * The send is guarded because it is a courtesy, not the feature: a socket
-   * that has not opened yet throws outright, and losing a claim only means the
-   * fallback keeps deciding.
-   */
-  useEffect(() => {
-    // Only a client that may actually DRIVE may take the seat. The seat makes
-    // its holder the SOLE advancer and every other tab stands down, so a seat
-    // held by someone the policy forbids is strictly worse than an empty one:
-    // their setTrack is refused and nobody else tries. In a default 'host'
-    // room the first guest to mount used to win it and the queue never moved
-    // again. The server enforces the same predicate on the claim; this is the
-    // half that stops the pointless round trip.
-    if (!controlEnabled) return undefined;
-    if (!masterSeatVacant({ master, presentUserIds })) return undefined;
-    const epoch = masterClaimEpoch(master);
-    const handle = setTimeout(
-      () => {
-        // Re-read the seat at the last moment: an earlier candidate's claim may
-        // have landed while this one was waiting its turn.
-        if (!masterSeatVacant({ master: connection.useRoomState.getState().master, presentUserIds }))
-          return;
-        try {
-          connection.rawSocket.send('sync.claimMaster', { epoch });
-        } catch {
-          // No socket yet. The fallback advancer still decides, and the next
-          // roster change re-arms this.
-        }
-      },
-      masterClaimDelayMs({ selfUserId: member.userId, presentUserIds }),
-    );
-    return () => clearTimeout(handle);
-  }, [connection, master, presentUserIds, member.userId, controlEnabled]);
 
   // These two run FIRST on purpose: the subscribe/load pair below fires real
   // adapter events during the same commit, and a reset scheduled after them
@@ -635,38 +565,53 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     setStartStalled(false);
     setLoadFailed(false);
   }, [adapter, mediaIdentity]);
-  // The end latch belongs to ONE ITEM, and only a new item may clear it.
+  /** Which item this client has already reported the end of. */
+  const advancedKeyRef = useRef<string | null>(null);
+  // The end latch and the advance guard belong to ONE ITEM, and only a new item
+  // may clear them.
+  //
+  // CLEARED, not accumulated. The guard used to be a memo of every key it had
+  // ever fired for, which meant a room that came BACK to an earlier item — a
+  // replay, a queue reorder that restored a slot — could never leave it again,
+  // because the key was already spent. Holding only the current item's key
+  // keeps the de-duplication (a burst of 'ended' inside one commit still fires
+  // once, without waiting for this effect) while leaving a later, legitimate
+  // ending of the same item reportable.
   useEffect(() => {
     setLocalEnded(false);
+    advancedKeyRef.current = null;
   }, [adapter, trackKey]);
 
   /**
-   * The auto-advance decision, kept fresh in a ref so the subscription below
-   * stays keyed on the adapter alone instead of re-arming on every queue or
-   * playback change.
+   * Reporting the end, kept fresh in a ref so the subscription below stays
+   * keyed on the adapter alone instead of re-arming on every queue or playback
+   * change.
    */
   const advanceRef = useRef<() => void>(() => undefined);
-  const advancedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     advanceRef.current = (): void => {
-      // ONE end per item, from any source. A local adapter can fire 'ended'
+      // ONE report per item, from any source. A local adapter can fire 'ended'
       // more than once (a correction landing on the end re-fires it), and the
       // extension deliberately does not de-duplicate at all
       // (apps/extension/src/background.ts, `case 'mediaEnded'`) because its
-      // content script makes exactly one judgement per item — which makes this
-      // guard, keyed on the item rather than the playback epoch, the only
-      // thing standing between a room and a double skip.
+      // content script makes exactly one judgement per item.
+      //
+      // This is now tidiness rather than the last line of defence: a repeat
+      // finds the room already off the item it names and the server drops it.
+      // That is the same property that lets every client in the room fire this
+      // without coordinating — which is why there is no advancer election here
+      // any more.
       if (advancedKeyRef.current === trackKey) return;
-      const next = nextTrackOnEnd({
+      const endedItemId = endedQueueItemId({
         queueIndex: playback?.queueIndex ?? null,
         items: queueItems,
         mediaRef,
-        isAdvancer,
       });
-      // null is a real answer at the end of the queue: let the room stop.
-      if (next === null) return;
+      // null is a real answer: nothing in the queue matches what just ended, so
+      // there is no item to move the room on from. See advance.ts.
+      if (endedItemId === null) return;
       advancedKeyRef.current = trackKey;
-      connection.syncSetTrackByQueue(next.index);
+      connection.syncAdvance(endedItemId);
     };
   });
 
@@ -692,7 +637,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       }),
       adapter.on('paused', () => setLocalPlaying(false)),
       // The source ran out. Latch it (nothing may restart a finished player)
-      // and, on the one designated client, hand the room the next item.
+      // and tell the room the item ended, so the queue can move on from it.
       adapter.on('ended', () => {
         setLocalPlaying(false);
         setLocalEnded(true);

@@ -1,17 +1,9 @@
 /**
- * Rooms ws handlers. Only 'presence.update' lives here:
- * - hub-core already owns 'clock.ping' and all 'webrtc.*' handlers, and
- *   re-registering those throws;
- * - the sync module registered 'sync.claimMaster' first, so that seat is
- *   taken too. The rooms module still ships the CAS-based arbitration in
- *   ./master.ts (server-incremented monotonic epochs, single winner under
- *   races) as the reference implementation + unit-test target; swapping the
- *   ws seat over to it is an orchestrator-level decision recorded in the
- *   worker notes.
+ * Rooms ws handlers. Only 'presence.update' lives here: hub-core already owns
+ * 'clock.ping' and all 'webrtc.*' handlers, and re-registering those throws.
  * Handler errors are mapped by the hub to an ephemeral error event on the
  * offending socket.
  */
-import type { UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import type { HandlerMap } from '../types';
 import { ensureShareLiveness } from '../restream/service';
@@ -88,19 +80,6 @@ export const roomsWsHandlers: HandlerMap = {
       // for this reply is that replay is capped and cannot be relied on.
       if (fresh.restream !== null) {
         ctx.reply('restream.state', fresh.restream);
-      }
-      // The master seat rides along too. It is deliberately NOT part of
-      // serializeRoom (RoomDoc's realtime snapshots never leak through the
-      // Room entity), so this reply is the ONLY way a joining or reloading
-      // client learns who holds it. Without it every client read master as
-      // null, computed a losing epoch, and the seat stayed claimable exactly
-      // once per room — which silently made auto-advance inert for everyone
-      // who was not the original claimant.
-      if (fresh.master !== null) {
-        ctx.reply('sync.masterChanged', {
-          masterUserId: fresh.master.userId as UserId,
-          epoch: fresh.master.epoch,
-        });
       }
     }
   },

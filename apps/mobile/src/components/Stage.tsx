@@ -281,6 +281,20 @@ export function Stage(props: {
     playback,
     clock: conn.clock,
     voiceActive,
+    /**
+     * The queue moves on because somebody watching says the item ended, and
+     * on a phone that somebody is this player. Sent unconditionally, by every
+     * device that reaches the end: `sync.advance` is ungated and the server
+     * compare-and-sets it, so a room with a phone AND a laptop in it produces
+     * two reports and one move. Nothing here checks whether anyone else is
+     * watching — that inference is the advancer election this replaced.
+     *
+     * Only the native player has an end signal. A YouTube/embed item plays in
+     * a WebView with no position API on this device (see the header), so a
+     * mobile-only room on an embed still cannot report its own endings; that
+     * needs the postMessage bridge, not another producer here.
+     */
+    onEnded: () => conn.reportEndedItem(),
   });
 
   // Buffering reports drive the server's wait-for-all coordination.

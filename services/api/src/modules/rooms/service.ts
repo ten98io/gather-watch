@@ -180,7 +180,6 @@ export class RoomsService {
         playback: null,
         queue: { items: [], version: 0 },
         restream: null,
-        master: null,
         // Rooms never expire on a clock. expiresAt stays null forever (the
         // field is kept only for stored docs and old clients); the sweeper
         // works off lastActivityAt + emptiness instead.

@@ -28,7 +28,7 @@ import { createMailer } from './email';
 const RT_COOKIE = 'gather_rt';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only
- *  realtime snapshots (playback/queue/restream/master). */
+ *  realtime snapshots (playback/queue/restream). */
 function serializeRoom(room: RoomDoc): Room {
   return {
     id: room.id,

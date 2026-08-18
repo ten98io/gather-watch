@@ -1,13 +1,13 @@
 /**
  * RoomDoc → contracts Room serialization. RoomDoc carries server-only
- * realtime snapshots (playback/queue/restream/master) that must never leave
+ * realtime snapshots (playback/queue/restream) that must never leave
  * the server, so every outbound room shape goes through this picker.
  */
 import type { Room } from '@gather/contracts';
 import type { RoomDoc } from '../../adapters/ports';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only
- *  realtime snapshots (playback/queue/restream/master). */
+ *  realtime snapshots (playback/queue/restream). */
 export function serializeRoom(room: RoomDoc): Room {
   return {
     id: room.id,

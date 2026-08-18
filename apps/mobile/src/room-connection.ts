@@ -33,6 +33,7 @@ import type {
 } from '@gather/contracts';
 import { createStore } from 'zustand/vanilla';
 import type { StoreApi } from 'zustand/vanilla';
+import { endedQueueItemId } from './sync/advance';
 
 /** Ephemeral emote burst floating over the stage (never persisted). */
 export interface EmoteBurst {
@@ -58,7 +59,6 @@ export interface RoomState {
   readCursors: Record<UserId, number>;
   deliveredCursors: Record<UserId, number>;
   waitingOn: UserId[];
-  master: { userId: UserId; epoch: number } | null;
   restream: RestreamState | null;
   emotes: EmoteBurst[];
   /** Bumped when a seq gap could not be backfilled — screens should refetch
@@ -100,7 +100,6 @@ function initialRoomState(): RoomState {
     readCursors: {},
     deliveredCursors: {},
     waitingOn: [],
-    master: null,
     restream: null,
     emotes: [],
     gapLossCount: 0,
@@ -190,6 +189,8 @@ export class RoomConnection {
   private lastPresenceSent: PresencePatch = {};
   private emoteCounter = 0;
   private roomId: RoomId | null = null;
+  /** The last item whose end this client reported. See {@link reportEndedItem}. */
+  private advancedItemId: QueueItemId | null = null;
 
   constructor(opts: RoomConnectionOptions) {
     this.rest = opts.rest;
@@ -257,6 +258,8 @@ export class RoomConnection {
     this.socket.close();
     this.roomId = null;
     this.lastPresenceSent = {};
+    // A different room's items are different items; the guard must not carry.
+    this.advancedItemId = null;
     this.store.setState(initialRoomState());
   }
 
@@ -328,6 +331,59 @@ export class RoomConnection {
 
   syncSetTrackByQueue(queueIndex: number): void {
     this.socket.send('sync.setTrack', { kind: 'queue', queueIndex });
+  }
+
+  /**
+   * "The item I was playing has ENDED; move the room on from it." Mirrors the
+   * web helper — see apps/web/lib/room-connection.ts for why this names the
+   * finished item instead of the next one, and why every member may send it.
+   *
+   * A phone is the reason this exists at all. Under the master seat a host
+   * watching on mobile held the room's one advancer slot while mounting no
+   * advancer, so the queue stopped at the end of the first item; the seat is
+   * gone, and this is the half that lets mobile carry its own weight.
+   *
+   * The raw send. {@link reportEndedItem} is what the player calls — it works
+   * out WHICH item ended and fires once for it.
+   */
+  syncAdvance(endedItemId: QueueItemId): void {
+    this.socket.send('sync.advance', { endedItemId });
+  }
+
+  /**
+   * This device's player ran out: name the item and tell the room, once.
+   *
+   * Called from the sync engine's end guard (src/sync/useSyncEngine.ts), which
+   * is the phone's only end-of-item signal. Without this call a room being
+   * watched on a phone alone emits no ending from anywhere and the queue stops
+   * on its first item — the stall this method exists to close.
+   *
+   * IT RESOLVES THE ITEM FROM THE STORE, not from an argument. The screen
+   * holds no truth the connection does not already have, and reading both the
+   * queue and the playback snapshot at the same instant is what keeps the id
+   * and the index talking about the same moment.
+   *
+   * FIRES ONCE PER ITEM, by remembering the last id it reported rather than a
+   * set of every id it ever has. A set could never leave an item the room came
+   * BACK to (a replay, a reorder that restored a slot); one id cannot latch,
+   * because the following item's id is a different one. Duplicates are
+   * harmless anyway — the server compare-and-sets and drops a report for an
+   * item the room has already left — so this is tidiness, not correctness, and
+   * a loop is the only thing it must genuinely prevent.
+   */
+  reportEndedItem(): void {
+    const { playback, queue } = this.store.getState();
+    const endedItemId = endedQueueItemId({
+      queueIndex: playback?.queueIndex ?? null,
+      items: queue.items,
+      mediaRef: playback?.mediaRef ?? null,
+    });
+    // Null is a real answer: nothing in the queue matches what just ended, so
+    // there is no item to move the room on from. See sync/advance.ts.
+    if (endedItemId === null) return;
+    if (this.advancedItemId === endedItemId) return;
+    this.advancedItemId = endedItemId;
+    this.syncAdvance(endedItemId);
   }
 
   syncBuffering(buffering: boolean): void {
@@ -508,10 +564,6 @@ export class RoomConnection {
 
     this.socket.on('sync.waiting', (ev) => {
       set({ waitingOn: ev.payload.waitingOn });
-    });
-
-    this.socket.on('sync.masterChanged', (ev) => {
-      set({ master: { userId: ev.payload.masterUserId, epoch: ev.payload.epoch } });
     });
 
     this.socket.on('queue.state', (ev) => {

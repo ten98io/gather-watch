@@ -54,6 +54,21 @@ import { policyAllows } from '../sync/policy';
 export const QUEUE_MEDIA_REF_MAX_CHARS = 2048;
 
 /**
+ * The largest an item's `artworkUrl` may be. `QueueItem.artworkUrl` is
+ * `WebUrl` — `z.string().url()`, no length ceiling — and the queue's item
+ * COUNT bounds the number of rows, not their bytes, so this is the second
+ * half of the same bound rather than a separate rule.
+ *
+ * QueueService.add never needed it (sanitizeArtworkUrl already drops anything
+ * past 2048), but the playlist→queue copy in ./routes.ts writes the room
+ * document DIRECTLY and copied artwork through untouched: 500 rows × a
+ * megabyte of artwork is Mongo's 16 MB wall by a road the mediaRef check does
+ * not cover. Same 2048 as sanitizeArtworkUrl's URL_MAX, deliberately — one
+ * ceiling for artwork, whichever door it arrives at.
+ */
+export const QUEUE_ARTWORK_URL_MAX_CHARS = 2048;
+
+/**
  * The largest a room's shared queue may grow. A PHYSICS limit — identical for
  * every room, every member and every account, because what it protects is the
  * storage engine, not a price:
@@ -93,7 +108,7 @@ export class QueueService {
         `the queue is full (${QUEUE_MAX_ITEMS} items) — remove something to add more`,
       );
     }
-    assertMediaRefWithinBounds(input.mediaRef);
+    assertQueueItemWithinBounds(input);
     const item: QueueItem = {
       id: newId() as QueueItemId,
       mediaRef: input.mediaRef,
@@ -230,6 +245,13 @@ export class QueueService {
     }
 
     // With no playback snapshot the head of the queue counts as current.
+    //
+    // NOT the same question SyncService.advance asks, and do not unify them:
+    // a vote is about a ROW ("skip this one"), so a queue nobody has started
+    // still has a row to skip. An advance is about a row that was PLAYING, so
+    // a room that has never played anything has nothing that can have ENDED —
+    // and treating the head as current there would let a member walk an
+    // unstarted queue forward. Same words, different questions.
     const qi = room.playback?.queueIndex;
     const currentItemId =
       (qi !== null && qi !== undefined
@@ -337,6 +359,28 @@ export class QueueService {
 export function assertMediaRefWithinBounds(mediaRef: MediaRef): void {
   if (JSON.stringify(mediaRef).length > QUEUE_MEDIA_REF_MAX_CHARS) {
     throw new AppError('VALIDATION', 'media reference is too long to queue');
+  }
+}
+
+/**
+ * Refuse a whole queue item too large to belong on a room document — the ONE
+ * door for "may these bytes join a queue", so a caller that writes the room
+ * doc without going through QueueService (the playlist copy) cannot enforce a
+ * different subset by accident. That is exactly how artwork slipped past: the
+ * copy path repeated the count check and the mediaRef check, and simply did
+ * not know there was a third.
+ *
+ * Every unbounded-from-the-client field on a QueueItem is named here. `title`
+ * is capped by the contract (max 300) and `durationMs` is a number, so the
+ * two that need a ceiling are the ref and the artwork.
+ */
+export function assertQueueItemWithinBounds(item: {
+  mediaRef: MediaRef;
+  artworkUrl: string | null;
+}): void {
+  assertMediaRefWithinBounds(item.mediaRef);
+  if (item.artworkUrl !== null && item.artworkUrl.length > QUEUE_ARTWORK_URL_MAX_CHARS) {
+    throw new AppError('VALIDATION', 'artwork URL is too long to queue');
   }
 }
 

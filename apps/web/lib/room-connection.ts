@@ -142,7 +142,6 @@ export interface RoomState {
   readCursors: Record<UserId, number>;
   deliveredCursors: Record<UserId, number>;
   waitingOn: UserId[];
-  master: { userId: UserId; epoch: number } | null;
   restream: RestreamState | null;
   emotes: EmoteBurst[];
   /** Bumped when a seq gap could not be backfilled — panes should refetch. */
@@ -198,7 +197,6 @@ function initialRoomState(): RoomState {
     readCursors: {},
     deliveredCursors: {},
     waitingOn: [],
-    master: null,
     restream: null,
     emotes: [],
     gapLossCount: 0,
@@ -596,6 +594,27 @@ export class RoomConnection {
     this.socket.send('sync.setTrack', { kind: 'queue', queueIndex });
   }
 
+  /**
+   * "The item I was playing has ENDED; move the room on from it."
+   *
+   * NOT a control action, and deliberately not shaped like one. It names the
+   * item that finished rather than the item to play, so the server can
+   * compare-and-set: it advances the room only while the room is still on that
+   * item, and the only destination it can reach is that item's successor. That
+   * is what lets EVERY member send it — reaching the end of a track is the
+   * queue doing the one thing a queue is for, not seizing playback — and what
+   * makes duplicates from a room full of clients silent no-ops instead of a
+   * race. Manual play/pause/seek/setTrack stay policy-gated exactly as before.
+   *
+   * Replaces the master-seat election (`sync.claimMaster` plus a per-client
+   * `isAdvancerClient` predicate), which had to name one advancer in advance
+   * and got it wrong whenever the room's topology was ordinary — a host on a
+   * phone, a host who left, a host transfer.
+   */
+  syncAdvance(endedItemId: QueueItemId): void {
+    this.socket.send('sync.advance', { endedItemId });
+  }
+
   syncBuffering(buffering: boolean): void {
     this.socket.send('sync.buffering', { buffering });
   }
@@ -790,10 +809,6 @@ export class RoomConnection {
 
     this.socket.on('sync.waiting', (ev) => {
       set({ waitingOn: ev.payload.waitingOn });
-    });
-
-    this.socket.on('sync.masterChanged', (ev) => {
-      set({ master: { userId: ev.payload.masterUserId, epoch: ev.payload.epoch } });
     });
 
     this.socket.on('queue.state', (ev) => {

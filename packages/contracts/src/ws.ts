@@ -150,6 +150,36 @@ export const ClientSyncSetTrack = clientEvent(
 );
 export type ClientSyncSetTrack = z.infer<typeof ClientSyncSetTrack>;
 
+/**
+ * "The item I was playing has ENDED — move the room on from it."
+ *
+ * NOT a request to drive. `sync.setTrack` says "put the room on THIS" and is
+ * policy-gated; this says "the thing that was on is over", which is the queue
+ * doing the one thing a queue is for, and the server takes it from any
+ * non-banned member. Its own event type rather than a third `kind` on
+ * `sync.setTrack` precisely BECAUSE the authority differs: one handler with
+ * two gates inside it is the shape that has already produced a bypass here
+ * (the master seat's claim gate drifting from the drive gate). Two names, two
+ * gates, visible without following a branch.
+ *
+ * The server applies it as a COMPARE-AND-SET: only while the room is still on
+ * `endedItemId`, otherwise silently nothing. So every client that was playing
+ * may fire on 'ended' — the first lands, the rest are no-ops rather than
+ * errors — and no seat, election or presence inference has to decide which one
+ * of them was supposed to. Whoever is watching reports; nobody is nominated.
+ *
+ * BY ID, NEVER BY INDEX. `queueIndex` is a raw index into an array that every
+ * remove and reorder rewrites, so "index 3 ended" can name a different track
+ * by the time it arrives — a live bug in this repo, not a hypothesis. An item
+ * id is stable under both, so the server's question ("are we still on the item
+ * you meant?") is about the same object the client meant.
+ */
+export const ClientSyncAdvance = clientEvent(
+  'sync.advance',
+  z.object({ endedItemId: QueueItemId }),
+);
+export type ClientSyncAdvance = z.infer<typeof ClientSyncAdvance>;
+
 export const ClientSyncWaitForAll = clientEvent(
   'sync.waitForAll',
   z.object({ enabled: z.boolean() }),
@@ -162,13 +192,6 @@ export const ClientSyncBuffering = clientEvent(
   z.object({ buffering: z.boolean() }),
 );
 export type ClientSyncBuffering = z.infer<typeof ClientSyncBuffering>;
-
-/** Claim playback-master for the room at a lamport-style epoch. */
-export const ClientSyncClaimMaster = clientEvent(
-  'sync.claimMaster',
-  z.object({ epoch: z.number().finite().int().nonnegative() }),
-);
-export type ClientSyncClaimMaster = z.infer<typeof ClientSyncClaimMaster>;
 
 // ── WebRTC signaling ──────────────────────────────────────────────────────────
 
@@ -285,9 +308,9 @@ export const ClientEvent = z.discriminatedUnion('type', [
   ClientSyncSeek,
   ClientSyncRate,
   ClientSyncSetTrack,
+  ClientSyncAdvance,
   ClientSyncWaitForAll,
   ClientSyncBuffering,
-  ClientSyncClaimMaster,
   ClientWebrtcOffer,
   ClientWebrtcAnswer,
   ClientWebrtcIce,
@@ -359,16 +382,6 @@ export const ServerSyncWaiting = serverEvent(
   z.object({ waitingOn: z.array(UserId) }),
 );
 export type ServerSyncWaiting = z.infer<typeof ServerSyncWaiting>;
-
-/** Master-election result: who now drives playback, at which epoch. */
-export const ServerSyncMasterChanged = serverEvent(
-  'sync.masterChanged',
-  z.object({
-    masterUserId: UserId,
-    epoch: z.number().finite().int().nonnegative(),
-  }),
-);
-export type ServerSyncMasterChanged = z.infer<typeof ServerSyncMasterChanged>;
 
 /** Server-relayed WebRTC signaling: the client's payload plus its sender. */
 export const ServerWebrtcOffer = serverEvent(
@@ -495,7 +508,6 @@ export const ServerEvent = z.discriminatedUnion('type', [
   ServerChatDelivered,
   ServerSyncState,
   ServerSyncWaiting,
-  ServerSyncMasterChanged,
   ServerWebrtcOffer,
   ServerWebrtcAnswer,
   ServerWebrtcIce,

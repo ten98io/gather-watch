@@ -24,6 +24,7 @@ import type { MediaRef, PlaybackState } from '@gather/contracts';
 import type { ClockEstimator } from '@gather/api-client';
 import type { BeaconState } from '@gather/p2p';
 import type { VideoPlayer } from 'expo-video';
+import { mediaIdentity } from './advance';
 
 /** Seam for the future beacon transport (see header). `ws` is the only
  *  implemented arm; `p2p` pins the @gather/p2p BeaconState shape the mobile
@@ -50,6 +51,19 @@ export interface SyncEngineInput {
    * leave it permanently mid-ramp, converging on neither band.
    */
   voiceActive?: boolean | undefined;
+  /**
+   * This device's source ran out. Called once per media+epoch, from the same
+   * signal that latches the end guard below.
+   *
+   * IT IS THE ROOM'S ONLY REPORTER IN A MOBILE-ONLY ROOM. The queue moves on
+   * when some client says the item it was playing has ended (`sync.advance`,
+   * ungated and compare-and-set — packages/contracts ws.ts). A host watching
+   * on their phone with nobody on the web used to emit no such report from
+   * anywhere, and the room sat on the first item forever. Wired in Stage.tsx
+   * to {@link RoomConnection.reportEndedItem}, which names the item and fires
+   * once for it.
+   */
+  onEnded?: (() => void) | undefined;
 }
 
 /** The embed tier is all music services today; spelled out so a future video
@@ -90,13 +104,39 @@ function isMusicRef(ref: MediaRef | null | undefined): boolean {
 function mediaKey(state: PlaybackState | null): string {
   const ref = state?.mediaRef;
   if (state === null || ref === null || ref === undefined) return 'none';
-  const id =
-    ref.kind === 'youtube' || ref.kind === 'vimeo'
-      ? ref.videoId
-      : ref.kind === 'embed'
-        ? ref.embedUrl
-        : ref.url;
-  return `${ref.kind}:${id}:${state.seq}`;
+  return `${mediaIdentity(ref)}:${state.seq}`;
+}
+
+/** The one thing this wiring needs of expo-video's player: its end signal.
+ *  Structural so a test can supply it without a native module. */
+export interface EndSignalPlayer {
+  addListener(name: 'playToEnd', listener: () => void): { remove(): void };
+}
+
+/**
+ * The end of this device's source, wired to BOTH things that must happen —
+ * the latch that stops drift correction, and the report that moves the room's
+ * queue on. Extracted from the hook rather than inlined so it can be tested
+ * without a React renderer (this app's vitest is node-only, no RN).
+ *
+ * Returns the teardown, which un-latches as well as unsubscribing: the guard
+ * belongs to ONE media+epoch, and a latch left standing would silence the
+ * engine for the following item.
+ */
+export function armEndOfItem(
+  player: EndSignalPlayer,
+  ended: { current: boolean },
+  onEnded: () => void,
+): () => void {
+  ended.current = false;
+  const sub = player.addListener('playToEnd', () => {
+    ended.current = true;
+    onEnded();
+  });
+  return () => {
+    sub.remove();
+    ended.current = false;
+  };
 }
 
 /**
@@ -153,22 +193,28 @@ export function useSyncEngine(input: SyncEngineInput): void {
     }
   }, [player, playback, clock, key]);
 
+  /** Reporting the end, kept fresh in a ref so the subscription below stays
+   *  keyed on the player and the item alone instead of re-arming whenever the
+   *  screen hands down a new closure. Mirrors the web stage's `advanceRef`. */
+  const onEndedRef = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    onEndedRef.current = input.onEnded;
+  });
+
   /** END GUARD (mirrors the web engine). The room's projected position keeps
    *  climbing after this device's source runs out, so from that moment every
    *  correction is a seek past the end — and seeking a finished player starts
    *  it again, which ends it again. Torn down and re-armed per media+epoch, or
-   *  the latch would silence the engine for the following item. */
+   *  the latch would silence the engine for the following item.
+   *
+   *  The SAME signal reports the ending to the room (see `onEnded` above): one
+   *  end, one subscription, two consequences — a phone that latched without
+   *  reporting is exactly how a mobile-only room stalled. */
   const endedRef = useRef(false);
   useEffect(() => {
     endedRef.current = false;
     if (player === null) return undefined;
-    const sub = player.addListener('playToEnd', () => {
-      endedRef.current = true;
-    });
-    return () => {
-      sub.remove();
-      endedRef.current = false;
-    };
+    return armEndOfItem(player, endedRef, () => onEndedRef.current?.());
   }, [player, key]);
 
   // Continuous drift correction.

@@ -36,7 +36,6 @@ import {
   ClientSyncRate,
   ClientSyncSetTrack,
   ClientSyncBuffering,
-  ClientSyncClaimMaster,
   ClientWebrtcOffer,
   ClientWebrtcAnswer,
   ClientWebrtcIce,
@@ -52,7 +51,6 @@ import {
   ServerChatDelivered,
   ServerSyncState,
   ServerSyncWaiting,
-  ServerSyncMasterChanged,
   ServerWebrtcOffer,
   ServerWebrtcAnswer,
   ServerWebrtcIce,
@@ -669,20 +667,6 @@ describe('ws client', () => {
     expect(ClientSyncBuffering.parse(evt)).toEqual(evt);
   });
 
-  it('ClientEvent accepts sync.claimMaster', () => {
-    const evt = { type: 'sync.claimMaster', ...clientEnv, payload: { epoch: 7 } };
-    expect(ClientEvent.parse(evt)).toEqual(evt);
-    expect(ClientSyncClaimMaster.parse(evt)).toEqual(evt);
-  });
-
-  it('sync.claimMaster rejects a negative or non-finite epoch', () => {
-    const negative = { type: 'sync.claimMaster', ...clientEnv, payload: { epoch: -1 } };
-    expect(ClientSyncClaimMaster.safeParse(negative).success).toBe(false);
-    expect(ClientEvent.safeParse(negative).success).toBe(false);
-    const infinite = { type: 'sync.claimMaster', ...clientEnv, payload: { epoch: Infinity } };
-    expect(ClientSyncClaimMaster.safeParse(infinite).success).toBe(false);
-  });
-
   it('IceCandidateInit roundtrips with nullable fields', () => {
     const candidate = { candidate: 'candidate:1 1 udp 2122260223 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 };
     expect(IceCandidateInit.parse(candidate)).toEqual(candidate);
@@ -862,26 +846,6 @@ describe('ws server', () => {
       payload: { userId: 'user_1', lastDeliveredSeq: 12 },
     };
     expect(ServerChatDelivered.safeParse(evt).success).toBe(false);
-    expect(ServerEvent.safeParse(evt).success).toBe(false);
-  });
-
-  it('ServerEvent accepts sync.masterChanged', () => {
-    const evt = {
-      type: 'sync.masterChanged',
-      ...serverEnv,
-      payload: { masterUserId: 'user_1', epoch: 7 },
-    };
-    expect(ServerEvent.parse(evt)).toEqual(evt);
-    expect(ServerSyncMasterChanged.parse(evt)).toEqual(evt);
-  });
-
-  it('sync.masterChanged rejects a negative epoch', () => {
-    const evt = {
-      type: 'sync.masterChanged',
-      ...serverEnv,
-      payload: { masterUserId: 'user_1', epoch: -1 },
-    };
-    expect(ServerSyncMasterChanged.safeParse(evt).success).toBe(false);
     expect(ServerEvent.safeParse(evt).success).toBe(false);
   });
 

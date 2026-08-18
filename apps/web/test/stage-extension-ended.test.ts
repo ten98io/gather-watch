@@ -23,7 +23,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EndedPayload } from '@/lib/extension-bridge';
-import type { MediaRef, Member } from '@gather/contracts';
+import type { MediaRef, Member, QueueItem } from '@gather/contracts';
 
 (globalThis as unknown as { React: typeof React }).React = React;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -131,7 +131,10 @@ describe('an extension-driven item that runs out', () => {
     host.remove();
   });
 
-  async function mountDriven(role: Member['role']): Promise<ReturnType<typeof vi.fn>> {
+  async function mountDriven(role: Member['role']): Promise<{
+    ended: ReturnType<typeof vi.fn>;
+    items: QueueItem[];
+  }> {
     const items = [queueItem(PLAYING, 'the one ending'), queueItem(NEXT, 'the one after')];
     const patch = {
       playback: {
@@ -158,9 +161,9 @@ describe('an extension-driven item that runs out', () => {
 
     const connection = captured;
     if (connection === null) throw new Error('no room connection was captured');
-    const setTrack = vi.fn();
-    connection.syncSetTrackByQueue = setTrack as unknown as typeof connection.syncSetTrackByQueue;
-    return setTrack;
+    const ended = vi.fn();
+    connection.syncAdvance = ended as unknown as typeof connection.syncAdvance;
+    return { ended, items };
   }
 
   it('the stage subscribes at all — nothing was listening before', async () => {
@@ -168,21 +171,22 @@ describe('an extension-driven item that runs out', () => {
     expect(bridge.listeners.size).toBeGreaterThan(0);
   });
 
-  it('advances the queue when the extension says the item ended', async () => {
-    const setTrack = await mountDriven('host');
+  it('tells the room the item ended when the extension says it did', async () => {
+    const { ended, items } = await mountDriven('host');
 
     await act(async () => {
       bridge.emit(endedFor(PLAYING_KEY));
     });
 
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
   });
 
-  it('advances exactly once — the extension does not de-duplicate, so we must', async () => {
+  it('reports exactly once — the extension does not de-duplicate, so we do', async () => {
     // apps/extension/src/background.ts says so out loud: its content script
-    // makes one judgement per item and the worker adds no second opinion. If a
-    // repeat reaches the room twice, the room skips an item nobody skipped.
-    const setTrack = await mountDriven('host');
+    // makes one judgement per item and the worker adds no second opinion. The
+    // server would drop the repeats now (it only moves a room still sitting on
+    // the item named), but sending three of them is noise, not a design.
+    const { ended, items } = await mountDriven('host');
 
     await act(async () => {
       bridge.emit(endedFor(PLAYING_KEY));
@@ -190,40 +194,43 @@ describe('an extension-driven item that runs out', () => {
       bridge.emit(endedFor(PLAYING_KEY));
     });
 
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
   });
 
   it('ignores a late end for an item the room has already left', async () => {
-    const setTrack = await mountDriven('host');
+    const { ended } = await mountDriven('host');
 
     await act(async () => {
       bridge.emit(endedFor('page:https://example.com/watch/something-else'));
     });
 
-    expect(setTrack.mock.calls).toEqual([]);
+    expect(ended.mock.calls).toEqual([]);
   });
 
   it('ignores an end that names no item', async () => {
     // The extension sends null when its own room had no ref. Null matches
     // nothing on any stage, and must never be read as "the current one".
-    const setTrack = await mountDriven('host');
+    const { ended } = await mountDriven('host');
 
     await act(async () => {
       bridge.emit(endedFor(null));
     });
 
-    expect(setTrack.mock.calls).toEqual([]);
+    expect(ended.mock.calls).toEqual([]);
   });
 
-  it('still advances from the designated client only', async () => {
-    // Same rule as the local-player path: elastic sync means N viewers reach
-    // the end at N different moments, and only one client may hand the room on.
-    const setTrack = await mountDriven('member');
+  it('reports from a plain member too — the extension path is nobody’s privilege', async () => {
+    // This used to assert `toEqual([])`: only the room's one elected advancer
+    // was allowed to hand the queue on. The extension makes that election worse
+    // than useless — the person whose tab is actually playing the item is the
+    // one who KNOWS it ended, and they are routinely not the host. The intent
+    // reports a fact, so anyone who saw it may report it.
+    const { ended, items } = await mountDriven('member');
 
     await act(async () => {
       bridge.emit(endedFor(PLAYING_KEY));
     });
 
-    expect(setTrack.mock.calls).toEqual([]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
   });
 });

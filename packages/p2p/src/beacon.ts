@@ -32,11 +32,15 @@ export interface BeaconSenderOptions {
 
 /** Master side: broadcasts sync beacons at 1 Hz and immediately on mutation.
  *
- *  Integration contract: call {@link BeaconSender.stop} SYNCHRONOUSLY from the
- *  election's masterChanged handler when mastership moves elsewhere, and make
- *  `getEpoch` return the epoch of THIS node's own claim (never the global max
- *  epoch) — one late beacon carrying a freshly adopted higher epoch under the
- *  old master's id would resurrect a healed split-brain via the tie-break. */
+ *  Integration contract: call {@link BeaconSender.stop} SYNCHRONOUSLY at the
+ *  moment this node stops being the beacon source, and make `getEpoch` return
+ *  the epoch of THIS node's own claim (never the global max epoch) — one late
+ *  beacon carrying a freshly adopted higher epoch under the old master's id
+ *  would resurrect a healed split-brain via the tie-break.
+ *
+ *  There is no longer an election to wire this to: MasterElection was deleted
+ *  along with the `sync.claimMaster` seat (it had no producer). Whatever picks
+ *  the beacon source next owns the `stop` call above. */
 export class BeaconSender {
   private readonly broadcast: (msg: SyncChannelMessage) => void;
   private readonly getState: () => BeaconState;

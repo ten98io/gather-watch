@@ -19,7 +19,7 @@ import { newId } from '../../lib/tokens';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import { policyAllows } from '../sync/policy';
-import { QUEUE_MAX_ITEMS, assertMediaRefWithinBounds } from './service';
+import { QUEUE_MAX_ITEMS, assertQueueItemWithinBounds } from './service';
 
 type PlaylistParams = { Params: { playlistId: string } };
 
@@ -72,6 +72,14 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
     const auth = requireAuth(request);
     const body = parseWith(UpdatePlaylistBody, request.body);
     const existing = await ownedPlaylist(store, request.params.playlistId, auth.userId);
+    // A playlist is a queue waiting to happen: every item here is copied onto
+    // a shared room document by add-to-queue below. Bounding it at the copy
+    // alone would be enough to protect the room, but it puts the refusal on
+    // the wrong screen — the owner would only be told "no" once they tried to
+    // share it, having already stored the megabyte. Same door, both ends.
+    if (body.items !== undefined) {
+      for (const item of body.items) assertQueueItemWithinBounds(item);
+    }
     // Apply ONLY provided fields — never write undefined into the doc.
     const patch: Partial<PlaylistDoc> = {
       ...(body.title !== undefined ? { title: body.title } : {}),
@@ -118,13 +126,18 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
     // repeated here or it is simply not enforced — and an unbounded copy is
     // the cheapest way to push a room document toward Mongo's 16 MB ceiling,
     // after which EVERY write to that room fails, not just the queue.
+    //
+    // "Repeated" is why the per-item bound is ONE function rather than a list
+    // of checks: this path used to spell out the count and the mediaRef and
+    // stop there, so `artworkUrl` — `WebUrl`, unbounded — rode straight onto
+    // the shared document. A caller cannot enforce a subset of one call.
     if (room.queue.items.length + playlist.items.length > QUEUE_MAX_ITEMS) {
       throw new AppError(
         'VALIDATION',
         `that playlist does not fit — the queue holds ${QUEUE_MAX_ITEMS} items`,
       );
     }
-    for (const item of playlist.items) assertMediaRefWithinBounds(item.mediaRef);
+    for (const item of playlist.items) assertQueueItemWithinBounds(item);
 
     // Append COPIES with fresh ids so playlist edits never alias queue items.
     const copies: QueueItem[] = playlist.items.map((item) => ({

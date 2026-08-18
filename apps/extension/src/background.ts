@@ -25,8 +25,16 @@
  */
 import { RoomSocket } from '@gather/api-client';
 import { normalizeInviteCode } from '@gather/contracts';
-import type { MemberRole, PlaybackState, RestreamState, RoomPolicyLevel } from '@gather/contracts';
+import type {
+  MemberRole,
+  PlaybackState,
+  QueueItem,
+  QueueItemId,
+  RestreamState,
+  RoomPolicyLevel,
+} from '@gather/contracts';
 
+import { endedQueueItemId } from './advance';
 import { API_URL, WEB_ORIGINS, WS_URL, originOfUrl } from './config';
 import { ElasticDriver, mediaKeyOf, profileForContent, voiceActiveFrom } from './driver';
 import type { DriverTelemetry, ElasticDriverState, PresenceLike } from './driver';
@@ -77,6 +85,27 @@ interface Session {
   socket: RoomSocket;
   drivenTabId: number | null;
   playback: PlaybackState | null;
+  /**
+   * The room's queue, kept for ONE purpose: `sync.advance` names the item that
+   * ended, and `playback` carries an index but never an id (see
+   * {@link reportEndedItem}). Nothing draws it — the overlay shows the room's
+   * conversation, not its queue.
+   *
+   * It arrives with the join snapshot (the server answers a FIRST heartbeat
+   * with presence + sync + queue) and on every queue mutation after that. A
+   * session revived after MV3 recycles the worker gets no such snapshot,
+   * because the presence entry it beats into is still alive — so the queue is
+   * unknown until the next mutation, and an ending in that window is not
+   * reported. The same recycle leaves `playback` null and stops the worker
+   * driving at all, so this is not a new blind spot, and the honest silence is
+   * the same one {@link endedQueueItemId} returns for any unknown item.
+   */
+  queue: QueueItem[];
+  /** Version of that queue, so a snapshot reply cannot overwrite a newer
+   *  broadcast it raced. Mirrors the web and mobile clients. */
+  queueVersion: number;
+  /** The last item this worker reported the end of. See {@link reportEndedItem}. */
+  advancedItemId: QueueItemId | null;
   restream: RestreamState | null;
   /** How the room arrived: 'popup' (invite code) or 'web' (handoff). */
   source: 'popup' | 'web';
@@ -210,6 +239,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     session.drivenTabId = null;
     void persistSession();
     broadcastStatus();
+    // The overlay went with it. That may have been the last surface, and the
+    // beat should stop within the second rather than within the next fifteen.
+    void presenceBeat();
   }
 });
 
@@ -437,6 +469,57 @@ function refreshDriverContext(tabId: number, frameId: number): void {
   // Protected players charge a licence renegotiation for every seek, so the
   // driver seeks them far more reluctantly. We never do anything else to them.
   session.driver.setCapabilities({ isDrmProtected: summary?.tier === 'drm' });
+}
+
+/**
+ * The driven item ran out: name it and tell the ROOM, once.
+ *
+ * THE STALL THIS CLOSES. The end used to leave this worker in one direction
+ * only — `ports.broadcast('ended')` → the web app's bridge → StagePane →
+ * `sync.advance`. A user who connected from the POPUP has no Gather tab open,
+ * so that chain has no middle, and their room sat on a finished item forever
+ * with the extension merrily driving nothing. This worker already holds a room
+ * socket (presence and re-stream ride it), so the report goes straight out.
+ *
+ * IT SENDS EVEN WHEN A WEB TAB IS LISTENING, so the extension has ONE path
+ * rather than two. With both surfaces open the relayed web report and this one
+ * both arrive; `sync.advance` is a compare-and-set, so the second finds the
+ * room already off the item it names and is dropped. The alternative —
+ * sending only while `ports.size === 0` — trades one frame per item for a
+ * guess about another surface, and the guess is wrong in the ordinary case:
+ * a port is open across a navigation the whole time the page's stage is
+ * unmounted, and the web side drops an end whose media key disagrees with its
+ * own. Every version of "somebody else will do it" is the advancer election
+ * this mechanism was built to delete.
+ *
+ * ONCE PER ITEM, by remembering the last id reported rather than a set of all
+ * of them: a set could never leave an item the room came BACK to, while one id
+ * cannot latch, because the next item's id is a different one. The content
+ * script already makes exactly one end judgement per item (driver.ts's
+ * MediaEndDetector) and the server drops duplicates anyway — so this is
+ * tidiness, and a loop is the only thing it must genuinely prevent.
+ *
+ * RESIDUAL, shared with the web and stated rather than hidden: the item is
+ * resolved from the room's CURRENT playback, so an end that arrives after the
+ * room has moved on for some other reason (a vote-skip landing in that
+ * instant) would name the new item. Closing it needs the content script to
+ * echo an item identity it was given, which is a protocol change; the queue
+ * mutation that causes it is one the server already realigns playback across.
+ */
+function reportEndedItem(): void {
+  const live = session;
+  if (live === null) return;
+  const endedItemId = endedQueueItemId({
+    queueIndex: live.playback?.queueIndex ?? null,
+    items: live.queue,
+    mediaRef: live.playback?.mediaRef ?? null,
+  });
+  // Null is a real answer — the finished item is not in the room's queue, so
+  // there is nothing honest to advance from. See advance.ts.
+  if (endedItemId === null) return;
+  if (live.advancedItemId === endedItemId) return;
+  live.advancedItemId = endedItemId;
+  live.socket.send('sync.advance', { endedItemId });
 }
 
 /**
@@ -825,6 +908,15 @@ interface OpenSessionInput {
   target: 'auto' | 'sender';
   /** Who we are in the room. Known on the popup path; null on a web handoff. */
   userId: string | null;
+  /**
+   * Did a PERSON open this room, or did a terminated worker wake up and resume
+   * it? The only thing that turns on it is the absence clock (see
+   * {@link absentSince}): a person doing something is a person being here, and
+   * clears it — a worker waking by itself proves nothing and must not, or the
+   * ~30s recycle cycle would reset the clock forever and the room would never
+   * be released.
+   */
+  resumed: boolean;
 }
 
 /**
@@ -858,6 +950,9 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     socket,
     drivenTabId: input.tabId,
     playback: null,
+    queue: [],
+    queueVersion: -1,
+    advancedItemId: null,
     restream: null,
     source: input.source,
     target: input.target,
@@ -877,6 +972,16 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     session.playback = ev.payload;
     driveTab();
     pushOverlay();
+  });
+  // The queue, for naming the item that ends. Version-guarded exactly as the
+  // web and mobile clients guard it: the snapshot reply is written from a room
+  // read that can race a broadcast, so an older one must not overwrite what
+  // already landed — and a stale queue names the wrong item, which is the one
+  // mistake `sync.advance` cannot survive.
+  socket.on('queue.state', (ev) => {
+    if (session === null || ev.payload.version < session.queueVersion) return;
+    session.queue = [...ev.payload.items];
+    session.queueVersion = ev.payload.version;
   });
   // Chat is the overlay's reason to exist: the room's conversation, on the page
   // the film is playing on. It is kept here because the panel is torn down and
@@ -915,6 +1020,8 @@ async function openSession(input: OpenSessionInput): Promise<void> {
   });
   socket.connect(input.roomId as never, input.accessToken);
 
+  if (!input.resumed) await clearAbsence();
+
   // Beat presence, like every other client. The server's 45s presence TTL is
   // what decides a member has gone, and a DEPARTURE is what releases an active
   // screen share — so a socket that reads presence without ever writing it got
@@ -922,6 +1029,10 @@ async function openSession(input: OpenSessionInput): Promise<void> {
   // The web beats at 15s (apps/web/lib/room-connection.ts); match it, and send
   // the CURRENT state rather than an empty payload, which the server treats as
   // a roster-snapshot request.
+  //
+  // It beats only while a surface is open, though: an unconditional beat kept
+  // a departed member alive forever, which is the same bug from the other end.
+  // See {@link presenceBeat}.
   startPresenceBeat();
 
   // Follow-drift passes between state mutations. One timer, ever.
@@ -949,6 +1060,7 @@ async function connect(code: string, tabId: number): Promise<void> {
     source: 'popup',
     target: 'sender',
     userId: typeof joined.user?.id === 'string' ? joined.user.id : null,
+    resumed: false,
   });
 }
 
@@ -963,22 +1075,151 @@ const KEEPALIVE_PERIOD_MINUTES = 0.5;
  *  45s TTL, the same margin the web client uses. */
 const PRESENCE_BEAT_MS = 15_000;
 
+/**
+ * How long the room is held open after the last surface closes.
+ *
+ * A reload window, not a lifetime. The web app drops its event port and opens
+ * a fresh one on every navigation inside the room, and a person who reloaded
+ * has not left. Two beats is the same margin the beat itself is built on, and
+ * it keeps the whole departure — last surface closed, beat stopped, the
+ * server's 45s TTL run out — inside a minute and a half.
+ */
+const SURFACE_GRACE_MS = 30_000;
+
 let presenceBeatTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Keep this member's presence entry alive for as long as the room socket is.
- *  Idempotent: a second call replaces the timer rather than adding one. */
+/**
+ * The surfaces a person can actually be at — and can actually close.
+ *
+ * Every one is measured from the BROWSER, never from this worker's memory: an
+ * open port in the registry (the page hung up ⇒ the registry lost it), the
+ * offscreen document's own existence, and the driven tab still being a tab.
+ * That is the whole of how "MV3 recycled the worker" is told apart from "the
+ * user is gone": a revived worker re-measures all three and gets exactly the
+ * answers the terminated one would have, because none of them live inside it.
+ */
+interface Surfaces {
+  /** A Gather page holding an open event port — the web app's room, usually. */
+  webPort: boolean;
+  /** A live share. Pixels are leaving this machine; somebody is behind them. */
+  share: boolean;
+  /** The tab the room drives, which is the tab the overlay is drawn on. */
+  drivenTab: boolean;
+}
+
+async function readSurfaces(live: Session): Promise<Surfaces> {
+  const drivenTab =
+    live.drivenTabId !== null &&
+    (await chrome.tabs
+      .get(live.drivenTabId)
+      .then(() => true)
+      .catch(() => false));
+  return { webPort: ports.size > 0, share: await isSharingLive(), drivenTab };
+}
+
+function anySurface(s: Surfaces): boolean {
+  return s.webPort || s.share || s.drivenTab;
+}
+
+/**
+ * When the last surface closed, or null while one is open.
+ *
+ * Persisted, because the clock has to outlive the worker. MV3 terminates this
+ * worker after roughly thirty seconds of quiet and the keepalive alarm revives
+ * it; a clock held in memory would be reset by every one of those wakes, and
+ * the room would be kept open forever by the very mechanism meant to release
+ * it — the immortal beat again, wearing the grace window as a disguise.
+ */
+async function absentSince(): Promise<number | null> {
+  try {
+    const bag = await chrome.storage.session.get(ABSENT_SINCE_KEY);
+    const value = bag[ABSENT_SINCE_KEY];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Start the clock if it is not already running, and answer when it started. */
+async function markAbsent(now: number): Promise<number> {
+  const existing = await absentSince();
+  if (existing !== null) return existing;
+  try {
+    await chrome.storage.session.set({ [ABSENT_SINCE_KEY]: now });
+  } catch {
+    // Storage unavailable: this worker's own grace still runs from `now`.
+  }
+  return now;
+}
+
+async function clearAbsence(): Promise<void> {
+  try {
+    await chrome.storage.session.remove(ABSENT_SINCE_KEY);
+  } catch {
+    // Nothing to clear that anybody can read.
+  }
+}
+
+/**
+ * Keep this member's presence entry alive for as long as somebody is here.
+ * Idempotent: a second call replaces the timer rather than adding one.
+ */
 function startPresenceBeat(): void {
   stopPresenceBeat();
   presenceBeatTimer = setInterval(() => {
-    const live = session;
-    if (live === null) return;
+    void presenceBeat();
+  }, PRESENCE_BEAT_MS);
+}
+
+/**
+ * One beat.
+ *
+ * Presence is the claim that a person is in this room, so it is written only
+ * while one of {@link readSurfaces} holds. Beating regardless is what made a
+ * departed member immortal: their entry never expired, `onDeparture` never
+ * fired, and the screen share they walked away from was never released.
+ *
+ * When nothing holds, the beat simply stops — the server's TTL then runs out
+ * on its own, which is the event the room is built around — and the socket is
+ * released once the grace window has passed.
+ */
+async function presenceBeat(): Promise<void> {
+  const live = session;
+  if (live === null) {
+    stopPresenceBeat();
+    return;
+  }
+  const present = anySurface(await readSurfaces(live));
+  // Awaiting gave the room a chance to change underneath us. This beat speaks
+  // for the session it measured and for no other.
+  if (session !== live) return;
+  if (present) {
+    await clearAbsence();
+    if (session !== live) return;
     // Re-assert what we already are. An empty payload would be read by the
     // server as a snapshot request and cost a full roster reply every beat.
     live.socket.send('presence.update', {
       state: 'watching',
       sharing: live.restream?.active === true && live.restream.hostUserId === live.userId,
     });
-  }, PRESENCE_BEAT_MS);
+    return;
+  }
+  const since = await markAbsent(Date.now());
+  if (Date.now() - since < SURFACE_GRACE_MS) return;
+  if (session !== live) return;
+  await releaseAbsentSession();
+}
+
+/**
+ * The grace ran out: let the room go. A live share is itself a surface, so
+ * this is unreachable while anything is being captured — there is nothing to
+ * stop here, only a socket to release and a persisted session to forget, so
+ * the next wake does not resume a room nobody is in.
+ */
+async function releaseAbsentSession(): Promise<void> {
+  await closeSession();
+  await clearAbsence();
+  broadcastStatus();
 }
 
 function stopPresenceBeat(): void {
@@ -1086,6 +1327,8 @@ async function disconnect(): Promise<void> {
 
 const SESSION_KEY = 'gather.session.v1';
 const SHARING_ROOM_KEY = 'gather.sharing-room.v1';
+/** When the last surface closed. See {@link absentSince}. */
+const ABSENT_SINCE_KEY = 'gather.absent-since.v1';
 
 async function persistSharingRoom(): Promise<void> {
   try {
@@ -1162,6 +1405,8 @@ async function restoreSession(): Promise<void> {
     source: stored.source === 'web' ? 'web' : 'popup',
     target: stored.target === 'sender' ? 'sender' : 'auto',
     userId: typeof stored.userId === 'string' ? stored.userId : null,
+    // Nobody asked for this. The worker died and something woke it.
+    resumed: true,
   }).catch(() => undefined);
 }
 
@@ -1258,6 +1503,21 @@ export interface ShareResult {
 /** The document exists only to capture, so its existence IS a live share. */
 async function hasOffscreen(): Promise<boolean> {
   return chrome.offscreen.hasDocument().catch(() => false);
+}
+
+/**
+ * Is anything being captured right now?
+ *
+ * ONE expression, called from both places that ask: the popup's "am I
+ * sharing?" and the presence beat's "is anybody still here?". They must never
+ * be able to disagree — a popup that says the share is live while the beat has
+ * decided nobody is here is exactly the orphaned share this worker exists to
+ * avoid. The browser's answer carries the weight: `sharingSource` is a module
+ * variable that MV3 erases on every recycle, while the offscreen document
+ * survives one on purpose.
+ */
+async function isSharingLive(): Promise<boolean> {
+  return sharingSource !== null || (await hasOffscreen());
 }
 
 async function ensureOffscreen(): Promise<void> {
@@ -1591,6 +1851,7 @@ const host: ExternalHost = {
       // The handoff says which room, never who: the page is not allowed to
       // name a user to this worker. Nobody is marked "you" until it does.
       userId: null,
+      resumed: false,
     });
     if (input.intent !== null) applyIntentHint(input.intent);
     return statusOf();
@@ -1669,6 +1930,21 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     return;
   }
   ports.add(port, screened.v);
+  /**
+   * The page hanging up is the ONLY signal a closed web tab produces, and
+   * nothing here used to listen for it: the registry quietly shrank and the
+   * presence beat went on telling the room the person was in it.
+   *
+   * `ports.add` removes the port on this same event, so removing it again is
+   * a no-op — it is written out anyway so this handler cannot be broken by a
+   * change of listener order. Then the surfaces are re-read at once, because a
+   * beat that waited up to fifteen seconds to notice is fifteen seconds of a
+   * claim that is not true.
+   */
+  port.onDisconnect.addListener(() => {
+    ports.remove(port);
+    void presenceBeat();
+  });
   // Immediate snapshot so the page never renders an empty first frame.
   try {
     port.postMessage(eventMessage('status', statusOf(), screened.v));
@@ -1755,7 +2031,7 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
           // A share this worker no longer remembers — it was terminated and
           // revived while the capture ran — is still a share, and the document
           // still being open is the browser's own proof of it.
-          sharing: sharingSource !== null || (await hasOffscreen()),
+          sharing: await isSharingLive(),
         }))(),
       );
     case 'telemetry': {
@@ -1863,6 +2139,9 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
         at: Date.now(),
       };
       ports.broadcast((v) => eventMessage('ended', payload, v));
+      // …and to the ROOM, on this worker's own socket. The broadcast above
+      // reaches a Gather tab; there may not be one. See reportEndedItem.
+      reportEndedItem();
       return false;
     }
     case 'provider': {

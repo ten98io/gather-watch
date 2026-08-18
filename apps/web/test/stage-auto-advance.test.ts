@@ -7,8 +7,8 @@
  * Two separate defects produced that one symptom, and killing either alone
  * leaves it:
  *   1. `ended` reached a single listener that set a local boolean. Nothing in
- *      the web app ever called sync.setTrack except two user clicks, so the
- *      queue never advanced on its own.
+ *      the web app ever told the room an item had finished, so the queue never
+ *      advanced on its own.
  *   2. A finished player was restarted twice per second — once by the stage's
  *      "rescue a stub iframe that dropped play()" effect (which fires the
  *      instant `ended` clears localPlaying), and once by the drift controller,
@@ -24,7 +24,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MediaRef, Member, PlaybackState } from '@gather/contracts';
+import type { MediaRef, Member, PlaybackState, QueueItem } from '@gather/contracts';
 
 const DURATION_MS = 60_000;
 /** Where the room thinks the item is when the test starts: 2 s from the end. */
@@ -167,10 +167,12 @@ describe('a queue item that runs out', () => {
     vi.useRealTimers();
   });
 
-  /** Mounts the stage mid-item and returns the player + a setTrack recorder. */
-  async function mountPlaying(
-    role: Member['role'],
-  ): Promise<{ player: FakeAdapter; setTrack: ReturnType<typeof vi.fn> }> {
+  /** Mounts the stage mid-item and returns the player + an intent recorder. */
+  async function mountPlaying(role: Member['role']): Promise<{
+    player: FakeAdapter;
+    ended: ReturnType<typeof vi.fn>;
+    items: QueueItem[];
+  }> {
     const items = [
       queueItem(ENDING, 'the one ending'),
       queueItem(NEXT, 'the one after'),
@@ -205,15 +207,15 @@ describe('a queue item that runs out', () => {
     if (player === null) throw new Error('the stage never built a player');
     const connection = captured;
     if (connection === null) throw new Error('no room connection was captured');
-    const setTrack = vi.fn();
-    connection.syncSetTrackByQueue = setTrack as unknown as typeof connection.syncSetTrackByQueue;
+    const ended = vi.fn();
+    connection.syncAdvance = ended as unknown as typeof connection.syncAdvance;
 
     // The player comes up and starts, exactly as a real one reports it.
     await act(async () => {
       player.emit('ready');
       player.emit('playing');
     });
-    return { player, setTrack };
+    return { player, ended, items };
   }
 
   /** The source runs out; a finished player sits at the end and stays there. */
@@ -230,8 +232,8 @@ describe('a queue item that runs out', () => {
     return player.calls.slice(before);
   }
 
-  it('is not restarted, and hands the room the next item exactly once', async () => {
-    const { player, setTrack } = await mountPlaying('host');
+  it('is not restarted, and tells the room the item ended exactly once', async () => {
+    const { player, ended, items } = await mountPlaying('host');
     const after = await endAndSettle(player);
 
     // (a) Nothing may restart a finished player. play() on an ENDED YouTube
@@ -242,20 +244,24 @@ describe('a queue item that runs out', () => {
     //     room's projection keeps climbing; the item does not.
     expect(after.filter((c) => c.call === 'seekTo' && (c.arg ?? 0) > DURATION_MS)).toEqual([]);
 
-    // (c) The queue advances, once, to the item that follows this one.
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    // (c) The room is told the item finished, once, by id — the server moves
+    //     the queue on from there.
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
   });
 
-  it('advances from the designated client only — every other viewer follows', async () => {
-    // Elastic sync puts viewers at different offsets, so N viewers reach the
-    // credits at N different moments. If they all advanced, the first one there
-    // would yank everyone else out of the last ten seconds.
-    const { player, setTrack } = await mountPlaying('member');
+  it('a plain member reports it too, and is not restarted while it waits', async () => {
+    // This assertion used to be `toEqual([])`: exactly one elected client was
+    // allowed to advance and everyone else stood down, which stranded every
+    // room whose elected client could not advance. Elastic sync still puts
+    // viewers at different offsets, so N viewers report the same ending at N
+    // different moments — and that is now safe, because the server takes the
+    // first and drops the rest (see stage-advance-intent.test.ts).
+    const { player, ended, items } = await mountPlaying('member');
     const after = await endAndSettle(player);
 
-    expect(setTrack.mock.calls).toEqual([]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
     // A follower whose own player ran out ahead of the room still must not be
-    // restarted while it waits for the advance to arrive.
+    // restarted while it waits for the track change to arrive.
     expect(after.filter((c) => c.call === 'play')).toEqual([]);
     expect(after.filter((c) => c.call === 'seekTo' && (c.arg ?? 0) > DURATION_MS)).toEqual([]);
   });
@@ -287,10 +293,10 @@ describe('a queue item that runs out', () => {
     });
   }
 
-  it('survives a pause during the credits: the room is handed on once, not twice', async () => {
-    const { player, setTrack } = await mountPlaying('host');
+  it('survives a pause during the credits: the room is told once, not twice', async () => {
+    const { player, ended, items } = await mountPlaying('host');
     await endAndSettle(player);
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
 
     // Someone hits pause over the credits, then play again. Same item, same
     // queue slot — two fresh seqs.
@@ -304,11 +310,11 @@ describe('a queue item that runs out', () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
 
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
   });
 
-  it('a seek that does not change the item does not re-arm the advance either', async () => {
-    const { player, setTrack } = await mountPlaying('host');
+  it('a seek that does not change the item does not re-arm the report either', async () => {
+    const { player, ended, items } = await mountPlaying('host');
     await endAndSettle(player);
 
     await bumpPlayback({ positionMs: 30_000, seq: 2, serverTs: Date.now() });
@@ -317,14 +323,14 @@ describe('a queue item that runs out', () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
 
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
   });
 
   it('but a real track change does clear it — the next item may end too', async () => {
     // The latch must not outlive its item, or the room stops at the second one.
-    const { player, setTrack } = await mountPlaying('host');
+    const { player, ended, items } = await mountPlaying('host');
     await endAndSettle(player);
-    expect(setTrack.mock.calls).toEqual([[1]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id]]);
 
     // The advance lands: a different item, at a different queue slot.
     await bumpPlayback({ mediaRef: NEXT, queueIndex: 1, positionMs: 0, seq: 2 });
@@ -333,6 +339,6 @@ describe('a queue item that runs out', () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
 
-    expect(setTrack.mock.calls).toEqual([[1], [2]]);
+    expect(ended.mock.calls).toEqual([[items[0]?.id], [items[1]?.id]]);
   });
 });

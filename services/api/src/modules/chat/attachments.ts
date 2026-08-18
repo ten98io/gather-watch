@@ -120,9 +120,16 @@ export function presignPutUrl(
 export function presignObjectUrl(
   s3: S3Settings,
   key: string,
-  method: 'GET' | 'PUT',
+  // DELETE is used by the bucket-clear CLI (src/cli/clear-bucket.ts); the
+  // signature is identical, only the verb in the canonical request changes.
+  method: 'GET' | 'PUT' | 'DELETE',
   expiresSec: number,
   now: Date = new Date(),
+  /** Extra query params folded into the SIGNED canonical query. They cannot be
+   *  appended to the returned URL afterwards: SigV4 signs the query string, so
+   *  a param added later invalidates the signature (S3 answers 403
+   *  SignatureDoesNotMatch). Used for ListObjectsV2 by the bucket-clear CLI. */
+  extraQuery: Readonly<Record<string, string>> = {},
 ): string {
   const origin = s3Origin(s3);
   const host = new URL(origin).host;
@@ -133,13 +140,19 @@ export function presignObjectUrl(
   const dateStamp = amzDate.slice(0, 8);
   const credential = `${s3.accessKey}/${dateStamp}/${region}/s3/aws4_request`;
 
+  // SigV4 requires the canonical query sorted by ENCODED key.
   const canonicalQuery = [
-    `X-Amz-Algorithm=${uriEncode('AWS4-HMAC-SHA256')}`,
-    `X-Amz-Credential=${uriEncode(credential)}`,
-    `X-Amz-Date=${uriEncode(amzDate)}`,
-    `X-Amz-Expires=${uriEncode(String(expiresSec))}`,
-    `X-Amz-SignedHeaders=${uriEncode('host')}`,
-  ].join('&');
+    ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
+    ['X-Amz-Credential', credential],
+    ['X-Amz-Date', amzDate],
+    ['X-Amz-Expires', String(expiresSec)],
+    ['X-Amz-SignedHeaders', 'host'],
+    ...Object.entries(extraQuery),
+  ]
+    .map(([k, v]) => [uriEncode(String(k)), uriEncode(String(v))] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('&');
 
   const canonicalRequest = [
     method,

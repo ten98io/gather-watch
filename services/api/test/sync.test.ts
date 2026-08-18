@@ -1,20 +1,20 @@
 /**
- * Sync module tests over real 127.0.0.1 sockets: policy/master gating, stale
- * master epochs, late-joiner replay convergence, setTrack by queue index,
- * waitForAll buffering aggregation, and the playback-history usage log.
+ * Sync module tests over real 127.0.0.1 sockets: playback policy gating,
+ * late-joiner replay convergence, setTrack by queue index, waitForAll
+ * buffering aggregation, and the playback-history usage log.
  *
- * The master-seat AUTHORIZATION rules live in sync-master-authz.test.ts. What
- * is pinned below is the epoch machinery — CAS, monotonicity, server-owned
- * numbering — which is why these rooms run an `everyone` playbackControl: a
- * plain member has to be able to claim the seat legitimately for the epoch
- * mechanics to be exercised at all.
+ * The master seat this file used to exercise (claim, epoch CAS, monotonic
+ * server-owned numbering, and the authorization rules in the deleted
+ * sync-master-authz.test.ts) is GONE — it had no producer once `sync.advance`
+ * took over auto-advance. Its replacement is the negative guard in
+ * master-seat-removed.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { FastifyInstance } from 'fastify';
-import type { QueueItem, RoomId } from '@gather/contracts';
+import type { QueueItem } from '@gather/contracts';
 import type { StorePort } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 import { addMember, makeApp, seedRoom, signupUser } from './helpers';
@@ -129,15 +129,6 @@ describe('sync module', () => {
     return { account, sock };
   }
 
-  /** Open playback control to every member — see the header note. */
-  async function openPlaybackToEveryone(roomId: string): Promise<void> {
-    const room = await store.rooms.findById(roomId);
-    await store.rooms.updateOne(
-      { id: roomId as RoomId },
-      { policies: { ...room!.policies, playbackControl: 'everyone' } },
-    );
-  }
-
   // ── policy gating ──────────────────────────────────────────────────────────
 
   it('gates playback mutations on policy; the host mutation persists + broadcasts', async () => {
@@ -174,99 +165,12 @@ describe('sync module', () => {
     expect(room!.playback!.seq).toBe(1);
   });
 
-  // ── master election ────────────────────────────────────────────────────────
-
-  it('seats the claimant, lets them drive, and rejects stale epochs', async () => {
-    const { roomId } = await seedRoom(store);
-    await openPlaybackToEveryone(roomId);
-    const host = await join('host@example.com', roomId, 'host');
-    const member = await join('member@example.com', roomId, 'member');
-
-    // A plain member claims master at epoch 1.
-    const pChanged = nextOfType(host.sock, 'sync.masterChanged');
-    member.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 1 }));
-    const changed = await pChanged;
-    expect(changed.payload).toEqual({ masterUserId: member.account.user.id, epoch: 1 });
-
-    // The seat holder drives — under this room's policy, as everyone may.
-    const pState = nextOfType(member.sock, 'sync.state');
-    member.sock.send(clientFrame(roomId, 'sync.pause', { positionMs: 1234 }));
-    const state = await pState;
-    expect(state.payload.playing).toBe(false);
-    expect(state.payload.positionMs).toBe(1234);
-
-    // An equal epoch from another user is stale.
-    const pErr = nextOfType(host.sock, 'error');
-    host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 1 }));
-    const err = await pErr;
-    expect(err.payload.code).toBe('CONFLICT');
-    const room = await store.rooms.findById(roomId);
-    expect(room!.master).toEqual({ userId: member.account.user.id, epoch: 1 });
-
-    // A newer epoch wins.
-    const pChanged2 = nextOfType(member.sock, 'sync.masterChanged');
-    host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 2 }));
-    const changed2 = await pChanged2;
-    expect(changed2.payload).toEqual({ masterUserId: host.account.user.id, epoch: 2 });
-    expect((await store.rooms.findById(roomId))!.master).toEqual({
-      userId: host.account.user.id,
-      epoch: 2,
-    });
-  });
-
-  it('server owns the epoch: a huge injected epoch cannot lock the seat', async () => {
-    const { roomId } = await seedRoom(store);
-    await openPlaybackToEveryone(roomId);
-    const host = await join('host@example.com', roomId, 'host');
-    const member = await join('member@example.com', roomId, 'member');
-
-    // Claim with an absurd epoch: accepted (no master yet) but STORED as 1 —
-    // the server assigns stored+1, never the client's number.
-    const pChanged = nextOfType(host.sock, 'sync.masterChanged');
-    const pChangedMember = nextOfType(member.sock, 'sync.masterChanged');
-    member.sock.send(
-      clientFrame(roomId, 'sync.claimMaster', { epoch: Number.MAX_SAFE_INTEGER }),
-    );
-    const changed = await pChanged;
-    await pChangedMember; // drain the member's copy so the next wait is clean
-    expect(changed.payload).toEqual({ masterUserId: member.account.user.id, epoch: 1 });
-    expect((await store.rooms.findById(roomId))!.master).toEqual({
-      userId: member.account.user.id,
-      epoch: 1,
-    });
-
-    // The seat is NOT locked: the host re-claims at the next epoch.
-    const pChanged2 = nextOfType(member.sock, 'sync.masterChanged');
-    host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 2 }));
-    expect((await pChanged2).payload).toEqual({
-      masterUserId: host.account.user.id,
-      epoch: 2,
-    });
-  });
-
-  it('a plain member cannot take the seat while the host is present', async () => {
-    // The seat names the SOLE advancer, so it must never go to a client whose
-    // setTrack the policy would refuse — otherwise every other tab stands down
-    // and the queue stops forever. The seat and the drive share one predicate.
-    const { roomId } = await seedRoom(store);
-    const host = await join('host@example.com', roomId, 'host');
-    const member = await join('member@example.com', roomId, 'member');
-    host.sock.send(clientFrame(roomId, 'presence.update', { state: 'watching' }));
-    member.sock.send(clientFrame(roomId, 'presence.update', { state: 'watching' }));
-    await new Promise((r) => setTimeout(r, 50));
-
-    const pChanged = nextOfType(member.sock, 'sync.masterChanged');
-    host.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 1 }));
-    await pChanged;
-
-    const pErr = nextOfType(member.sock, 'error');
-    member.sock.send(clientFrame(roomId, 'sync.claimMaster', { epoch: 5 }));
-    expect((await pErr).payload.code).toBe('ROOM_POLICY');
-    expect((await store.rooms.findById(roomId))!.master).toEqual({
-      userId: host.account.user.id,
-      epoch: 1,
-    });
-  });
+  // The three "master election" tests that lived here were REMOVED WHOLE with
+  // the seat itself, not weakened: they asserted that `sync.claimMaster`
+  // seated a claimant, that the server owned the epoch, and that the policy
+  // gated the claim. None of those questions exist any more — the event has no
+  // handler, no contract union member and no producer. The replacement is
+  // negative and lives in master-seat-removed.test.ts.
 
   // ── late joiner convergence ────────────────────────────────────────────────
 

@@ -1,14 +1,14 @@
 /**
  * Room/member serializers. Every REST response and every persisted
  * room.updated / member.updated event passes through these, so RoomDoc's
- * server-only realtime snapshots (playback/queue/restream/master) and
+ * server-only realtime snapshots (playback/queue/restream) and
  * MemberDoc's internal fields (id, per-room mute) can never leak to clients.
  */
 import type { Member, Room } from '@gather/contracts';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only
- *  realtime snapshots (playback/queue/restream/master). */
+ *  realtime snapshots (playback/queue/restream). */
 export function serializeRoom(room: RoomDoc): Room {
   return {
     id: room.id,
