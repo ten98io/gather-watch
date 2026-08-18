@@ -152,8 +152,11 @@ class MongoCollection<T extends { id: string }> implements DocCollection<T> {
   }
 }
 
-/** Db name comes from the connection-string path when present. */
-function dbNameFromUrl(url: string): string {
+/** Db name comes from the connection-string path when present.
+ *  EXPORTED because any tool that touches this database must resolve the name
+ *  the same way the app does — a second copy of this rule silently operates on
+ *  a different database (the driver's own default is `test`, not `gather`). */
+export function dbNameFromUrl(url: string): string {
   try {
     const path = new URL(url).pathname.replace(/^\//, '');
     return path === '' ? 'gather' : path;
