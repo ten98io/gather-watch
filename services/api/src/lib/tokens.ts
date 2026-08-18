@@ -4,7 +4,8 @@
  * and email tokens are stored ONLY as HMAC digests, so a database leak does
  * not hand out usable credentials.
  */
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import { SignJWT, jwtVerify } from 'jose';
 import type { AppConfig } from '../config';
 
@@ -83,4 +84,33 @@ export function hashToken(config: AppConfig, value: string): string {
 
 export function newId(): string {
   return randomUUID();
+}
+
+const scryptAsync = promisify(scrypt);
+
+const SCRYPT_SALT_BYTES = 16;
+const SCRYPT_KEYLEN = 32;
+
+/**
+ * Hash a room password with scrypt. Returns a composite string
+ * `salt:hash` so verification can re-derive the key with the same salt.
+ */
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(SCRYPT_SALT_BYTES);
+  const derived = (await scryptAsync(password, salt, SCRYPT_KEYLEN)) as Buffer;
+  return `${salt.toString('base64url')}:${derived.toString('base64url')}`;
+}
+
+/**
+ * Verify a room password against a `salt:hash` composite.
+ * Uses timing-safe comparison to prevent timing attacks.
+ */
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [saltB64, hashB64] = stored.split(':');
+  if (saltB64 === undefined || hashB64 === undefined) return false;
+  const salt = Buffer.from(saltB64, 'base64url');
+  const expected = Buffer.from(hashB64, 'base64url');
+  const derived = (await scryptAsync(password, salt, expected.length)) as Buffer;
+  if (derived.length !== expected.length) return false;
+  return timingSafeEqual(derived, expected);
 }

@@ -157,14 +157,20 @@ export function emitRnInkOnFill(theme: ThemeName): RnInkOnFill {
 export function emitRnTypeRamp(): RnTypeRamp {
   const out = {} as Record<TypeStepName, RnTypeStep>;
   for (const [name, step] of Object.entries(typeRamp) as [TypeStepName, (typeof typeRamp)[TypeStepName]][]) {
+    // RN has no viewport unit, so a fluid step cannot scale: it reads the
+    // floor (`fontSize`), or the explicit `rnFontSize` when the designed RN
+    // size is neither the floor nor the ceiling (hero: 34, the old displayL).
+    // `maxFontSize` is the WEB fluid ceiling and never applies here — body
+    // stays 15 on RN even though the web widens it to 17 at ≥1440px.
+    const fontSize = step.rnFontSize ?? step.fontSize;
     const base = {
-      fontSize: step.fontSize,
+      fontSize,
       lineHeight:
         step.lineHeightRatio === undefined
           ? step.lineHeight
-          : Math.round(step.fontSize * step.lineHeightRatio),
+          : Math.round(fontSize * step.lineHeightRatio),
       fontWeight: String(step.fontWeight) as RnTypeStep['fontWeight'],
-      letterSpacing: Number((step.fontSize * step.letterSpacing).toFixed(3)),
+      letterSpacing: Number((fontSize * step.letterSpacing).toFixed(3)),
     };
     out[name] = step.uppercase === true ? { ...base, textTransform: 'uppercase' } : base;
   }

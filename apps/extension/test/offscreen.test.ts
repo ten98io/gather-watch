@@ -4,6 +4,7 @@ import {
   MAX_FRAME_RATE,
   MAX_HEIGHT,
   MAX_WIDTH,
+  SHARE_RELAYED_VIDEO_CAP_KBPS,
   browserRuntime,
   captureShare,
   handleShareCommand,
@@ -1005,23 +1006,28 @@ describe('TURN credentials', () => {
   });
 });
 
-/* ── share quality: nobody is bitrate-capped ──────────────────────────── */
+/* ── share quality: capped only where relaying bills us ─────────────────
+ * The old 400 kbps free-tier cap went out with billing — a DIRECT link is
+ * never capped. What remains is the relayed ceiling: a share that falls back
+ * to TURN runs on our bill, so the mesh is built with capRelayedVideoKbps and
+ * applies it per-link only after classifying that link relayed (the
+ * classification and the cap live in packages/p2p/src/mesh.ts). */
 
 describe('share quality', () => {
-  it('builds the share mesh with no bitrate cap', async () => {
+  it('builds the share mesh with the relayed-link ceiling', async () => {
     const h = harness([() => fakeStream(['video', 'audio'])]);
     await startShare(request(), h.runtime);
 
     expect(h.meshOptions).toHaveLength(1);
-    expect(h.meshOptions[0]?.capRelayedVideoKbps).toBeUndefined();
+    expect(h.meshOptions[0]?.capRelayedVideoKbps).toBe(SHARE_RELAYED_VIDEO_CAP_KBPS);
   });
 
-  it('stays uncapped on a relayed link, which used to be the degraded case', async () => {
+  it('passes the ceiling whatever the link — the mesh decides per link', async () => {
     const h = harness([() => fakeStream(['video', 'audio'])], [['viewer_1', 'relayed']]);
     await startShare(request(), h.runtime);
 
     expect(h.meshOptions).toHaveLength(1);
-    expect(h.meshOptions[0]?.capRelayedVideoKbps).toBeUndefined();
+    expect(h.meshOptions[0]?.capRelayedVideoKbps).toBe(SHARE_RELAYED_VIDEO_CAP_KBPS);
   });
 
   it('says nothing about quality in its reply, relayed or direct', async () => {

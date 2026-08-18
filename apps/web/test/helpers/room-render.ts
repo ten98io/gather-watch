@@ -62,6 +62,7 @@ export function makeRoom(kind: Room['kind'], over: Partial<Room> = {}): Room {
     relayMode: 'mesh',
     theater: false,
     expiresAt: null,
+    hasPassword: false,
     createdAt: 1_000,
     ...over,
   };

@@ -26,6 +26,7 @@ import {
   elevation,
   emitCssControlMetrics,
   emitCssScaleVariables,
+  emitRnTypeRamp,
   layout,
   radii,
   typeRamp,
@@ -244,5 +245,22 @@ describe('the type ramp breathes', () => {
     expect(typeRamp.title.letterSpacing).toBeLessThan(0);
     expect(typeRamp.body.letterSpacing).toBe(0);
     expect(typeRamp.label.letterSpacing).toBe(0);
+  });
+});
+
+describe('the RN type ramp', () => {
+  it('hero lands at its designed RN size, neither the web floor nor ceiling', () => {
+    // RN has no viewport unit: the fluid hero (28 floor / 56 ceiling on web)
+    // cannot scale, so it carries an explicit rnFontSize — 34, the old
+    // displayL. Emitting the floor regressed the step; emitting the ceiling
+    // would have set a 56px hero on a phone.
+    expect(typeRamp.hero.rnFontSize).toBe(34);
+    expect(emitRnTypeRamp().hero.fontSize).toBe(34);
+  });
+
+  it('maxFontSize is the WEB fluid ceiling and never leaks into RN', () => {
+    // body widens 15→17 on wide web viewports; RN stays at the floor.
+    expect(typeRamp.body.maxFontSize).toBe(17);
+    expect(emitRnTypeRamp().body.fontSize).toBe(15);
   });
 });

@@ -25,7 +25,7 @@ import type {
   UserId,
 } from '@gather/contracts';
 import { AppError, isAppError } from '../../lib/errors';
-import { newId } from '../../lib/tokens';
+import { hashPassword, newId, verifyPassword } from '../../lib/tokens';
 import { cursorDocId, memberDocId } from '../../adapters/ports';
 import type { InviteDoc, MemberDoc, RoomDoc, UserDoc } from '../../adapters/ports';
 import type { Deps } from '../types';
@@ -186,6 +186,7 @@ export class RoomsService {
         expiresAt: null,
         lastActivityAt: now,
         createdAt: now,
+        passwordHash: null,
       }),
     );
     const member = await store.members.insertOne({
@@ -240,10 +241,14 @@ export class RoomsService {
   }
 
   /** Join a room via its built-in invite code or an extra invite. Joining is
-   *  idempotent for existing (non-banned) members. */
+   *  idempotent for existing (non-banned) members.
+   *
+   *  If the room has a password, `password` MUST be provided and correct for
+   *  non-existing members. Existing members rejoin without re-verifying. */
   async joinByInvite(
     userId: string,
     inviteCode: string,
+    password?: string,
   ): Promise<{ room: RoomDoc; member: MemberDoc; lastEventSeq: number }> {
     const { store } = this.deps;
     const now = this.now();
@@ -268,6 +273,19 @@ export class RoomsService {
         throw new AppError('FORBIDDEN', 'banned');
       }
       return { room, member: existing, lastEventSeq: await this.lastEventSeq(room.id) };
+    }
+
+    // Password gate: existing members bypass; new members must supply the
+    // correct password when one is set. The same NOT_FOUND code is used for
+    // both missing and wrong password so callers cannot probe which rooms exist.
+    if (room.passwordHash !== null && room.passwordHash !== undefined) {
+      if (password === undefined) {
+        throw new AppError('NOT_FOUND', 'invite not found');
+      }
+      const ok = await verifyPassword(password, room.passwordHash);
+      if (!ok) {
+        throw new AppError('NOT_FOUND', 'invite not found');
+      }
     }
 
     const member = await store.members.insertOne({
@@ -566,6 +584,27 @@ export class RoomsService {
     const caller = await this.requireMember(roomId, callerId);
     this.requireRole(caller, 'host', 'moderator');
     const updated = await this.deps.store.rooms.updateOne({ id: roomId as RoomId }, { name });
+    if (updated === null) {
+      throw new AppError('NOT_FOUND', 'room not found');
+    }
+    await this.deps.events.emit(updated.id, 'room.updated', serializeRoom(updated));
+    return updated;
+  }
+
+  /** Set or clear a room password (host only). Null password clears it. */
+  async setRoomPassword(
+    roomId: string,
+    callerId: string,
+    password: string | null,
+  ): Promise<RoomDoc> {
+    await this.requireRoom(roomId);
+    const caller = await this.requireMember(roomId, callerId);
+    this.requireRole(caller, 'host');
+    const passwordHash = password === null ? null : await hashPassword(password);
+    const updated = await this.deps.store.rooms.updateOne(
+      { id: roomId as RoomId },
+      { passwordHash },
+    );
     if (updated === null) {
       throw new AppError('NOT_FOUND', 'room not found');
     }

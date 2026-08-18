@@ -114,6 +114,8 @@ export class CallMesh {
   constructor(
     private readonly conn: RoomConnection,
     private readonly localUserId: UserId,
+    /** Operator lever: caps relayed share video to protect TURN bill. */
+    private readonly capRelayedVideoKbps?: number,
   ) {
     this.turn = new TurnCredentialManager({
       getTurnCredentials: () => api.rtc.turnCredentials(),
@@ -150,6 +152,7 @@ export class CallMesh {
         // and I don't know why" is not an acceptable way to find that out.
         this.reportFailure('peer', CALL_PEER_NOTE);
       },
+      ...(capRelayedVideoKbps === undefined ? {} : { capRelayedVideoKbps }),
     });
 
     // Retention starts at construction, BEFORE any pane subscribes — a track
@@ -550,12 +553,20 @@ export function onCallMeshClosed(fn: MeshClosedListener): () => void {
   };
 }
 
-export function getCallMesh(conn: RoomConnection, localUserId: UserId): CallMesh {
+/** Default bitrate ceiling for relayed share video (kbps). 400 is the middle
+ *  of the 300–500 band; the governor adapts down from here based on link RTT. */
+export const DEFAULT_CAP_RELAYED_VIDEO_KBPS = 400;
+
+export function getCallMesh(
+  conn: RoomConnection,
+  localUserId: UserId,
+  capRelayedVideoKbps = DEFAULT_CAP_RELAYED_VIDEO_KBPS,
+): CallMesh {
   const existing = meshes.get(conn);
   // A closed mesh is inert (StrictMode double-effects close then re-acquire),
   // so replace it rather than hand back a dead one.
   if (existing !== undefined && !existing.closed) return existing;
-  const mesh = new CallMesh(conn, localUserId);
+  const mesh = new CallMesh(conn, localUserId, capRelayedVideoKbps);
   meshes.set(conn, mesh);
   return mesh;
 }

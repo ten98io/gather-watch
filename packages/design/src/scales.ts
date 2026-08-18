@@ -32,6 +32,10 @@ export interface TypeStep {
   readonly maxFontSize?: number;
   /** Unitless line-height, authoritative over `lineHeight` on fluid steps. */
   readonly lineHeightRatio?: number;
+  /** px override for React Native when neither the floor nor the fluid
+   *  ceiling is the designed RN size (hero: 28 is the small-web floor, 56 the
+   *  large-web ceiling, 34 the RN step — the old displayL). */
+  readonly rnFontSize?: number;
 }
 
 export type TypeStepName = 'display' | 'title' | 'body' | 'label' | 'caption' | 'hero';
@@ -67,6 +71,7 @@ export const typeRamp: Readonly<Record<TypeStepName, TypeStep>> = {
     letterSpacing: -0.02,
     maxFontSize: 56,
     lineHeightRatio: 1.05,
+    rnFontSize: 34,
   },
 };
 

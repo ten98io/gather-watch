@@ -383,6 +383,16 @@ the binding copy.
 - **D1 — Call layout:** video tiles live in the **right rail above chat**; the
   content stage is never covered. Theater mode collapses the rail; tiles become
   a small overlay the user can hide and restore.
+- **D1.1 — Theater mode spec (owner, 2026-08-18):** fullscreen stage (true
+  browser fullscreen, not just maximized). Hover or click toggles a floating
+  glass-effect sidebar for chat, queue, and people. The sidebar uses
+  `.glass-panel` (`--surface-glass` + `backdrop-filter`) and collapses to a
+  48px handle when dismissed. Call participants render as floating circular
+  tiles on a configurable left/right edge (default: right), each tile showing
+  the avatar or camera feed in a 64px circle with a 2px speaking ring. The
+  call overlay never covers the stage center — it docks to the edge. This is
+  the only layout where the rail is glass, because it genuinely floats over
+  moving video. Keyboard shortcut: `F` enters/exits theater mode; `Esc` exits.
 - **D2 — Camera default:** mic on, camera off, with a prominent "Turn on
   camera" affordance on your own tile. No pre-join device dialog. Never render
   a silent empty call region — everyone in the call gets a tile.
@@ -409,6 +419,7 @@ dialog does. Measure by walking the running app — never guess the count.
 |---|---|
 | Create a room | 3 |
 | Join by code | 2 |
+| Join a password-protected room | 3 |
 | Invite someone | 2 |
 | Add content to queue | 2 |
 | Play a queued item | 1 |
@@ -421,6 +432,11 @@ dialog does. Measure by walking the running app — never guess the count.
 | Open the room's playback history and replay an item | 3 |
 | Link a music/video account | 3 |
 | Delete / rename a room | 2 |
+
+**Password-gated rooms:** the passphrase step adds one interaction to the join
+flow. A room with no password stays at the original budget. The passphrase is
+entered on the same screen as the invite code, not as a separate page, so the
+step is a field fill + submit, not a navigation.
 
 **Sanctioned exceptions** (never counted against the budget): third-party OAuth
 consent, browser/OS pickers (screen share, cast), and destructive-action

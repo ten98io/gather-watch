@@ -146,12 +146,13 @@ Apple user already has is OS mirroring, which shows the share, the room,
 everything, at roughly real time, for free.
 
 So the product ships one line of copy at the right moment, and that is the
-entire client-side AirPlay feature. **Designed, not built** — re-verified
-2026-08-18: `apps/web/components/stage/PlayerControls.tsx` carries the
-always-visible cast control with its honest states (that part did ship
-2026-08-17, and `apps/web/test/cast-affordance.test.ts` pins it), but neither
-string below exists anywhere in the tree. Grep "Screen Mirroring" — nothing. It
-lands with slice 5 (§6).
+entire client-side AirPlay feature. **Built 2026-08-19**, with one placement
+correction against the paragraph below: the spec said "the cast control
+popover", but StagePane withholds the whole transport bar while a share is on
+stage — there is no cast popover at that moment. The hint therefore lives on
+the share stage itself (`CastHint` in
+`apps/web/components/stage/ScreenShareStage.tsx`), as a bar BELOW the picture
+rather than over it, shown to share viewers on Apple platforms only.
 
 - **Where it goes:** rows inside the always-visible cast control popover,
   shown only while a screen share is on stage, keyed by platform.

@@ -2029,4 +2029,45 @@ describe('the presence beat belongs to a surface the user can close', () => {
     expect(beats()).toBe(0);
     expect((await status()).connected).toBe(false);
   });
+
+  /**
+   * A revived worker's presence entry is still alive server-side, so no join
+   * snapshot comes back on its own — and without one the queue is UNKNOWN
+   * until the next mutation, which is exactly the window where a finished
+   * item's ending goes silently unreported (sync.advance names the item).
+   * The revived worker asks explicitly, the same door the web client's
+   * refresh path uses.
+   */
+  it('asks for a room snapshot when a recycled worker revives the session', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    room.sent.length = 0;
+
+    await recycleWorker();
+
+    const asks = room.sent.filter(
+      (m) =>
+        m.type === 'presence.update' &&
+        (m.payload as { wantSnapshot?: boolean }).wantSnapshot === true,
+    );
+    expect(asks).toHaveLength(1);
+  });
+
+  /**
+   * …but ONLY on revive. A fresh join is answered with a snapshot anyway
+   * (the server's `created` branch), and an ask on every beat would cost a
+   * full roster reply every fifteen seconds.
+   */
+  it('does not ask on a fresh join or on ordinary beats', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 2);
+
+    const asks = room.sent.filter(
+      (m) =>
+        m.type === 'presence.update' &&
+        (m.payload as { wantSnapshot?: boolean }).wantSnapshot === true,
+    );
+    expect(asks).toHaveLength(0);
+  });
 });

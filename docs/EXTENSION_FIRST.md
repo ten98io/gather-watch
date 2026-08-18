@@ -160,6 +160,14 @@ All heavy lifting — detection, playback control, media manipulation — runs o
 the user's device through the extension (desktop) or native APIs (mobile).
 The web app is the interface: content view, chat, call, queue.
 
+**Clarification (owner, 2026-08-18):** the extension is a **value-add**, not a
+replacement for the web app. The web app remains the primary room interface:
+browsing, queueing, chat, call controls, and settings all live there. The
+extension's job is to drive playback on sites the web app cannot embed (Netflix,
+Disney+, etc.) and to enable screen/tab capture. A user without the extension
+still gets the full room experience minus DRM-site playback — chat, call, queue,
+and presence all work.
+
 ### THE CORRECTION: where does the content actually render?
 
 An extension can drive a player on *any* site, but it cannot move that video

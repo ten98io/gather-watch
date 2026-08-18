@@ -8,7 +8,8 @@ import type { Member, Room } from '@gather/contracts';
 import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 
 /** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only
- *  realtime snapshots (playback/queue/restream). */
+ *  realtime snapshots (playback/queue/restream) or the password hash, which
+ *  crosses the wire only as the boolean `hasPassword`. */
 export function serializeRoom(room: RoomDoc): Room {
   return {
     id: room.id,
@@ -21,6 +22,7 @@ export function serializeRoom(room: RoomDoc): Room {
     theater: room.theater,
     expiresAt: room.expiresAt,
     createdAt: room.createdAt,
+    hasPassword: room.passwordHash !== null && room.passwordHash !== undefined,
   };
 }
 

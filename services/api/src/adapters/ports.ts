@@ -115,11 +115,15 @@ export interface AuthTokenDoc {
  *  minute. The idle-room sweeper reads it to find abandoned rooms; it is
  *  optional because rooms stored before it existed do not carry it, and
  *  readers fall back to createdAt. */
-export type RoomDoc = Room & {
+export type RoomDoc = Omit<Room, 'hasPassword'> & {
   playback: PlaybackState | null;
   queue: { items: QueueItem[]; version: number };
   restream: RestreamState | null;
   lastActivityAt?: number;
+  /** scrypt `salt:hash` of the room password, SERVER-ONLY: serializeRoom
+   *  reduces it to `hasPassword` before anything crosses the wire. Optional
+   *  because rooms stored before passwords existed do not carry it. */
+  passwordHash?: string | null;
 };
 
 /** id = memberDocId(roomId, userId). `muted` = per-room notification mute. */

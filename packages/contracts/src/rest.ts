@@ -82,6 +82,7 @@ export type UpdateProfileResponse = z.infer<typeof UpdateProfileResponse>;
 export const GuestJoinBody = z.object({
   inviteCode: InviteCode,
   displayName: z.string().min(1).max(80),
+  password: z.string().optional(),
 });
 export type GuestJoinBody = z.infer<typeof GuestJoinBody>;
 
@@ -157,7 +158,7 @@ export const ListMyRoomsResponse = z.object({
 });
 export type ListMyRoomsResponse = z.infer<typeof ListMyRoomsResponse>;
 
-export const JoinRoomBody = z.object({ inviteCode: InviteCode });
+export const JoinRoomBody = z.object({ inviteCode: InviteCode, password: z.string().optional() });
 export type JoinRoomBody = z.infer<typeof JoinRoomBody>;
 
 export const JoinRoomResponse = z.object({
@@ -230,6 +231,13 @@ export type UpdateRoomBody = z.infer<typeof UpdateRoomBody>;
 
 export const UpdateRoomResponse = z.object({ room: Room });
 export type UpdateRoomResponse = z.infer<typeof UpdateRoomResponse>;
+
+/** Set or clear a room password (host only). */
+export const SetRoomPasswordBody = z.object({ password: z.string().min(1).max(120).nullable() });
+export type SetRoomPasswordBody = z.infer<typeof SetRoomPasswordBody>;
+
+export const SetRoomPasswordResponse = z.object({ room: Room });
+export type SetRoomPasswordResponse = z.infer<typeof SetRoomPasswordResponse>;
 
 /** Delete a room (host only): members, invites, and history removed;
  *  live sockets are disconnected. */
@@ -749,6 +757,7 @@ export const rest = {
     createInvite: { body: CreateInviteBody, response: CreateInviteResponse },
     setTheater: { body: SetTheaterBody, response: SetTheaterResponse },
     updateRoom: { body: UpdateRoomBody, response: UpdateRoomResponse },
+    setRoomPassword: { body: SetRoomPasswordBody, response: SetRoomPasswordResponse },
     deleteRoom: { response: DeleteRoomResponse },
     roomHistory: { query: RoomHistoryQuery, response: RoomHistoryResponse },
   },

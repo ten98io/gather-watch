@@ -402,7 +402,7 @@ async function guestJoin(code: string): Promise<GuestJoinWire> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(res.status === 404 ? 'Invite code not found' : `Join failed (${res.status}): ${text.slice(0, 120)}`);
+    throw new Error(res.status === 404 ? 'Invite code not found — or the room needs a password, which the popup cannot enter yet. Join from the web app instead.' : `Join failed (${res.status}): ${text.slice(0, 120)}`);
   }
   return (await res.json()) as GuestJoinWire;
 }
@@ -1019,6 +1019,13 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     pushOverlay();
   });
   socket.connect(input.roomId as never, input.accessToken);
+
+  // A revived worker has no queue snapshot: the server's presence entry is
+  // still alive, so it does not auto-reply with one on reconnect. Ask
+  // explicitly, the same way the web client does on refresh.
+  if (input.resumed) {
+    socket.send('presence.update', { state: 'watching', wantSnapshot: true });
+  }
 
   if (!input.resumed) await clearAbsence();
 

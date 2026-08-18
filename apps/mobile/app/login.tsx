@@ -34,6 +34,7 @@ export default function LoginScreen() {
   const [tokenPaste, setTokenPaste] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [guestName, setGuestName] = useState('');
+  const [roomPassword, setRoomPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,13 +149,23 @@ export default function LoginScreen() {
             placeholderTextColor={palette.textLow}
             style={styles.input}
           />
+          <TextInput
+            value={roomPassword}
+            onChangeText={setRoomPassword}
+            placeholder="Room password (if required)"
+            placeholderTextColor={palette.textLow}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            style={styles.input}
+          />
           <Pressable
             accessibilityRole="button"
             disabled={busy || inviteCode.trim().length < 4 || guestName.trim().length === 0}
             onPress={() =>
               run(() =>
                 auth
-                  .guestJoin(inviteCode, guestName)
+                  .guestJoin(inviteCode, guestName, roomPassword)
                   .then(({ roomId }) => router.replace(`/room/${roomId}`)),
               )
             }

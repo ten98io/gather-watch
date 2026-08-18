@@ -117,6 +117,7 @@ const roomWith = (inviteCode: InviteCode, id: string): Room => ({
   theater: false,
   createdAt: 1_000,
   expiresAt: null,
+  hasPassword: false,
 });
 
 /* ── harness ─────────────────────────────────────────────────────────────── */

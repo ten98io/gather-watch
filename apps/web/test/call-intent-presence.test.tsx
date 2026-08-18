@@ -58,6 +58,7 @@ const room = (): Room => ({
   relayMode: 'mesh',
   theater: false,
   expiresAt: null,
+  hasPassword: false,
   createdAt: 1_000,
 });
 

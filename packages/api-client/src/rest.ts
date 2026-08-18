@@ -51,6 +51,8 @@ import {
   SearchMessagesResponse,
   SetRoomMuteBody,
   SetRoomMuteResponse,
+  SetRoomPasswordBody,
+  SetRoomPasswordResponse,
   TransferHostBody,
   TransferHostResponse,
   TurnCredentialsResponse,
@@ -62,6 +64,8 @@ import {
   UpdatePoliciesResponse,
   UpdateProfileBody,
   UpdateProfileResponse,
+  UpdateRoomBody,
+  UpdateRoomResponse,
   UpgradeGuestBody,
   UpgradeGuestResponse,
   VerifyTokenBody,
@@ -129,6 +133,8 @@ export class RestClient {
     kickMember(roomId: RoomId, body: KickMemberBody): Promise<KickMemberResponse>;
     banMember(roomId: RoomId, body: BanMemberBody): Promise<BanMemberResponse>;
     createInvite(roomId: RoomId, body: CreateInviteBody): Promise<CreateInviteResponse>;
+    updateRoom(roomId: RoomId, body: UpdateRoomBody): Promise<UpdateRoomResponse>;
+    setRoomPassword(roomId: RoomId, body: SetRoomPasswordBody): Promise<SetRoomPasswordResponse>;
     /** What the room played, newest first. `before` is the previous page's
      *  `nextBefore`; members only. */
     getHistory(
@@ -376,6 +382,22 @@ export class RestClient {
           method: 'POST',
           path: `/rooms/${encodeURIComponent(roomId)}/invites`,
           schema: CreateInviteResponse,
+          body,
+        }),
+      updateRoom: (roomId, body) =>
+        this.request({
+          label: 'rooms.updateRoom',
+          method: 'PATCH',
+          path: `/rooms/${encodeURIComponent(roomId)}`,
+          schema: UpdateRoomResponse,
+          body,
+        }),
+      setRoomPassword: (roomId, body) =>
+        this.request({
+          label: 'rooms.setRoomPassword',
+          method: 'PATCH',
+          path: `/rooms/${encodeURIComponent(roomId)}/password`,
+          schema: SetRoomPasswordResponse,
           body,
         }),
       getHistory: (roomId, query) =>

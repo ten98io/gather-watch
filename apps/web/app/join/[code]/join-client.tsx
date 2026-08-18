@@ -26,10 +26,15 @@ import { Logo } from '@/components/Logo';
  *  • CONFLICT is a unique-index violation from the store, and "Try again" is
  *    the one thing that never fixes one: the same name, retried, collides
  *    identically forever. Name the field the person has to change.
+ *  • NOT_FOUND also covers a wrong room password: the server answers a bad
+ *    passphrase with the same 'invite not found' it gives an unknown code, so
+ *    the code's validity cannot be probed through the error shape — and the
+ *    copy must not claim to know which of the two failed.
  */
 export function describeJoinFailure(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.code === 'NOT_FOUND') return 'This invite code is invalid or has expired.';
+    if (err.code === 'NOT_FOUND')
+      return 'This invite code is invalid, expired, or the password is wrong.';
     if (err.code === 'FORBIDDEN') {
       if (/banned/i.test(err.message)) {
         return 'A host or moderator banned you from this room.';
@@ -67,6 +72,7 @@ export function JoinClient({ code }: { code: InviteCode }) {
   const router = useRouter();
   const { user, loading, isGuest, setUser } = useAuth();
   const [displayName, setDisplayName] = useState('');
+  const [password, setPassword] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -102,7 +108,12 @@ export function JoinClient({ code }: { code: InviteCode }) {
     setPending(true);
     setError(null);
     try {
-      const res = await guestJoin({ inviteCode: code, displayName: displayName.trim() });
+      const res = await guestJoin({
+        inviteCode: code,
+        displayName: displayName.trim(),
+        // exactOptionalPropertyTypes: never write an explicit undefined.
+        ...(password.length > 0 ? { password } : {}),
+      });
       setUser(res.user);
       router.replace(`/room/${res.room.id}`);
     } catch (err) {
@@ -116,7 +127,10 @@ export function JoinClient({ code }: { code: InviteCode }) {
     setPending(true);
     setError(null);
     try {
-      const res = await api.rooms.joinRoom({ inviteCode: code });
+      const res = await api.rooms.joinRoom({
+        inviteCode: code,
+        ...(password.length > 0 ? { password } : {}),
+      });
       router.replace(`/room/${res.room.id}`);
     } catch (err) {
       setError(describeJoinFailure(err));
@@ -148,14 +162,29 @@ export function JoinClient({ code }: { code: InviteCode }) {
             </Link>
           </div>
         ) : !guestPath ? (
-          <div className="flex flex-col gap-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void joinAsMember();
+            }}
+            className="flex flex-col gap-4"
+          >
             <p className="text-center text-sm text-mid">
               Joining as <span className="font-semibold text-hi">{user?.displayName}</span>
             </p>
-            <Button size="lg" disabled={pending} onClick={() => void joinAsMember()}>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-mid">Room password (if required)</span>
+              <Input
+                type="password"
+                placeholder="Only needed if the room has a password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+            <Button type="submit" size="lg" disabled={pending}>
               {pending ? 'Joining…' : 'Join the room'}
             </Button>
-          </div>
+          </form>
         ) : (
           <form onSubmit={(e) => void joinAsGuest(e)} className="flex flex-col gap-4">
             {isGuest && (
@@ -182,6 +211,15 @@ export function JoinClient({ code }: { code: InviteCode }) {
                 onChange={(e) => {
                   setDisplayName(e.target.value);
                 }}
+              />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-mid">Room password (if required)</span>
+              <Input
+                type="password"
+                placeholder="Only needed if the room has a password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
               />
             </label>
             <Button type="submit" size="lg" disabled={pending || displayName.trim().length === 0}>

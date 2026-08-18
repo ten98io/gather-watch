@@ -50,6 +50,14 @@ export const MAX_WIDTH = 1920;
 export const MAX_HEIGHT = 1080;
 export const MAX_FRAME_RATE = 30;
 
+/** Ceiling for share video on links the mesh classifies as RELAYED (kbps).
+ *  Direct links are never capped — this only bounds what a TURN fallback
+ *  bills us per relayed viewer (~$0.186/hr for 5 at full rate, risk 1 in
+ *  docs/COST_MODEL.md). Middle of the doc's 300–500 band. The BitrateGovernor
+ *  adapts down from this ceiling per link once it is wired into the sender
+ *  (docs/FEATURE_PLAN.md §8); until then this static ceiling is the lever. */
+export const SHARE_RELAYED_VIDEO_CAP_KBPS = 400;
+
 /** Link classification only advances inside the mesh's pollStats(), and this
  *  document owns the interval. */
 const LINK_POLL_MS = 5_000;
@@ -421,6 +429,7 @@ export async function startShare(
     lane: 'share',
     send: (event) => socket?.send(event.type, event.payload),
     getIceServers: () => sharedTurn.iceServers(),
+    capRelayedVideoKbps: SHARE_RELAYED_VIDEO_CAP_KBPS,
   });
   mesh = sharedMesh;
   liveMesh = sharedMesh;

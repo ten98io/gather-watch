@@ -34,7 +34,7 @@ import { assertMediaRefWithinBounds } from '../queue/service';
 import { recordPlayback } from '../rooms/history';
 import { getRoomsRuntime } from '../rooms/runtime';
 import { policyAllows } from './policy';
-import { serializeRoom } from './serialize';
+import { serializeRoom } from '../rooms/serialize';
 
 /**
  * How far short of a KNOWN `durationMs` still counts as an ending — the slack

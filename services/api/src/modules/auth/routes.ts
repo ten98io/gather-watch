@@ -15,45 +15,17 @@ import {
   UpgradeGuestBody,
   VerifyTokenBody,
 } from '@gather/contracts';
-import type { Member, Room } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { signAccessToken } from '../../lib/tokens';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import { authRateLimit } from '../../plugins/rate-limit';
-import type { MemberDoc, RoomDoc, UserDoc } from '../../adapters/ports';
+import type { UserDoc } from '../../adapters/ports';
+import { serializeMember, serializeRoom } from '../rooms/serialize';
 import { AuthService } from './service';
 import { createMailer } from './email';
 
 const RT_COOKIE = 'gather_rt';
-
-/** Pick ONLY the contracts Room fields — never leak RoomDoc's server-only
- *  realtime snapshots (playback/queue/restream). */
-function serializeRoom(room: RoomDoc): Room {
-  return {
-    id: room.id,
-    kind: room.kind,
-    name: room.name,
-    inviteCode: room.inviteCode,
-    ownerId: room.ownerId,
-    policies: room.policies,
-    relayMode: room.relayMode,
-    theater: room.theater,
-    expiresAt: room.expiresAt,
-    createdAt: room.createdAt,
-  };
-}
-
-/** Contracts Member — strip the MemberDoc id and the per-room mute flag. */
-function serializeMember(member: MemberDoc): Member {
-  return {
-    roomId: member.roomId,
-    userId: member.userId,
-    role: member.role,
-    joinedAt: member.joinedAt,
-    banned: member.banned,
-  };
-}
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
   const { config, store } = app.deps;
@@ -150,6 +122,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       body.inviteCode,
       body.displayName,
       device,
+      body.password,
     );
     setRefreshCookie(reply, refreshToken);
     const { accessToken, accessTokenExpiresAt } = await issueAccessToken(user, session.id, room.id);

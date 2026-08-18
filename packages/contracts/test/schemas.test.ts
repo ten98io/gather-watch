@@ -141,6 +141,7 @@ const room = {
   theater: false,
   expiresAt: null,
   createdAt: TS,
+  hasPassword: false,
 };
 
 const member = {

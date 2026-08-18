@@ -14,6 +14,7 @@ import {
   RoomHistoryQuery,
   SetMemberRoleBody,
   SetRoomMuteBody,
+  SetRoomPasswordBody,
   SetTheaterBody,
   TransferHostBody,
   UpdatePoliciesBody,
@@ -81,6 +82,7 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
     const { room, member, lastEventSeq } = await service.joinByInvite(
       auth.userId,
       body.inviteCode,
+      body.password,
     );
     return { room: serializeRoom(room), member: serializeMember(member), lastEventSeq };
   });
@@ -195,6 +197,18 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
     assertGuestScope(auth, request.params.roomId);
     const body = parseWith(UpdateRoomBody, request.body);
     const room = await service.renameRoom(request.params.roomId, auth.userId, body.name);
+    return { room: serializeRoom(room) };
+  });
+
+  app.patch<RoomParams>('/rooms/:roomId/password', async (request) => {
+    const auth = requireAuth(request);
+    assertGuestScope(auth, request.params.roomId);
+    const body = parseWith(SetRoomPasswordBody, request.body);
+    const room = await service.setRoomPassword(
+      request.params.roomId,
+      auth.userId,
+      body.password,
+    );
     return { room: serializeRoom(room) };
   });
 

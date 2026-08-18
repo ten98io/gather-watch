@@ -924,8 +924,9 @@ export class MeshManager {
   }
 
   /** Bring the 'share' sender's relay cap in line with the reported link
-   *  state, when an operator configured one at all (capRelayedVideoKbps —
-   *  nothing in the product sets it): cap on 'relayed', uncap on 'direct',
+   *  state, when an operator configured one at all (capRelayedVideoKbps — set
+   *  by both share producers: apps/web/lib/call-mesh.ts and
+   *  apps/extension/src/offscreen.ts): cap on 'relayed', uncap on 'direct',
    *  leave 'unknown' as-is (an uncertain path keeps whatever cap it has).
    *  setParameters is async and may reject; a rejection surfaces via onError
    *  and never interrupts the share. */

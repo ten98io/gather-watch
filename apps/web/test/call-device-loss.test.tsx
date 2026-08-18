@@ -169,6 +169,7 @@ const room = (): Room => ({
   theater: false,
   createdAt: 1_000,
   expiresAt: null,
+  hasPassword: false,
 });
 
 const member = (): Member => ({

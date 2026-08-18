@@ -105,6 +105,7 @@ function makeRoom(): Room {
     theater: false,
     createdAt: 0,
     expiresAt: null,
+  hasPassword: false,
   };
 }
 

@@ -107,7 +107,7 @@ Then chrome://extensions → Developer mode → Load unpacked →
 | Path | What |
 |---|---|
 | `apps/web` | Next.js PWA — the room interface |
-| `apps/extension` | Chromium MV3 extension — the playback driver |
+| `apps/extension` | Chromium MV3 extension — the playback **driver and value-add** (not a replacement for the web app). Drives media on arbitrary sites; chat, queue, call UI all stay in the web app |
 | `apps/mobile` | Expo (iOS + Android) |
 | `services/api` | Fastify control plane: auth, rooms, chat, queue, sync, restream, rtc, push, metadata, compliance, admin |
 | `packages/contracts` | Zod schemas — single source of truth for REST + WS |

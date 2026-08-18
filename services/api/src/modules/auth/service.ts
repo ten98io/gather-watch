@@ -6,7 +6,7 @@
  */
 import type { InviteCode, Session, SessionId, UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
-import { hashToken, newId, randomToken } from '../../lib/tokens';
+import { hashToken, newId, randomToken, verifyPassword } from '../../lib/tokens';
 import { cursorDocId, memberDocId } from '../../adapters/ports';
 import type {
   AuthTokenDoc,
@@ -279,6 +279,7 @@ export class AuthService {
     inviteCode: string,
     displayName: string,
     device: string,
+    password?: string,
   ): Promise<{
     user: UserDoc;
     room: RoomDoc;
@@ -298,6 +299,17 @@ export class AuthService {
       }
       room = await store.rooms.findById(invite.roomId);
       if (room === null) {
+        throw new AppError('NOT_FOUND', 'invite not found');
+      }
+    }
+
+    // Password gate for guest joins. Same NOT_FOUND so callers cannot probe.
+    if (room.passwordHash !== null && room.passwordHash !== undefined) {
+      if (password === undefined) {
+        throw new AppError('NOT_FOUND', 'invite not found');
+      }
+      const ok = await verifyPassword(password, room.passwordHash);
+      if (!ok) {
         throw new AppError('NOT_FOUND', 'invite not found');
       }
     }

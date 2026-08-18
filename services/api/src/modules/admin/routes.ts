@@ -23,6 +23,7 @@ import { requireAccount } from '../../plugins/auth';
 import { snapshotMetrics } from '../../plugins/metrics';
 import { parseWith } from '../../plugins/error-mapper';
 import { executeTakedown, listOpenReports } from '../../cli/takedown';
+import { serializeRoom } from '../rooms/serialize';
 import type { Deps } from '../types';
 
 /** Admin gate: account identity + email on the ADMIN_EMAILS list. */
@@ -122,18 +123,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const rooms = await store.rooms.findMany({}, { sort: [['createdAt', -1]], limit: 200 });
     const rows = await Promise.all(
       rooms.map(async (room) => ({
-        room: {
-          id: room.id,
-          kind: room.kind,
-          name: room.name,
-          inviteCode: room.inviteCode,
-          ownerId: room.ownerId,
-          policies: room.policies,
-          relayMode: room.relayMode,
-          theater: room.theater,
-          expiresAt: room.expiresAt,
-          createdAt: room.createdAt,
-        },
+        room: serializeRoom(room),
         memberCount: await store.members.count({ roomId: room.id }),
         liveConnections: deps.hub.localConnectionCount(room.id),
         messageCount: await store.messages.count({ roomId: room.id }),

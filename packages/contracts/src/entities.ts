@@ -147,6 +147,9 @@ export const Room = z.object({
    *  while anyone is present, so there is nothing to count down to. */
   expiresAt: Timestamp.nullable().default(null),
   createdAt: Timestamp,
+  /** Whether joining this room requires its password. The hash itself is
+   *  server-only (RoomDoc.passwordHash) and never crosses the wire. */
+  hasPassword: z.boolean().default(false),
 });
 export type Room = z.infer<typeof Room>;
 

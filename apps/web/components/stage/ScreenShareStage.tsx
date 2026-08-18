@@ -252,6 +252,40 @@ export async function startShare(connection: RoomConnection, userId: UserId): Pr
   }
 }
 
+/* ── AirPlay guidance (CAST_RELAY.md §2) ─────────────────────────────────── */
+
+/**
+ * The entire client-side AirPlay feature is one line of copy: mirroring is
+ * OS-owned with no web API, and a WebRTC `srcObject` share is a blob source no
+ * per-element picker can act on. So while a share is on stage, an Apple device
+ * gets the platform's own mirroring path spelled out. CAST_RELAY §2 put this
+ * in the PlayerControls cast popover, but StagePane withholds the whole
+ * transport during a share — the share stage itself is the only surface that
+ * exists at the moment the hint is relevant.
+ */
+function platformCastHint(): string | null {
+  if (typeof navigator === 'undefined') return null;
+  const p = navigator.platform;
+  if (p.startsWith('Mac')) {
+    return 'To put this on your TV: menu bar → Control Center → Screen Mirroring.';
+  }
+  if (p === 'iPhone' || p === 'iPad' || p === 'iPod') {
+    return 'To put this on your TV: Control Center (swipe down from the top-right) → Screen Mirroring.';
+  }
+  return null;
+}
+
+/** A bar BELOW the picture, never over it — the stage is never covered. */
+function CastHint() {
+  const hint = platformCastHint();
+  if (hint === null) return null;
+  return (
+    <p className="w-full shrink-0 bg-surface-1 px-4 py-1.5 text-center text-xs text-low">
+      {hint}
+    </p>
+  );
+}
+
 /* ── components ──────────────────────────────────────────────────────────── */
 
 /** Host flow: pre-flight honesty → capture → mesh fan-out. */
@@ -420,34 +454,37 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
   }, [playing, attemptPlay]);
 
   return (
-    <div className="relative flex h-full w-full items-center justify-center bg-black">
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        className="max-h-full max-w-full"
-        aria-label="Shared screen"
-      />
-      {playing.video === null && (
-        <p className="absolute text-sm text-mid">
-          Connecting to the host’s screen… this can take a moment.
-        </p>
-      )}
-      {soundBlocked && playing.audio.length > 0 && (
-        <div className="absolute bottom-4">
-          <Button
-            size="sm"
-            onClick={() => {
-              const el = videoRef.current;
-              if (el === null) return;
-              el.muted = false;
-              attemptPlay(el);
-            }}
-          >
-            {SHARE_SOUND_BLOCKED_LABEL}
-          </Button>
-        </div>
-      )}
+    <div className="flex h-full w-full flex-col bg-black">
+      <div className="relative flex min-h-0 flex-1 items-center justify-center">
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          className="max-h-full max-w-full"
+          aria-label="Shared screen"
+        />
+        {playing.video === null && (
+          <p className="absolute text-sm text-mid">
+            Connecting to the host’s screen… this can take a moment.
+          </p>
+        )}
+        {soundBlocked && playing.audio.length > 0 && (
+          <div className="absolute bottom-4">
+            <Button
+              size="sm"
+              onClick={() => {
+                const el = videoRef.current;
+                if (el === null) return;
+                el.muted = false;
+                attemptPlay(el);
+              }}
+            >
+              {SHARE_SOUND_BLOCKED_LABEL}
+            </Button>
+          </div>
+        )}
+      </div>
+      <CastHint />
     </div>
   );
 }

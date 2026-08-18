@@ -15,12 +15,12 @@ to `mustafagandhi/gather-watch`; pushing to `main` (or `dev`) is what redeploys.
 more — treat it as a local-source override, and remember `railway link` writes
 to `~`, so check what is linked before using it.
 
-`main` is `80395f6`; `dev` trails it by one commit (`b500e33`) and is an
-ancestor, so a fast-forward is all it needs. Live probes at handoff: api
+`main` was `734c54e` when this session began; the wave's uncommitted work was
+triageable after all — it is repaired, tested and committed on top (see git
+log). `dev` trails and is an ancestor, so a fast-forward is all it needs. Live
+probes at handoff: api
 `/readyz` → `{"ok":true,"store":true,"bus":true,"busMode":"redis"}`, web 200,
-ws 101. **Run `git status` before trusting any of this** — the last thing this
-repo saw was a multi-agent wave, so the working tree may carry uncommitted work
-that no single agent can vouch for.
+ws 101. **Run `git status` before trusting any of this.**
 
 Chat attachments use the `attachments` Railway Bucket (`ams`) via reference
 variables, read through stable capability URLs (`GET /assets/:assetId/content`
@@ -43,7 +43,7 @@ is a layout, not a transport. No room ever successfully used LiveKit; it is
 deleted from the codebase.
 
 Gates at the end of this session, forced (not cached): **build 8/8, typecheck
-14/14, test 157 files / 2004 passed / 18 skipped, lint 9/9.** Build is 8 and not
+14/14, test 158 files / 2020 passed / 18 skipped, lint 9/9.** Build is 8 and not
 9 because `apps/mobile` has no `build` script. Typecheck and test are 14 because
 both `dependsOn: ["^build"]`, so each run also builds the five `dist`-shipped
 packages: 9 workspaces + 5 builds.
@@ -108,7 +108,7 @@ Read these before changing anything; each one has an audit finding behind it.
    no longer exists. The internal vocabulary survives in prose and in some
    comments; that is a pending cross-cutting rename, not a bug.
 
-## Shipped this session (verified against the code)
+## Shipped in the billing-removal session (verified against the code)
 
 - **Billing removed, root and branch.** `services/api/src/modules/billing/*`,
   `services/api/test/premium-gate.test.ts`, `services/media/**` and the web
@@ -185,6 +185,39 @@ Read these before changing anything; each one has an audit finding behind it.
 
 Costs: `docs/COST_MODEL.md` (verified rates; three lines cannot be closed).
 
+## Shipped 2026-08-19 (this session; verified against the code)
+
+- **Room passwords, end to end.** scrypt `salt:hash` in
+  `services/api/src/lib/tokens.ts`; host-only `PATCH /rooms/:roomId/password`;
+  the gate prices a probe as a missing invite (identical NOT_FOUND for unknown
+  code / missing / wrong); guests and accounts both gated; the wire carries
+  `hasPassword`, never the hash. Web join page, room settings and mobile guest
+  join carry the field. `services/api/test/rooms-password.test.ts` pins all of
+  it, including "rotation kills the old password".
+- **`serializeRoom` is now ONE function.** The hand-picked copies in
+  `auth/routes.ts`, `admin/routes.ts` and `sync/serialize.ts` (deleted) all
+  import `rooms/serialize.ts` — three copies of a security boundary was the
+  exact "two-half contract" trap on the traps list.
+- **Relayed-share ceiling wired.** `capRelayedVideoKbps: 400` from both share
+  producers (web `call-mesh.ts`, extension `offscreen.ts`); the mesh caps only
+  relayed links' share sender. The extension test suite now pins the ceiling
+  reaches the mesh; the dynamic governor (FEATURE_PLAN §8) remains open.
+- **Extension revive asks for a snapshot.** `presence.update { wantSnapshot:
+  true }` on the resumed path closes the recycled-worker's unknown-queue
+  window; pinned by two new tests (asks on revive, never otherwise).
+- **AirPlay mirroring hint** on the share stage, below the picture, Apple
+  platforms only — placement correction from "cast popover" recorded in
+  `docs/CAST_RELAY.md` §2, because StagePane withholds the transport during a
+  share.
+- **Mobile type ramp repaired.** `hero` carries `rnFontSize: 34` (the old
+  displayL); `emitRnTypeRamp` reads `rnFontSize ?? fontSize` and the web fluid
+  ceiling never leaks into RN; `type.mono` names no face until expo-font
+  bundles one. Pinned in both the design and mobile suites.
+- **The wave's corrupted tree repaired.** Duplicated hunks in join-client,
+  RoomMenu, contracts/rest, rooms/serialize, background.ts, DESIGN.md and this
+  file are resolved; the mangled `passwordHash`-on-the-wire design became
+  server-only `RoomDoc.passwordHash` + wire `hasPassword`.
+
 ## Open items
 
 1. **TURN keys** (user action) — voice dropouts persist until `CF_TURN_KEY_ID`
@@ -192,17 +225,18 @@ Costs: `docs/COST_MODEL.md` (verified rates; three lines cannot be closed).
    from the repo.
 2. **$5 Cast spike** (user action) — Google Cast dev console registration
    gates the Chromecast TV-participant slice 1 (`docs/CAST_RELAY.md` §7).
-3. **Relayed-share bitrate cap is unset** (real money, one line of wiring).
-   `packages/p2p/src/mesh.ts` already classifies each link `direct`/`relayed`
-   and will cap the `share` sender on a relayed link — but only when a caller
-   passes `capRelayedVideoKbps`, and no caller does.
-   `apps/extension/src/offscreen.ts` threads the option through to the mesh and
-   never sets it (`apps/extension/test/offscreen.test.ts` asserts it stays
-   `undefined`); the
-   web mesh constructor (`apps/web/lib/call-mesh.ts`) does not offer it at all.
-   So a share that falls back to TURN runs at full rate on our bill
-   (~$0.186/hr for 5 relayed viewers, `docs/COST_MODEL.md` risk 1). Decide a
-   number (the doc suggests 300–500 kbps) and pass it from both constructors.
+3. **Relayed-share bitrate: static ceiling LANDED, dynamic governor unwired**
+   (real money). Both share producers now pass `capRelayedVideoKbps: 400` —
+   `apps/web/lib/call-mesh.ts` (`DEFAULT_CAP_RELAYED_VIDEO_KBPS`, the
+   `getCallMesh` default) and `apps/extension/src/offscreen.ts`
+   (`SHARE_RELAYED_VIDEO_CAP_KBPS`) — so a share that falls back to TURN no
+   longer bills full rate per relayed viewer. What remains is the owner's
+   superseding decision: wire the already-built `BitrateGovernor` +
+   `LinkAdaptor` (`packages/p2p/src/adaptation.ts`) into the share sender per
+   link, in the `docs/FEATURE_PLAN.md` §8 build order; the static cap becomes
+   a ceiling on top of the governor for relayed links only.
+   `packages/p2p/src/mesh.ts` classifies each link `direct`/`relayed` and
+   applies the cap to the `share` sender on relayed links only.
 4. **The advance guard PRICES a skip rather than verifying one when
    `durationMs` is null.** `endingIsPlausible` in
    `services/api/src/modules/sync/service.ts` has two branches and they are not
@@ -231,16 +265,14 @@ Costs: `docs/COST_MODEL.md` (verified rates; three lines cannot be closed).
    is an embed, the queue stalls on a finished item. The fix is the
    postMessage bridge into the WebView, not another producer on the native
    path.
-7. **An extension session revived after an MV3 worker recycle has an unknown
-   queue until the next mutation.** `apps/extension/src/background.ts` mirrors
-   session state into `chrome.storage.session`, but the room's queue arrives
-   with the join snapshot — and a revived worker beats into a presence entry
-   that is still alive, so no snapshot comes back. `sync.advance` names an
-   item, so an unknown queue means an ending in that window is silently not
-   reported. The same recycle leaves `playback` null and stops the worker
-   driving at all, so it is not a *new* blind spot, but it is a real one.
-   Asking for a snapshot on revive (the `wantSnapshot` door the web already
-   uses) is the obvious fix.
+7. ~~An extension session revived after an MV3 worker recycle has an unknown
+   queue until the next mutation.~~ **CLOSED 2026-08-19.** A revived worker now
+   sends `presence.update { state: 'watching', wantSnapshot: true }` on the
+   resumed path (`apps/extension/src/background.ts` `openSession`), the same
+   door the web uses on refresh; the version-guarded `queue.state`/`sync.state`
+   reducers were already in place. Pinned by two tests in
+   `apps/extension/test/background.test.ts` (asks on revive; never on a fresh
+   join or an ordinary beat).
 8. **The Mongo and Redis halves of the test suite have no AUTOMATIC signal.**
    Both real backends produced a production bug this session that a green suite
    could not see: the sparse-vs-partial unique index (every second guest
@@ -267,17 +299,59 @@ Costs: `docs/COST_MODEL.md` (verified rates; three lines cannot be closed).
    soundcloud,vimeo,native,embed,adapter}.ts` and the `getDisplayMedia` call at
    `apps/web/components/stage/ScreenShareStage.tsx:113` are all still present.
    See `docs/WEB_SLIMMING.md` header for the blast radius.
-10. **Mobile RN type defects** — the hero step is 28 px in `packages/design/src/
-    scales.ts` (`maxFontSize: 56` is a web-only fluid ceiling; RN takes
-    `fontSize`), so mobile's old 34 px `displayL` regressed to 28. JetBrains
-    Mono is unbundled — `apps/mobile` has no `expo-font` dependency, so
-    `type.mono` names a face RN never loads and numeric readouts jitter on the
-    fallback.
-11. **AirPlay guidance copy is designed but not written.** `docs/CAST_RELAY.md`
-    §2 specifies two platform-keyed rows inside the cast popover; no such copy
-    exists in `apps/web/components/stage/PlayerControls.tsx` (grep "Screen
-    Mirroring" — nothing). The always-visible cast control with honest states
-    *did* ship; the mirroring hint did not.
+10. ~~Mobile RN type defects~~ **CLOSED 2026-08-19.** The hero step carries an
+    explicit `rnFontSize: 34` (`packages/design/src/scales.ts` — the old
+    displayL, neither the 28px web floor nor the 56px fluid ceiling, which
+    `emitRnTypeRamp` was about to start emitting for body too; it reads
+    `rnFontSize ?? fontSize` and `maxFontSize` NEVER leaks into RN). Pinned in
+    `packages/design/test/scales.test.ts` and `apps/mobile/tests/theme.test.ts`.
+    The mono step names NO face — JetBrains Mono is unbundled and
+    'ui-monospace' is a CSS generic RN does not know, so `type.mono` is body
+    metrics alone until the README font milestone lands expo-font. The absence
+    is pinned so an unresolvable face name cannot come back.
+11. ~~AirPlay guidance copy is designed but not written.~~ **CLOSED
+    2026-08-19**, with a placement correction recorded in `docs/CAST_RELAY.md`
+    §2: StagePane withholds the whole transport bar during a share, so the
+    "cast control popover" does not exist at the relevant moment. The two
+    platform-keyed strings live in `CastHint`
+    (`apps/web/components/stage/ScreenShareStage.tsx`), a bar BELOW the share
+    picture, shown to viewers on Apple platforms only.
+12. ~~Room passwords — owner decision, implementation pending.~~ **CLOSED
+    2026-08-19.** Optional passphrase, scrypt-hashed server-side
+    (`hashPassword`/`verifyPassword` in `services/api/src/lib/tokens.ts`,
+    `salt:hash` composite, timing-safe compare). Host sets/rotates/clears via
+    `PATCH /rooms/:roomId/password` (host only; rotation IS recovery — no
+    reset flow). The gate is probe-proof: unknown code, missing password and
+    wrong password all answer the same NOT_FOUND. Existing members rejoin
+    without re-verifying (join stays idempotent). The hash is server-only
+    (`RoomDoc.passwordHash`); the wire carries `hasPassword: boolean`, and
+    `serializeRoom` is now the SINGLE Room serializer — the copies in
+    auth/routes.ts, sync/serialize.ts (deleted) and admin/routes.ts all read
+    it. Web join page + room settings + mobile guest join carry the field;
+    the extension popup honestly redirects to the web app. Tests:
+    `services/api/test/rooms-password.test.ts` (hashing, management, the
+    gate, the leak pin).
+13. **User-relations layer — 0.9 widened.** Friends, block, per-user report,
+    invite tracking (sent/accepted), private vs public invite links. Partiful is
+    the reference. This is a new module, not a wiring job — schema, API routes,
+    and UI. Scope it as a follow-on to 0.1–0.4.
+14. **Theater mode spec — 2.5 finalized.** Fullscreen stage; hover/click glass-
+    effect sidebar for chat; call participants as floating circular tiles on a
+    configurable left/right edge. Needs design tokens for floating tile layout
+    and a `theater` layout mode in the stage shell. See `docs/FEATURE_PLAN.md`
+    §7 Phase 2 rulings.
+15. **Admin console — 1.1 scoped.** Role-gated `/admin` area: marketing pages as
+    code; reports queue, user/room lookup, invites. Admin is a role on a normal
+    account, every route is checked server-side per request, opening an admin
+    session requires a fresh magic-link step-up with a shorter TTL, and every
+    admin action is audit logged. Not a second credential system; not URL
+    obscurity. v1 is code-first; CMS-style editing is a later maybe.
+16. **Content-matching ladder — scheduled.** Cross-region/DRM content resolution
+    (`docs/CONTENT_MATCHING.md`) is the primary answer to the region-access
+    question; the VPN/relay path is deferred behind it. Build order: external-ID
+    enrichment on `ResolvedMedia` → availability probe → readiness handshake on
+    the wire → specific rung-5 reason strings. See `docs/FEATURE_PLAN.md` §9
+    plan amendments.
 
 **Closed since the last handoff** (do not go looking for them): the settings
 uploads panel no longer calls deleted media routes — `ChunkedUploader` and
@@ -450,15 +524,15 @@ mistake any of them for a working path.
 Continue Gather (~/Desktop/playin, live at gather.watch). Read HANDOFF.md
 first — live state, open items, and the traps list.
 
-Everything is on main (80395f6) and deployed; dev trails by one commit and
-fast-forwards. Deploys come from GitHub — pushing to main redeploys both
-Railway services. `railway up` is a local-source escape hatch, not the path.
+Everything is on main and deployed; dev trails and fast-forwards. Deploys
+come from GitHub — pushing to main redeploys both Railway services.
+`railway up` is a local-source escape hatch, not the path.
 
 Before you change anything, re-run the gates yourself with --force
-(build/typecheck/test/lint) and `git status` — the last thing this repo saw
-was a multi-agent wave, so confirm the tree is clean rather than taking a
-previous session's word for it. The forced numbers to beat: build 8/8,
-typecheck 14/14, test 157 files / 2004 passed / 18 skipped, lint 9/9.
+(build/typecheck/test/lint) and `git status` — confirm the tree is clean
+rather than taking a previous session's word for it. The forced numbers to
+beat: build 8/8, typecheck 14/14, test 158 files / 2020 passed / 18 skipped,
+lint 9/9.
 
 Pick up in this order:
 1. If the TURN keys and/or the $5 Cast registration landed since last
@@ -466,33 +540,35 @@ Pick up in this order:
    the api service and a redeploy to heal voice dropouts; Cast unlocks slice
    1 of docs/CAST_RELAY.md (the hardware spike that go/no-goes the Chromecast
    TV-participant feature; slices 2+ follow).
-2. Relayed-share bitrate cap (open item 3): pick a number and pass
-   capRelayedVideoKbps from the web and extension mesh constructors. The
-   classification and the cap logic already exist in packages/p2p; nothing
-   sets the option, so a TURN-relayed share bills us at full rate.
-3. The extension's revived-session queue hole (open item 7): ask for a
-   snapshot on revive, the way the web asks with wantSnapshot. Small, and it
-   closes a silent auto-advance gap.
-4. AirPlay guidance copy (open item 11): docs/CAST_RELAY.md §2 specifies the
-   two platform-keyed rows; PlayerControls.tsx has neither. This is copy in
-   an existing popover, not a feature.
-5. Web-slimming steps 4–5 (delete web player adapters + web
+2. Dynamic bitrate adaptation (open item 3, partly landed): the static
+   relayed ceiling is now wired (both share producers pass
+   `capRelayedVideoKbps: 400`). What remains is the governor itself — wire
+   the already-built `BitrateGovernor` + `LinkAdaptor` into the share sender
+   per link, in the build order in `docs/FEATURE_PLAN.md` §8 (stats extractor
+   → per-link lifecycle → cadence → cap arbitration → uplink budget
+   allocator). The static cap becomes a ceiling on top of the governor for
+   relayed links only.
+3. Web-slimming steps 4–5 (delete web player adapters + web
    getDisplayMedia): STILL GATED on verifying the extension drives a real
    room correctly end-to-end. Do that verification first — a real room, a
    real site, the installed extension — then the deletions per
    docs/WEB_SLIMMING.md. Note the blast radius recorded there: the adapters
    are not leaf files.
-6. Mobile RN type defects (open item 10): hero 34→28px regression and
-   unbundled JetBrains Mono (add expo-font, or stop naming the face).
+4. Content-matching ladder (open item 16): external-ID enrichment →
+   availability probe → readiness handshake. This is the primary path for
+   cross-region access; it gates any future relay/VPN discussion.
 
-Backlog after those: the mobile WebView postMessage bridge (open item 6 — a
-mobile-only room on an embed cannot report its own endings), duration
-resolution on queue insert so the advance guard verifies instead of prices
-(open item 4), voice in the extension overlay (offscreen getUserMedia,
-reuses the screen-share plumbing), account linking + playlist import,
-media-anchored chat's server half (mediaPositionMs on messages), the ≤3-step
-flow audit, and the Mode A/Mode B → synced-source/screen-share rename in the
-remaining prose and comments (internal vocabulary only; users never see it).
+Backlog after those: user-relations layer (open item 13), theater mode
+(open item 14), admin console (open item 15), the mobile WebView postMessage
+bridge (open item 6 — a mobile-only room on an embed cannot report its own
+endings), duration resolution on queue insert so the advance guard verifies
+instead of prices (open item 4), a password field in the EXTENSION popup's
+join flow (the popup copy already says to use the web app), voice in the
+extension overlay (offscreen getUserMedia, reuses the screen-share plumbing),
+account linking + playlist import, media-anchored chat's server half
+(mediaPositionMs on messages), the ≤3-step flow audit, and the Mode A/Mode B
+→ synced-source/screen-share rename in the remaining prose and comments
+(internal vocabulary only; users never see it).
 
 There is ONE tier: no billing, no plans, no entitlements. Any doc, brief or
 comment that tells you to add one is stale — fix the doc, do not build it.

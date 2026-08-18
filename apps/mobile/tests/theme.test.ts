@@ -162,8 +162,12 @@ describe('scale invariants', () => {
   // that is asserted above: `expect(radii).toBe(rnThemes.dark.radii)`.
 
   it('type scale descends from hero to caption', () => {
-    expect(typeScale.display.fontSize).toBeGreaterThan(typeScale.hero.fontSize);
-    expect(typeScale.hero.fontSize).toBeGreaterThan(typeScale.title.fontSize);
+    // On RN the hero is 34 (rnFontSize — the old displayL), ABOVE display 32:
+    // the web ordering (display 32 > hero floor 28) is the fluid-step artifact,
+    // not the designed mobile relationship. The descent that matters starts
+    // at hero.
+    expect(typeScale.hero.fontSize).toBeGreaterThan(typeScale.display.fontSize);
+    expect(typeScale.display.fontSize).toBeGreaterThan(typeScale.title.fontSize);
     expect(typeScale.title.fontSize).toBeGreaterThan(typeScale.body.fontSize);
     expect(typeScale.body.fontSize).toBeGreaterThan(typeScale.label.fontSize);
     expect(typeScale.label.fontSize).toBeGreaterThan(typeScale.caption.fontSize);
@@ -180,7 +184,11 @@ describe('scale invariants', () => {
     expect(typeScale.bodyStrong.lineHeight).toBe(typeScale.body.lineHeight);
     expect(typeScale.bodyStrong.fontWeight).toBe('600');
     expect(typeScale.mono.fontSize).toBe(typeScale.body.fontSize);
-    expect(typeScale.mono.fontFamily).toBe('JetBrains Mono');
+    // No face named until expo-font actually bundles one: the old
+    // 'JetBrains Mono' string resolved to NOTHING on device and numeric
+    // readouts jittered on the fallback. Pin the absence so an unbundled
+    // face name cannot come back.
+    expect(typeScale.mono).not.toHaveProperty('fontFamily');
   });
 
   it('hit targets are ≥44px (§9)', () => {

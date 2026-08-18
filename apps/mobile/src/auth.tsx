@@ -23,7 +23,7 @@ export interface AuthContextValue {
   /** Complete sign-in from a raw token OR a full magic link URL. */
   verifyToken: (tokenOrLink: string) => Promise<void>;
   /** Guest join via invite code; resolves with the room id to enter. */
-  guestJoin: (inviteCode: string, displayName: string) => Promise<{ roomId: string }>;
+  guestJoin: (inviteCode: string, displayName: string, password?: string) => Promise<{ roomId: string }>;
   /**
    * Local sign-out (secure store wiped). NOTE: the api exposes
    * POST /auth/logout but @gather/api-client@0.1.0 does not surface it —
@@ -102,15 +102,20 @@ export function AuthProvider(props: { children: ReactNode }) {
     setStatus('authed');
   }, []);
 
-  const guestJoin = useCallback(async (inviteCode: string, displayName: string) => {
-    const res = await api.auth.guestJoin({
-      inviteCode: inviteCode.trim() as InviteCode,
-      displayName: displayName.trim(),
-    });
-    setUser(res.user);
-    setStatus('authed');
-    return { roomId: res.room.id as string };
-  }, []);
+  const guestJoin = useCallback(
+    async (inviteCode: string, displayName: string, password?: string) => {
+      const res = await api.auth.guestJoin({
+        inviteCode: inviteCode.trim() as InviteCode,
+        displayName: displayName.trim(),
+        // exactOptionalPropertyTypes: never write an explicit undefined.
+        ...(password !== undefined && password.length > 0 ? { password } : {}),
+      });
+      setUser(res.user);
+      setStatus('authed');
+      return { roomId: res.room.id as string };
+    },
+    [],
+  );
 
   const value = useMemo<AuthContextValue>(
     () => ({ status, user, requestMagicLink, verifyToken, guestJoin, signOut }),

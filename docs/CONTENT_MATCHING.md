@@ -38,13 +38,24 @@ playable item for each member — plus a **readiness handshake**.
    session, or embed adapter) checks "can I play this ID here?". Music
    platforms have native relinking (e.g. Spotify `market=from_token` returns
    the playable equivalent for the member's market) — use it.
+   **If the answer is no, the path is Rungs 3 → 4 → 5 — never a VPN or proxy.**
+   VPN/geo-spoofing is explicitly out of scope: platforms detect and block
+   commercial VPNs, it violates every platform's ToS (account ban risk), and
+   it exposes Gather to the "specially tailored" liability framing (*Cox v.
+   Sony*).
 3. **Metadata fallback search.** ID unavailable → search the member's catalog
    by metadata (title+year+S/E, or ISRC). Guard with a **duration check**
    (±2s for music, ±90s for video): a large delta means a different cut —
    match rejected or flagged, because different cuts break time-based sync.
 4. **Cross-platform fallback.** Member has a *different* linked service that
-   carries the title (matched via external IDs) → offer it. Same clock, any
-   licensed source.
+   carries the title (matched via external IDs) → **offer it in the UI.**
+   Example: "Not available on Netflix in your region — **available on
+   Disney+**". The member clicks "Watch on Disney+ instead" → the matched title
+   is queued on their regional platform → sync starts from their local player.
+   Same clock, any licensed source. The host sees who has a fallback match
+   before pressing play (readiness handshake, below). This is the primary
+   answer to the region-gap problem and is why a VPN is unnecessary for the
+   majority of cases.
 5. **Graceful non-participation.** No playable equivalent → the member stays
    fully in the room (call, chat, reactions, queue) and sees the room
    backdrop with "Not available in your region on <platform>" — never a
@@ -70,7 +81,27 @@ local equivalent's timeline.
   or lets others continue and hard-reseeks the member after the break.
 - **What we will not build**: VPN/geo-spoofing, license proxying, stream
   ripping, capture of EME surfaces. Any of these would also poison the
-  legitimate 95% of the product.
+  legitimate 95% of the product. **VPN is not a fallback for Rung 2 "no" —
+  the designed fallback is Rungs 3→4→5.**
+
+## Custom platforms and the long tail
+
+The extension's generic driver (`findMainMedia`) already works on any HTTPS
+page with a `<video>` element via `{ kind: 'page', url }`. This means users
+can technically queue arbitrary sites — including unlicensed aggregators.
+
+**Gather's position:** do not block, do not endorse, do not optimize for.
+- **Do not block:** the generic driver is the long-tail fallback for legitimate
+  niche platforms and personal media servers.
+- **Do not endorse:** unlicensed aggregators (e.g. yuppow-style iframe players)
+  are unreliable, ad-heavy, frequently break the generic driver, and carry the
+  same liability as torrent facilitation if promoted.
+- **Do not optimize for:** no per-site adapters, no special-cased selectors, no
+  featured placement for unlicensed sources.
+
+The `{ kind: 'page', url }` path renders an honest stage panel telling the user
+what is needed (the extension) rather than a broken player. That is the extent
+of first-class support for the long tail.
 
 ## Status
 
@@ -94,10 +125,12 @@ falls back to `{ kind: 'page', url }`, which is a URL and nothing more.
   on.
 - **Rungs 2–4 (availability probe, metadata fallback search, cross-platform
   fallback)** — nothing. No client reports "can I play this here?", no search
-  runs, and the ±2 s / ±90 s duration check is not applied anywhere.
+  runs, the ±2 s / ±90 s duration check is not applied anywhere, and the
+  cross-platform suggestion UI ("Watch on Disney+ instead") does not exist.
 - **The readiness handshake** — nothing. No `canPlay | fallbackMatched |
   unavailable` report exists on the wire, so the host cannot see who would be
-  left out before pressing play.
+  left out before pressing play, and members cannot see cross-platform fallback
+  offers.
 - **Ad-break signalling** — nothing. No `adBreak` client event exists.
 - **Rung 5 (graceful non-participation)** — partly real. A member with no
   playable source sees an honest stage panel rather than a broken player, and

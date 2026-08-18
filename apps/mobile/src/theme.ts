@@ -22,7 +22,7 @@
  */
 
 import type { RnTypeStep } from '@gather/design';
-import { fontFamily, layout, motion, radii, rnThemes, spacing } from '@gather/design';
+import { layout, motion, radii, rnThemes, spacing } from '@gather/design';
 
 /**
  * WCAG maths used to live in this file. It now lives in @gather/design, where a
@@ -78,8 +78,13 @@ export const type = {
   caption: ramp.caption,
   /** Emphasis body. RN has no weight modifier — an emphasised body is a step. */
   bodyStrong: { ...ramp.body, fontWeight: '600' },
-  /** Codes, timecodes. Body metrics in the mono face. */
-  mono: { ...ramp.body, fontFamily: fontFamily.mono[0] },
+  /** Codes, timecodes. Body metrics, and DELIBERATELY no fontFamily: JetBrains
+   *  Mono is not bundled (no expo-font dependency), 'ui-monospace' is a CSS
+   *  generic RN does not know, and naming Menlo/monospace needs Platform,
+   *  which this module cannot import — it is loaded by the node-env tests.
+   *  An unnamed face falls back to the system font with no jitter lie; the
+   *  bundled mono face is the README font milestone. */
+  mono: { ...ramp.body },
 } as const satisfies Readonly<Record<string, MobileTypeStep>>;
 
 /** Aurora gradient stops for expo-linear-gradient (135° ≙ {0,0} → {1,1}). */
