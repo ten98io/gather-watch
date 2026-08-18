@@ -16,6 +16,28 @@ import type { BusHandler, BusPort } from './ports';
  */
 const PING_TIMEOUT_MS = 2_000;
 
+/**
+ * A PING reply, in both shapes Redis can send it.
+ *
+ * A connection in SUBSCRIBER mode does not answer `+PONG`. It answers a
+ * two-element array, `["pong", ""]` — so a probe that only accepts the string
+ * reports a perfectly healthy bus as dead the moment the first room subscribes
+ * a channel. That is exactly what happened in production: /readyz served 200
+ * at boot and 503 forty-five seconds later, when the first WebSocket arrived,
+ * and Railway gates deploys on that endpoint.
+ *
+ * The subscriber connection is ALWAYS in subscriber mode once a room exists,
+ * which is to say: always, in any room that is being used.
+ */
+function isPong(reply: unknown): boolean {
+  if (typeof reply === 'string') return reply.toUpperCase() === 'PONG';
+  if (Array.isArray(reply)) {
+    const [head] = reply;
+    return typeof head === 'string' && head.toUpperCase() === 'PONG';
+  }
+  return false;
+}
+
 export class RedisBus implements BusPort {
   readonly mode = 'redis' as const;
 
@@ -121,7 +143,7 @@ export class RedisBus implements BusPort {
    */
   async ping(): Promise<boolean> {
     const probe = Promise.all([this.publisher.ping(), this.subscriber.ping()])
-      .then((replies) => replies.every((reply) => reply === 'PONG'))
+      .then((replies) => replies.every(isPong))
       .catch(() => false);
     const expiry = new Promise<false>((resolve) => {
       const timer = setTimeout(() => resolve(false), PING_TIMEOUT_MS);
