@@ -1,15 +1,32 @@
-> **HISTORICAL (moved 2026-08-18 from `services/api/src/modules/rooms/`).**
-> This is the worker brief the rooms module's realtime half was built from. It
-> is a record of *why* that code looks the way it does — presence TTL living in
-> the module because the frozen `BusPort` has no TTL primitive, the mirror/ctl
-> design with origin-id loopback skipping, and the compare-and-set master
-> arbitration where the SERVER increments the epoch — and nothing more. **Do
-> not build from it.** It is written in the imperative ("You are adding", "FILE
-> SPECS") because it was an agent prompt; sitting in a live module directory it
-> read as standing orders, which is why it moved.
+> **HISTORICAL (moved 2026-08-18 from `services/api/src/modules/rooms/`;
+> re-annotated the same day when the master seat was deleted).** This is the
+> worker brief the rooms module's realtime half was built from. It is a record
+> of *why* that code looks the way it does — presence TTL living in the module
+> because the frozen `BusPort` has no TTL primitive, and the mirror/ctl design
+> with origin-id loopback skipping — and nothing more. **Do not build from it.**
+> It is written in the imperative ("You are adding", "FILE SPECS") because it
+> was an agent prompt; sitting in a live module directory it read as standing
+> orders, which is why it moved.
 >
-> Three things in it are dead, and one of them would reintroduce a bug:
+> Four things in it are dead, and two of them would reintroduce a bug:
 >
+> - **THE WHOLE MASTER SEAT — its title, §master.ts, `RoomDoc.master`,
+>   `sync.claimMaster`, `sync.masterChanged`, the epoch CAS, the deterministic
+>   re-election, and every mention of a "master" anywhere in this file.** It is
+>   deleted from the product. `sync.claimMaster` ended up with zero producers
+>   once auto-advance became `sync.advance`, and what it left behind was a live,
+>   persisted, room-wide write any member could perform whose entire
+>   authorization story existed only to stop it being a control bypass. Gone:
+>   the ws seat, `SyncService.claimMaster`, `RoomDoc.master`, the
+>   `masterChanged` snapshot reply, `rooms/master.ts` and p2p's
+>   `MasterElection`. Pinned absent by
+>   `services/api/test/master-seat-removed.test.ts` and
+>   `packages/contracts/test/master-seat-removed.test.ts`. What moves the queue
+>   on now is an **ungated compare-and-set intent**: any client sends
+>   `sync.advance { endedItemId }`, and the server moves the room only while it
+>   is still on that exact item
+>   (`services/api/src/modules/sync/service.ts`). The CAS *technique* this brief
+>   describes survives in that shape; the seat it arbitrated does not.
 > - **§ws.ts `defaultState = room.kind === 'watch' ? 'watching' : 'listening'`**
 >   — rooms are adaptive now: composition follows the playing item, not a kind
 >   chosen at creation. `ws.ts` uses a flat `const defaultState = 'watching'`,
@@ -18,14 +35,13 @@
 >   disagree about the same idle member.
 > - **§HARD RULES "Create ONLY `presence.ts`, `master.ts`, `runtime.ts`,
 >   `ws.ts`" / "NEVER touch any other file anywhere."** That was this wave's
->   scope, not a property of the module. `history.ts` (in-room playback history)
->   was added later and belongs there.
+>   scope, not a property of the module, and `master.ts` no longer exists.
+>   `history.ts` (in-room playback history) was added later and belongs there.
 > - **The `/Users/mg/Desktop/playin/...` absolute paths** in §READ FIRST are one
 >   machine's checkout. They resolve today only by coincidence.
 >
-> Everything else still describes live behaviour, including the CAS key-order
-> constraint (`{ userId, epoch }`) that keeps the Mongo embedded-document match
-> exact. Current docs: `README.md`, `HANDOFF.md`, `DESIGN.md`.
+> The presence half still describes live behaviour. Current docs: `README.md`,
+> `HANDOFF.md`, `DESIGN.md`.
 
 # K3 Brief — Gather API "rooms" module, part B (realtime: presence + master election)
 

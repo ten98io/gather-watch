@@ -76,6 +76,24 @@ the relay rate *p*, which is a property of participants' networks (CGNAT,
 VPNs, UDP-blocking firewalls), clusters per person, and is offset by IPv6.
 That is the real trade the SFU buys: not a cheaper hour, a *knowable* one.
 
+### Why not a managed SDK: the billing shape, not the price
+
+RealtimeKit was evaluated as the capacity fallback and **rejected**, on two
+counts. The technical one is disqualifying on its own: it cannot publish mic +
+share-video + share-audio from tracks we have already captured, and every one of
+those three is a track this product has to carry (`TrackRole` in
+`packages/p2p/src/types.ts`).
+
+The commercial one is the reason not to look for a similar SDK either. Managed
+SDKs price **per participant-minute** — a per-head meter — and Gather has one
+free tier, so revenue per participant is exactly zero and the cost of a room
+grows with the thing the product wants more of. Cloudflare Realtime's
+egress-per-GB shape is the opposite: it is metered against bytes we choose to
+send, which is a lever we hold (the relayed-share cap, forwarding only the top
+speakers), and it starts inside a 1,000 GB/mo pool. A per-head meter has no such
+lever. That is a structural mismatch, not a rate comparison, and it would not be
+fixed by a cheaper per-minute price.
+
 ## Top risks, in order
 
 1. **A mesh screen share falling back to TURN** — 5 relayed share streams cost

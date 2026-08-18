@@ -74,6 +74,26 @@ absorbs the difference and no correction is attempted at all.
 Host **intent** events (play, pause, seek, track change) are never subject to
 the comfort band — they apply immediately. The band governs *drift only*.
 
+### Where the controller runs: all three clients, not just the extension
+
+`DriftController`, the presets and `voiceActiveFrom` live in
+`packages/sync-core` and are isomorphic on purpose. All three clients build the
+same controller from the same presets:
+
+| Client | Where |
+|---|---|
+| Web | `apps/web/lib/player/useSyncEngine.ts` — `profile === 'listen' ? LISTEN_ELASTIC : WATCH_ELASTIC`, `setVoiceActive` fed from `voiceActiveFrom(presence)` in `components/call/CallSurface.tsx` |
+| Mobile | `apps/mobile/src/sync/useSyncEngine.ts` — the same two presets; `src/sync/voice.ts` wraps `voiceActiveFrom` |
+| Extension | `apps/extension/src/driver.ts` — imports `DriftController` and all three presets from `@gather/sync-core`, wraps them in its own `ElasticDriver`, and keeps a local `voiceActiveFrom` because its presence rows are leaner than contracts' |
+
+Only the *presence shape* is hand-copied; the *maths* is never duplicated. So
+the elastic band and its voice tightening are a property of the room, not of the
+extension — a web-only room and a mobile-only room get the same behaviour.
+
+(`STRICT_SYNC` is exported and appears in the extension's `SYNC_PRESETS` map,
+but nothing selects the `'strict'` profile: `profileForContent` returns only
+`'watch'` or `'listen'`. It remains available, unused.)
+
 ### Consequence A: chat must be anchored to media time — **NOT BUILT**
 
 Decision taken: messages and reactions carry the sender's playback position,
@@ -181,6 +201,32 @@ happened. The three implementations:
 Then "which surface drives playback" is a runtime decision per item, not an
 architectural fork. Web-minimal becomes a *default*, not a rewrite, and the
 first-run funnel survives.
+
+### Moving to the next item is a claim, not a seat
+
+Once several surfaces can drive, "who advances the queue when an item ends?"
+looks like it wants an elected device. It does not, and the election that was
+built for it has been deleted.
+
+Any client that *sees* an item end sends `sync.advance { endedItemId }` — a
+statement of fact about its own playback, not a destination. It is **ungated**:
+no role check, no seat. The server compare-and-sets it
+(`services/api/src/modules/sync/service.ts`): it moves the room only while the
+room is still on that exact item, and only to that item's successor as the
+*server* sees the queue, so a remove or a reorder cannot be raced into a skip. A
+room with a laptop and a phone in it produces two reports and one move. Each
+client resolves the id the same way — `apps/web/lib/player/advance.ts`,
+`apps/mobile/src/sync/advance.ts`, `apps/extension/src/advance.ts`, three
+hand-mirrored copies of the same rule — and returns null rather than guessing
+when it cannot name the item honestly.
+
+The guard against abuse is plausibility, not authorization, and it is only as
+strong as the item's metadata: with a known `durationMs` the room's own media
+clock must have reached the end (a real verification, priced at the item's
+remaining runtime), and with `durationMs === null` — the common case for
+YouTube rows — it degrades to a 20 s floor, which prices a skip rather than
+refusing it. Fail-open is deliberate: a false refuse strands the whole room on a
+finished item, silently. See HANDOFF open item 4.
 
 ### Extension gaps (historical — RESOLVED except the last)
 

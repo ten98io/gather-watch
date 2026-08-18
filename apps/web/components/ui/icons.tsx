@@ -223,60 +223,6 @@ export function HistoryIcon(props: IconProps) {
   );
 }
 
-export function Link2Icon(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="M9 17H7A5 5 0 0 1 7 7h2" />
-      <path d="M15 7h2a5 5 0 1 1 0 10h-2" />
-      <line x1="8" x2="16" y1="12" y2="12" />
-    </svg>
-  );
-}
-
-export function CheckIcon(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
-  );
-}
-
-export function ChevronUpIcon(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="m18 15-6-6-6 6" />
-    </svg>
-  );
-}
-
-export function ChevronDownIcon(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  );
-}
-
-export function ListMusicIcon(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="M21 15V6" />
-      <path d="M18.5 18a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" />
-      <path d="M12 12H3" />
-      <path d="M16 6H3" />
-      <path d="M12 18H3" />
-    </svg>
-  );
-}
-
-export function HeartIcon(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
-    </svg>
-  );
-}
-
 export function ExternalLinkIcon(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -423,7 +369,7 @@ export function PinIcon(props: IconProps) {
   );
 }
 
-/** The collapsed twin of ChevronDownIcon — ChatPane's `▸` disclosure. */
+/** ChatPane's `▸` disclosure — the collapsed state of a section header. */
 export function ChevronRightIcon(props: IconProps) {
   return (
     <svg {...base(props)}>

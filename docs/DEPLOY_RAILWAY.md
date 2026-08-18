@@ -1,16 +1,38 @@
 # Deploying Gather on Railway — runbook
 
-Project: **Gather** (linked via `railway link` — note: linking writes to the
-home-directory config, not the repo; verify what's linked before `railway up`).
-Data plane: **MongoDB Atlas** (external) + **Railway Redis**. **Do not add
-Railway's Mongo template** — Mongo lives in Atlas.
+Project: **Gather**. Data plane: **MongoDB Atlas** (external) + **Railway
+Redis**. **Do not add Railway's Mongo template** — Mongo lives in Atlas.
+
+## The deploy path is GitHub, not the CLI
+
+Both services are repo-connected to `mustafagandhi/gather-watch` on branch
+`main`, with config-as-code. **Pushing to `main` is the deploy**; Railway builds
+and rolls both services with no CLI step. Everything in this runbook that says
+"deploy the service" means "push, or click Deploy in the dashboard".
+
+`railway up` still works and is a **local-source override**, not the path: it
+uploads your working directory instead of the commit, so what it ships is
+whatever is on your disk, tracked or not. Two traps come with the CLI and both
+have cost time here:
+
+- **`railway link` writes to `~`.** Linking is stored in the home-directory
+  config, not the repo, so a shell in this checkout may be pointed at another
+  project entirely. Re-check what is linked before any `up`.
+- **`railway run` executes LOCALLY with Railway's env.** That is exactly right
+  for admin scripts (see "Destructive tooling" below) — the connection string
+  never reaches a shell history. It is exactly wrong as a connectivity test: the
+  process dials from the operator's IP, not Railway's, so an Atlas allowlist
+  gap, an egress-IP mismatch or a private-networking problem looks *fine* under
+  `railway run` and still fails in the deployed container. Only `/readyz` on the
+  deployed api answers that question.
 
 ## Current state (as of 2026-08-18): DEPLOYED and serving at gather.watch
 
 | Resource | State |
 |---|---|
 | `api` + `web` services | **deployed**, zero-downtime deploys, config-as-code (`services/api/railway.json` → healthcheck `/readyz`; `apps/web/railway.json` → healthcheck `/`) |
-| Redis | online, wired into `api` by reference variable |
+| Redis | online, wired into `api` by reference variable — `/readyz` reports `"busMode":"redis"` |
+| Mongo Atlas cluster | **new cluster** (the previous one was deleted). The database is fresh, and its indexes were built by the current code, so it has the partial-unique indexes rather than the old sparse ones |
 | `attachments` Railway Bucket (`ams`) | **live** — chat attachments; wired into `api` by reference variables |
 | `media` service | **DELETED** — users never upload streams, nothing transcodes, and `services/media` is gone from the repo too |
 | Email | Cloudflare Email Service, sender domain `email.gather.watch` |
@@ -89,10 +111,10 @@ For **each** of the two services (`web`, `api`):
    - `web`: `apps/web/**`, `packages/**`
    - `api`: `services/api/**`, `packages/**`
 
-CLI alternative (no GitHub): from the repo root,
-`railway up --service api` builds from your local directory. The repo's
-`.dockerignore` now excludes `atlas-credentials.env` so local builds cannot
-bake credentials into image layers — still, prefer repo-connected deploys.
+CLI override (see the top of this file): `railway up --service api` from the
+repo root builds from your local directory rather than the commit. The repo's
+`.dockerignore` excludes `atlas-credentials.env` so local builds cannot bake
+credentials into image layers — still, this is the escape hatch, not the path.
 
 ---
 
@@ -167,7 +189,12 @@ URL). Fine for first-boot testing, not for real users.
 curl https://<api-domain>/healthz && curl https://<api-domain>/readyz
 ```
 
-Both should return `{"ok":true}`.
+`/healthz` returns `{"ok":true}` — it is liveness only and never touches a
+backend. `/readyz` returns `{"ok":true,"store":true,"bus":true,"busMode":"redis"}`
+and is the one that matters: it pings Mongo *and* Redis, and it 503s with a
+`reason` if either is silent **or** if the bus is in-memory in production (that
+instance would be isolated from every other replica). A live api answering
+`"busMode":"memory"` means `REDIS_URL` did not arrive.
 
 ### 1.3 Configure `web`
 
@@ -274,14 +301,57 @@ configured. Egress is billed. Rates and the cost model: `docs/COST_MODEL.md`.
 ## Browser extension (ships outside Railway)
 
 The extension talks to the API directly, and MV3 bundles can't read env at
-runtime — the origin is inlined at build time:
+runtime — the origin is inlined at build time. **Use `build:prod`, not `build`:**
 
 ```bash
-GATHER_API_URL=https://<api-domain> pnpm --filter ./apps/extension build
+GATHER_API_URL=https://<api-domain> \
+  GATHER_WEB_ORIGINS=https://gather.watch,https://www.gather.watch \
+  pnpm --filter ./apps/extension build:prod
 ```
 
+`build:prod` refuses to emit without an https, non-loopback origin, and refuses
+a web origin the manifest's `externally_connectable.matches` does not admit.
+Plain `build` is the dev script: it has no such checks, defaults to
+`http://localhost:4000`, and — even when handed a real origin — labels the
+result **UNVERIFIED** in its banner, in `dist/BUILD.txt` and in the extension's
+own name in `chrome://extensions`. An artifact pointing at localhost installs
+cleanly, is detected by the web app, and then fails every call; that has shipped
+once. See `apps/extension/README.md`.
+
 Load `apps/extension/dist` via chrome://extensions → Load unpacked (or zip it
-for the Web Store). Omitting `GATHER_API_URL` keeps the localhost dev default.
+for the Web Store).
+
+## Destructive tooling (dry-run by default)
+
+Two CLIs ship with the api. Both print a plan and change nothing without
+`--yes`, and both are meant to be run with the deployment's own credentials so
+no connection string is ever pasted anywhere:
+
+```bash
+railway run --service api pnpm --filter gather-api exec tsx src/cli/reset-db.ts
+railway run --service api pnpm --filter gather-api exec tsx src/cli/clear-bucket.ts
+```
+
+- `reset-db.ts` drops every collection — accounts, rooms, messages, events. It
+  resolves the database name the way the app does (`dbNameFromUrl`), so it
+  cannot target a different db than the one the api uses. **Restart the api
+  afterwards:** indexes are created by `store.init()` at boot and nothing
+  recreates them at runtime, so an api that booted against the old collections
+  serves a database with no indexes — including the partial unique indexes on
+  `users.email` and `pushSubs`, whose absence silently permits exactly the
+  duplicate rows they exist to prevent.
+- `clear-bucket.ts` deletes every attachment object. Run it **with** a database
+  reset, not instead of one: the only record that an object exists is its
+  `AssetDoc` in Mongo, so dropping the database alone orphans every object —
+  unreferenced, unreachable, still billed, and with no record left of what to
+  delete.
+
+A third CLI, `src/cli/takedown.ts`, works the `POST /report` mailbox:
+`takedown.ts list`, then `resolve <reportId>` (or `resolve <reportId>
+--dismiss`). It is also destructive and has **no dry-run flag** — resolving a
+report tombstones the message, or bans the user in every room and revokes their
+sessions, or deletes the room and its invites, depending on the target kind.
+`--dismiss` is the only way to close a report without touching the target.
 
 ## Custom domains (DONE — `gather.watch` is live)
 

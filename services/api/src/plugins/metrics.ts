@@ -65,12 +65,6 @@ export function snapshotMetrics(): MetricsSnapshot {
   };
 }
 
-/** Test hook: zero the registry (fresh interval per test). */
-export function resetMetrics(): void {
-  counters.clear();
-  wsEventCounts.clear();
-}
-
 /** Register the global onResponse counter hook. Call ONCE at the app root. */
 export function registerMetrics(app: FastifyInstance): void {
   app.addHook('onResponse', async (request: FastifyRequest, reply) => {

@@ -33,7 +33,7 @@ assumption to a rate, or an absence to a seconds figure.
 | Path | Verdict | One line |
 |---|---|---|
 | Chromecast: receiver page joins the room as a WebRTC viewer | **Build** (primary) | No server in the media path; the TV is one more peer |
-| AirPlay: per-platform mirroring hint | **Build** (it is copy) | Mirroring is OS-owned with no API for anyone; guidance is the entire client-side surface |
+| AirPlay: per-platform mirroring hint | **Build** (it is copy) — **not written yet** | Mirroring is OS-owned with no API for anyone; guidance is the entire client-side surface |
 | AirPlay: server-minted HLS via Cloudflare Stream Live | **Defer** | Requires an always-on transcoder for a multi-second experience mirroring already gives free |
 | Native iOS `AVRoutePickerView` | Roadmap | The durable AirPlay fix lives there, not in the web ceiling |
 
@@ -146,10 +146,14 @@ Apple user already has is OS mirroring, which shows the share, the room,
 everything, at roughly real time, for free.
 
 So the product ships one line of copy at the right moment, and that is the
-entire client-side AirPlay feature:
+entire client-side AirPlay feature. **Designed, not built** — re-verified
+2026-08-18: `apps/web/components/stage/PlayerControls.tsx` carries the
+always-visible cast control with its honest states (that part did ship
+2026-08-17, and `apps/web/test/cast-affordance.test.ts` pins it), but neither
+string below exists anywhere in the tree. Grep "Screen Mirroring" — nothing. It
+lands with slice 5 (§6).
 
-- **Where it lives:** rows inside the always-visible cast control popover
-  (shipped 2026-08-17 in `apps/web/components/stage/PlayerControls.tsx`),
+- **Where it goes:** rows inside the always-visible cast control popover,
   shown only while a screen share is on stage, keyed by platform.
 - **macOS copy:** *"To put this on your TV: menu bar → Control Center →
   Screen Mirroring."*

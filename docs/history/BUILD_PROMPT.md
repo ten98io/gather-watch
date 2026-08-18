@@ -25,6 +25,18 @@
 >   room and dies with it.
 > - **The watch/listen room split.** Rooms are adaptive: `mediaKindFor(ref)`
 >   composes the stage per playing item. `room.kind` is vestigial ballast.
+> - **The master clock and its election** (§Sync "master/follower over
+>   DataChannels", the join-order re-election on beacon silence, the epoch, and
+>   the p2p `MasterElection` in the package list). Deleted 2026-08-18 with
+>   `sync.claimMaster`, `RoomDoc.master` and `rooms/master.ts`. Playback state is
+>   server-authoritative and each client corrects itself against it
+>   (`packages/sync-core/src/drift.ts`); the queue moves on by an **ungated
+>   compare-and-set intent**, `sync.advance { endedItemId }`, which the server
+>   accepts only while the room is still on that item. `BeaconSender` /
+>   `BeaconFollower` still exist in `packages/p2p/src/beacon.ts`, but nothing
+>   outside that package constructs either one — the file says so itself, and
+>   `apps/mobile/src/sync/useSyncEngine.ts` calls it a documented seam. Beacons
+>   are an unwired capability today, not a live path.
 > - **The 4-hour room TTL.** Rooms are created `expiresAt: null` and never
 >   expire; only empty rooms quiet for 30 days are swept.
 > - **The `infra/` and Railway topologies** listed here (services `media`,

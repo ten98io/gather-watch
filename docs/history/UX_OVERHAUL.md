@@ -2,8 +2,14 @@
 > THIS FILE.** This overhaul is executed. Its surviving decisions — the
 > locked-decision table and the ≤3-step budget — now live in `DESIGN.md`
 > §11–12, which is the binding copy; the copy below is the superseded draft.
-> Three things in it are dead:
+> Four things in it are dead:
 >
+> - **`components/call/CallGrid.tsx` does not exist.** §0 and B1 name it as the
+>   component that was "built but not working"; the overhaul replaced it with
+>   `apps/web/components/call/CallSurface.tsx` (presence orbs, speaking rings
+>   measured from actual audio, tiles in the right rail per D1). Every file path
+>   in this document is pre-overhaul by construction — resolve names against the
+>   tree, not against this list.
 > - **D3 evolved.** The listen composition is driven per playing item
 >   (`mediaKindFor`), not by a room kind, which no longer exists as a user
 >   choice.

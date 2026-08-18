@@ -24,6 +24,18 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
   A pause you press on Netflix is read as room intent and published, rather
   than being fought by the next drive tick. The web app defers to the
   extension whenever it is present.
+- **It moves the queue on by itself.** When the driven item ends, the worker
+  sends `sync.advance { endedItemId }` on its own socket — it does not relay
+  through a Gather tab, because a user who joined from the **popup** has no
+  Gather tab and the room used to stall on the finished item. The intent names
+  an item, never a destination: the server compare-and-sets it against the room
+  and moves only to that item's successor as the server sees the queue.
+  `src/advance.ts` resolves the id by media identity, not by raw
+  `playback.queueIndex` (a remove or a reorder leaves that index naming a
+  different row), and returns null rather than guessing — a wrong id would not
+  merely fail, it would skip an item nobody skipped. It is a hand-kept mirror
+  of `apps/web/lib/player/advance.ts` and `apps/mobile/src/sync/advance.ts`;
+  keep the three in step.
 - **In-page overlay** (`src/overlay/`): the room's chat and people list
   injected into the content site's page, in a shadow root with the design
   tokens emitted from `@gather/design`. This is the "Model C" of
@@ -144,8 +156,16 @@ extension never reads one.
 - MV3 kills the service worker when idle. The room lives in
   `chrome.storage.session` (TRUSTED_CONTEXTS-only, so no content script can
   read the token) and is restored on wake, and a 30 s `chrome.alarms` keepalive
-  revives the worker if nothing else does — so the worst case is a stale
-  position for a few seconds, not a dead room.
+  (`periodInMinutes: 0.5`) revives the worker if nothing else does — so the
+  worst case is a stale position for a few seconds, not a dead room.
+- **A revived session has an unknown queue until the next mutation.** The
+  room's queue arrives with the join snapshot, and the server answers a *first*
+  heartbeat with one — but a revived worker beats into a presence entry that is
+  still alive, so no snapshot comes back. `sync.advance` names the item that
+  ended, so with an unknown queue the worker returns null rather than guessing,
+  and an item that finishes in that window is silently not reported. The same
+  recycle leaves `playback` null and stops the worker driving at all, so it is
+  not a new blind spot — but it is a real one, and it is tracked in HANDOFF.
 - Frames in **closed** shadow roots are unreachable by design (no extension
   can pierce them), and a site that renders its player into a cross-origin
   frame we are not allowed to script stays undrivable.

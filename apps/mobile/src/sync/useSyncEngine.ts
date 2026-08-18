@@ -5,13 +5,16 @@
  * only bridges it to the player's imperative API.
  *
  * Transport: sync beacons/state ride the room WS today (server-authoritative
- * sync.state + clock.ping/pong). The v3.1 P2P path (master broadcasts beacons
+ * sync.state + clock.ping/pong). The P2P path (one sender broadcasts beacons
  * over DataChannels; followers run the same estimator against beacon
- * timestamps) is a DOCUMENTED SEAM, not wired: @gather/p2p's
- * BeaconFollower/MasterElection require an injected RTCPeerConnection
- * (react-native-webrtc), which is a native-milestone install. Only p2p TYPES
- * are referenced below so the seam stays type-checked; no p2p runtime code
- * is loaded by the app.
+ * timestamps) is a DOCUMENTED SEAM, not wired: @gather/p2p's BeaconFollower
+ * requires an injected RTCPeerConnection (react-native-webrtc), which is a
+ * native-milestone install. Only p2p TYPES are referenced below so the seam
+ * stays type-checked; no p2p runtime code is loaded by the app.
+ *
+ * There is no election behind that seam any more. The master seat (and
+ * @gather/p2p's MasterElection with it) was deleted; whatever eventually
+ * drives BeaconSender has to be chosen some other way.
  */
 import { useEffect, useRef } from 'react';
 import {

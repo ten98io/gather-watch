@@ -6,7 +6,7 @@
 > named in the prompt that invoked you") because it was an agent prompt; sitting
 > in a live module directory it read as standing orders, which is why it moved.
 >
-> Three things in it are dead, and one of them would do real damage if followed:
+> Four things in it are dead, and one of them would do real damage if followed:
 >
 > - **§Store port `SubscriptionDoc { plan:'free'|'premium' }`** — there is no
 >   `subscriptions` collection. Billing was deleted; see `services/api/test/no-billing.test.ts`.
@@ -16,9 +16,24 @@
 >   for everyone, with no per-user lookup at all.
 > - **§Contracts "`Entitlements` … billing module isn't built yet"** — it is not
 >   going to be built. Gather is one tier.
+> - **The `master` field in `RoomDoc = Room & { playback; queue; restream;
+>   master }`** — the master seat was deleted 2026-08-18 along with
+>   `sync.claimMaster` and `rooms/master.ts`, and a room must never grow that
+>   field again (`packages/contracts/test/master-seat-removed.test.ts` asserts
+>   the absence). Nothing in the chat module ever read it; it is listed here only
+>   because this brief quotes the shared doc shape.
 >
-> Everything else still describes live behaviour. Current docs: `README.md`,
-> `HANDOFF.md`, `docs/EXTENSION_FIRST.md`.
+> One more thing to know before you go looking: **§PHASE 2 and §PHASE 3
+> prescribe a `test/chat/` directory that was never populated.** None of
+> `chat-helpers.ts`, `lifecycle`, `permissions`, `cursors`, `search`, `unfurl`,
+> `ratelimit`, `attachments` or `notify` exists at those paths —
+> `services/api/test/chat/` is an empty directory. The chat suite lives flat
+> instead: `services/api/test/{chat-wiring,chat-attachment-validation,
+> attachments}.test.ts` plus `src/modules/chat/unfurl.test.ts`. The *behaviours*
+> those phases describe are largely covered; the layout is not the layout.
+>
+> The module's own behaviour is otherwise still described accurately here.
+> Current docs: `README.md`, `HANDOFF.md`, `docs/EXTENSION_FIRST.md`.
 
 # K3 BRIEF — Gather API `chat` module (full chat surface)
 

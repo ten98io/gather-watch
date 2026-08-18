@@ -142,6 +142,19 @@ the same day):
 - ~~Docs describe a paid tier, a media service, LiveKit or a 4-hour room
   TTL~~ — swept 2026-08-18. One tier, no `services/media`, mesh + Cloudflare
   TURN, `expiresAt: null` forever.
+- ~~`README.md`, `HANDOFF.md` and `docs/DEPLOY_RAILWAY.md` give the production
+  extension build as `GATHER_API_URL=… pnpm --filter … build`~~ — that is the
+  **dev** script. `apps/extension/src/buildTarget.ts` labels the result
+  UNVERIFIED because the https / loopback / manifest-subset checks never ran.
+  All three now say `build:prod`, with `GATHER_WEB_ORIGINS`.
+- ~~`docs/CAST_RELAY.md` §2 says the AirPlay mirroring guidance "shipped
+  2026-08-17 in `PlayerControls.tsx`"~~ — the always-visible cast control
+  shipped; the two platform-keyed copy rows did not, and neither string is in
+  the tree. §2 now says designed-not-built and points at slice 5.
+- ~~`HANDOFF.md` open items claim the settings uploads panel 404s and that a
+  `page` item with no extension renders a blank stage~~ — both fixed in the
+  code since. `apps/web/test/no-library.test.ts` and `PageLinkStage` in
+  `StagePane.tsx` are the evidence.
 
 ## Inline documentation pass
 

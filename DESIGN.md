@@ -80,9 +80,24 @@ Black is the only ink that can win there (light `aurora-3` is amber: 7.69:1 with
 black, 2.73:1 with white), and black gets better as the fill gets lighter. So
 `aurora-1` went 0.55 → 0.59 (black: 3.96 → 4.72:1) and `aurora-2` 0.58 → 0.60
 (4.33 → 4.74:1), each dropping one notch of chroma so the hue does not go neon.
-The stated cost: `--accent` aliases `aurora-1`, and as a standalone UI colour its
-worst light rung fell 4.17 → 3.49:1 on `--surface-3` — still clear of the 3:1
-non-text bar.
+
+**The stated cost, and it is a rule now:** `--accent` aliases `aurora-1`, and as
+a standalone light colour its worst rung fell 4.17 → 3.49:1 on `--surface-3`.
+That still clears the 3:1 **non-text** bar and no longer clears the 4.5:1 text
+bar — so on light, `--accent` is a fill, a border, a focus ring, a progress bar
+or an active edge, and **never a text colour**. Accented text takes `--text-hi`
+with the accent carried by an adjacent fill or edge instead. (Dark `--accent` is
+unaffected; the rule is written theme-blind so one class cannot be safe in one
+theme and failing in the other.) Light `--ink-on-accent` also flipped white →
+black, 5.31 → 4.72:1, which is why ink is chosen per fill and never per theme
+(§2.1).
+
+Three call sites do not follow this yet — known debt, not counterexamples:
+`hover:text-accent` on the glass text buttons in `components/stage/StagePane.tsx`
+and `components/stage/ListenStage.tsx`, and one surviving `text-accent-ink` in
+`components/extension/ExtensionGate.tsx`. `packages/design/test/palette.test.ts`
+walks token *pairs*; it never reads a Tailwind class string, so neither shape is
+caught automatically.
 
 ### 2.1 Ink on a fill — never theme-relative
 
@@ -154,7 +169,7 @@ reads as cramped rather than tight.
 
 `hero` is the only genuinely fluid step. React Native has no viewport unit and takes
 the 28px floor, which is why mobile's hero is currently smaller than its
-pre-redesign 34px `displayL` (HANDOFF open item 7).
+pre-redesign 34px `displayL` (HANDOFF open item 10).
 
 Titles are `text-hi`; metadata is `text-low`, **never** `text-mid` — that two-tier
 contrast is what makes lists scan. Numeric readouts use `tabular-nums`.
@@ -357,7 +372,8 @@ glow on anything that isn't a signature moment (§5); borders where a background
 would do; blank grey artwork boxes; `text-mid` for list metadata; two primary
 (aurora) actions in one screen region; hover-only controls that vanish on touch;
 a hard-coded colour, radius, duration or type size anywhere outside
-`packages/design`; `--accent-ink` in new code.
+`packages/design`; `--accent-ink` in new code; `--accent` as a **text** colour
+(it is a 3:1 non-text colour on light — §2).
 
 ## 11. Locked decisions (owner, 2026-08-16 — do not relitigate)
 

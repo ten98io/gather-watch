@@ -48,6 +48,14 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 - **YouTube playback**: renders via `react-native-webview` embed; NOT
   drift-corrected (no position sampling without a postMessage bridge). The UI
   says so. Direct/HLS sources are drift-corrected via sync-core.
+- **Auto-advance off an embed**: same missing bridge, second consequence. The
+  queue moves on because a device that watched an item end says so —
+  `sync.advance { endedItemId }`, sent unconditionally, compare-and-set by the
+  server. `Stage.tsx` sends it from the **native** player's end signal, so an
+  embed in a WebView has no end signal to send. A room with any web or desktop
+  viewer is unaffected (they report it); a **mobile-only** room sitting on an
+  embed stalls on the finished item. Tracked in HANDOFF. The fix is the
+  postMessage bridge, not another producer on the native path.
 - **`{ kind: 'page' }` items**: a page is a LINK, and only the browser
   extension can play one. There is no extension on mobile, so `PageStage`
   shows the item and where the link goes, and says plainly that it will not
@@ -117,6 +125,10 @@ plugins, reanimated, gesture-handler, expo-notifications, expo-font.
 `pnpm --filter @gather/mobile test` (vitest, node env):
 `tests/room-connection.test.ts` (gap recovery / dedupe / reducers / gap-loss
 fallback), `tests/theme.test.ts` (WCAG + scale invariants),
-`tests/voice-band.test.ts`. **No RN rendering tests** — that policy came from
-the original worker brief (`docs/history/MOBILE_K3_BRIEF.md`) and is why mobile
-components have no render coverage to this day.
+`tests/voice-band.test.ts`, `tests/queue-advance.test.ts` (which queue item
+`sync.advance` names, by identity rather than by raw index). **No RN rendering
+tests** — that policy came from the original worker brief
+(`docs/history/MOBILE_K3_BRIEF.md`) and is why mobile components have no render
+coverage to this day. There is also no `build` script here: `apps/mobile` is the
+one workspace turbo's `build` task does not cover, which is why the repo's build
+gate is 8/8 and not 9/9.

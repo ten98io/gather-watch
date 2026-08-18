@@ -29,7 +29,7 @@ have no `dev` task. Per-workspace commands use the package name or the path:
 
 ```bash
 pnpm --filter @gather/web dev
-pnpm --filter @gather/extension build
+pnpm --filter @gather/extension build    # DEV artifact — see "Extension" below
 pnpm --filter @gather/mobile start
 pnpm --filter ./services/api... test     # the {dir}... syntax is load-bearing
 ```
@@ -52,34 +52,55 @@ re-run with `--force`.
 | 3000 | `apps/web` (Next.js) |
 | 4000 | `services/api` (Fastify REST + `/ws`) |
 
-`.env.example` is the annotated list; every key is parsed in
-`services/api/src/config.ts` and **an env var set to the empty string counts as
-absent**. The ones that matter first:
+`.env.example` is the annotated list of the api's own variables; every key in it
+is parsed in `services/api/src/config.ts`, and **an env var set to the empty
+string counts as absent**. `NEXT_PUBLIC_*` belongs to the web app instead — Next
+inlines it at build time, so it is set on the `web` service, not in this file.
+The ones that matter first:
 
 | Var | Why |
 |---|---|
 | `JWT_SECRET`, `JWT_REFRESH_SECRET` | required (≥32 chars) when `NODE_ENV=production`; the api refuses to boot otherwise |
 | `MONGO_URL`, `REDIS_URL` | empty ⇒ in-memory adapters. Fine in dev, silent data loss in prod |
 | `APP_URL` | the **only** allowed CORS origin, and the magic-link base |
-| `NEXT_PUBLIC_API_URL` | web → api; inlined by Next at **build** time |
+| `NEXT_PUBLIC_API_URL` | web → api; inlined by Next at **build** time (set on the web service) |
 | `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN` | Cloudflare TURN. Unset ⇒ STUN only, so peers behind symmetric NAT cannot connect |
 | `ADMIN_EMAILS` | comma-separated; who may open `/admin`. Empty ⇒ closed to everyone |
 
-Deploying: see [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.md).
-Self-hosting with docker compose: see [infra/README.md](infra/README.md).
+`CF_SFU_APP_ID` / `CF_SFU_API_TOKEN` parse into the config and are read by
+nothing else — the Realtime SFU client lane is not built, so setting them
+changes no behaviour. Same for `ENABLE_MEDIA_PIPELINE`: it survives as a flag
+the admin overview reports, and there is no pipeline left for it to enable.
+
+Deploying: see [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.md). Both Railway
+services are repo-connected to GitHub, so **pushing to `main` is the deploy** —
+there is no CLI step in the normal path. Self-hosting with docker compose: see
+[infra/README.md](infra/README.md).
 
 ## Extension (Chrome/Edge/Brave, MV3)
 
 MV3 bundles cannot read env at runtime, so the API origin is inlined at build
-time:
+time — and there are **two builds, only one of which works for anybody else**:
 
 ```bash
-GATHER_API_URL=https://<api-domain> pnpm --filter @gather/extension build
+# The one that goes into a real browser.
+GATHER_API_URL=https://<api-domain> \
+  GATHER_WEB_ORIGINS=https://gather.watch,https://www.gather.watch \
+  pnpm --filter @gather/extension build:prod
+
+# The dev one: points at http://localhost:4000 and labels itself DEV everywhere.
+pnpm --filter @gather/extension build
 ```
 
+`build:prod` refuses to run without an https, non-loopback `GATHER_API_URL`, and
+refuses a `GATHER_WEB_ORIGINS` entry the manifest's
+`externally_connectable.matches` does not admit. Plain `build` runs none of
+those checks: given a remote origin it still emits, and labels the artifact
+**UNVERIFIED** in its banner, in `dist/BUILD.txt` and in the extension's own
+name. Do not ship that one.
+
 Then chrome://extensions → Developer mode → Load unpacked →
-`apps/extension/dist`. Omitting `GATHER_API_URL` keeps the `localhost:4000`
-dev default. See [apps/extension/README.md](apps/extension/README.md).
+`apps/extension/dist`. See [apps/extension/README.md](apps/extension/README.md).
 
 ## Repo map
 
@@ -88,7 +109,7 @@ dev default. See [apps/extension/README.md](apps/extension/README.md).
 | `apps/web` | Next.js PWA — the room interface |
 | `apps/extension` | Chromium MV3 extension — the playback driver |
 | `apps/mobile` | Expo (iOS + Android) |
-| `services/api` | Fastify control plane: auth, rooms, chat, queue, sync, restream, push, metadata, compliance, admin |
+| `services/api` | Fastify control plane: auth, rooms, chat, queue, sync, restream, rtc, push, metadata, compliance, admin |
 | `packages/contracts` | Zod schemas — single source of truth for REST + WS |
 | `packages/sync-core` | Isomorphic elastic playback-sync engine |
 | `packages/api-client` | Typed REST/WS client (web + mobile + extension) |

@@ -10,10 +10,21 @@ node_modules
 **/dist
 **/.turbo
 **/.expo
+# Both forms: a .dockerignore pattern is matched against the path relative to
+# the context root and `*` does not cross `/`, so a bare `coverage` misses
+# packages/sync-core/coverage — which `pnpm test` really does produce (the
+# sync-core suite runs vitest --coverage) and `COPY . .` really would bake in.
 coverage
+**/coverage
 .env
 .env.*
 # Local Atlas secrets file — not matched by `.env.*` (no leading dot in the
 # stem), and a CLI-context build (`railway up`, `docker build`) would bake it.
 atlas-credentials.env
 *credentials*.env
+# Host junk and build residue. All are gitignored, so they only ever reach a
+# build context from a working tree — which is exactly what a CLI-context
+# build sends.
+**/.DS_Store
+**/*.tsbuildinfo
+**/*.log
