@@ -92,8 +92,34 @@ export interface RtpSenderLike {
  * whole room the moment they shared, and withdrawing it when the share stopped
  * left them silent with their mic button still reading "on". Two roles, two
  * senders, and neither can stand on the other.
+ *
+ * The vocabulary is a runtime value as well as a type because the RECEIVING
+ * end validates role names off the wire against it (see MeshManager's role
+ * announcements): a remote names a role, and a name that is not in here is not
+ * a role.
  */
-export type TrackRole = 'share' | 'share-audio' | 'cam' | 'mic';
+export const TRACK_ROLES = ['share', 'share-audio', 'cam', 'mic'] as const;
+
+/** One of {@link TRACK_ROLES}. */
+export type TrackRole = (typeof TRACK_ROLES)[number];
+
+/**
+ * Minimal structural MediaStream: an id, and nothing else.
+ *
+ * `addTrack(track, stream)` uses the stream ONLY for its id — that id is what
+ * travels in the SDP's msid and what the receiver sees on `ev.streams`. The
+ * track does not have to be a member of the stream for that to work, so the id
+ * is genuinely all this package needs, and asking for less keeps the injected
+ * object honest about what is used.
+ */
+export interface MediaStreamLike {
+  id: string;
+}
+
+/** Injected factory that constructs a platform MediaStream (`() => new
+ *  MediaStream()` on web). Optional everywhere: a mesh without one publishes
+ *  tracks with no stream attached, exactly as this package always has. */
+export type MediaStreamFactory = () => MediaStreamLike;
 
 // ---------- peer connection ----------
 

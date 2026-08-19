@@ -15,12 +15,15 @@ import type { ChannelFabricOptions, ChannelLabel } from './channels';
 import { classifyLinkStats } from './linkstate';
 import type { MeshLinkState } from './linkstate';
 import { PerfectNegotiator } from './negotiation';
+import { TRACK_ROLES } from './types';
 import type {
   ClearTimeoutFn,
   ConnectionStateLike,
   DataChannelLike,
   IceServerLike,
   InboundSignal,
+  MediaStreamFactory,
+  MediaStreamLike,
   MediaStreamTrackLike,
   NowFn,
   RtcConfigLike,
@@ -80,6 +83,24 @@ const MAX_ENDPOINTS_PER_USER = 4;
  *  pair. Length is bounded for the same reason ids are compared, not parsed. */
 const ENDPOINT_TOKEN_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * How many stream-id→role announcements this mesh remembers per identity.
+ *
+ * One endpoint has at most one stream per role, and an identity holds at most
+ * {@link MAX_ENDPOINTS_PER_USER} endpoints, so this is the honest ceiling for a
+ * well-behaved peer. It is a ceiling rather than an assumption because the
+ * announcements are remote-generated: without one, a peer announcing in a loop
+ * would grow this map until the tab died.
+ */
+const MAX_ROLE_STREAMS_PER_USER = MAX_ENDPOINTS_PER_USER * TRACK_ROLES.length;
+
+/** What an announced STREAM id may look like. Browsers mint a UUID (Chrome,
+ *  Safari) or a brace-wrapped one (older Firefox); the bound is what matters,
+ *  because the id is remote-generated. It is only ever COMPARED — never
+ *  concatenated into an id — so nothing in it can forge structure, and an id
+ *  this rejects simply goes unannounced and is answered `null` downstream. */
+const STREAM_ID_RE = /^[A-Za-z0-9_{}.-]{1,64}$/;
+
 /** Options for {@link MeshManager}. */
 export interface MeshManagerOptions {
   roomId: RoomId;
@@ -122,6 +143,17 @@ export interface MeshManagerOptions {
   endpointId?: string;
   /** Injected platform peer-connection factory. */
   rtcFactory: RtcFactory;
+  /**
+   * Injected platform MediaStream factory (`() => new MediaStream()` on web).
+   *
+   * Supplying it is what lets a RECEIVER name the role of a remote track. Each
+   * local role gets one stream, its id is announced to every peer, and its
+   * tracks are published with `addTrack(track, stream)` so the id reaches the
+   * far side on `ev.streams`. Without it — the default — tracks are published
+   * bare, nothing is announced, and every receiver answers `null`, which is
+   * exactly what a client that predates this must be answered anyway.
+   */
+  mediaStreamFactory?: MediaStreamFactory;
   /** Outbound signaling transport (room WS). */
   send: SignalSend;
   /** Fresh ICE servers spliced into every NEW RTCPeerConnection
@@ -320,6 +352,15 @@ function endpointName(userId: UserId, lane: MeshLane | null, token: string | nul
   return token === null ? laned : `${laned}#${token}`;
 }
 
+/** The id of a platform MediaStream handed to us as `unknown`. `ev.streams` is
+ *  whatever the platform put there and this package types none of it, so the
+ *  one field it reads is probed structurally. */
+function streamIdOf(stream: unknown): string | null {
+  if (typeof stream !== 'object' || stream === null) return null;
+  const id = (stream as { id?: unknown }).id;
+  return typeof id === 'string' ? id : null;
+}
+
 /** Fold one endpoint's link path into the answer for the whole person.
  *  Conservative about cost — any relayed endpoint makes the person relayed,
  *  because that is the one that spends TURN egress — and optimistic about
@@ -352,6 +393,7 @@ export class MeshManager {
    *  every build derives, token or no token. */
   private readonly localBareName: string;
   private readonly rtcFactory: RtcFactory;
+  private readonly mediaStreamFactory: MediaStreamFactory | undefined;
   private readonly send: SignalSend;
   private readonly getIceServers: () => IceServerLike[];
   /** False when the caller supplied no getIceServers at all: there is then no
@@ -391,6 +433,16 @@ export class MeshManager {
   private readonly perEndpoint = new Set<UserId>();
   /** Identities we have already told our own endpoint token. */
   private readonly announcedTo = new Set<UserId>();
+  /** The stream each LOCAL role publishes on, minted on first use. A cached
+   *  null is "the factory could not give us a usable one" — that role then
+   *  publishes bare, forever, rather than re-minting on every addTrack. */
+  private readonly roleStreams = new Map<TrackRole, MediaStreamLike | null>();
+  /** Which of our role streams each identity has been told about. */
+  private readonly roleAnnouncedTo = new Map<UserId, Set<TrackRole>>();
+  /** Stream-id→role, PER REMOTE IDENTITY. Per-identity is what keeps one
+   *  peer's announcements off another peer's tracks: `fromUserId` is stamped
+   *  by the server from the authenticated socket, so it cannot be claimed. */
+  private readonly announcedRoles = new Map<UserId, Map<string, TrackRole>>();
   /** Whom the CALL roles may be published to, or null for "everyone we are
    *  connected to" — the default, and what a share-only mesh wants. */
   private publishAudience: Set<UserId> | null = null;
@@ -398,7 +450,12 @@ export class MeshManager {
   private iceRepairDeadline = 0;
   private readonly localTracks = new Map<TrackRole, MediaStreamTrackLike>();
   private readonly trackSubs = new Set<
-    (peerId: UserId, track: MediaStreamTrackLike, streams: unknown[]) => void
+    (
+      peerId: UserId,
+      track: MediaStreamTrackLike,
+      streams: unknown[],
+      role: TrackRole | null,
+    ) => void
   >();
   private readonly stateSubs = new Set<(peerId: UserId, state: MeshConnectionState) => void>();
   private readonly linkSubs = new Set<(peerId: UserId, state: MeshLinkState) => void>();
@@ -417,6 +474,7 @@ export class MeshManager {
     this.localBareName = endpointName(opts.localUserId, this.lane, null);
     this.localName = endpointName(opts.localUserId, this.lane, this.endpointId);
     this.rtcFactory = opts.rtcFactory;
+    this.mediaStreamFactory = opts.mediaStreamFactory;
     this.send = opts.send;
     this.getIceServers = opts.getIceServers ?? (() => []);
     this.iceServersProvided = opts.getIceServers !== undefined;
@@ -451,6 +509,7 @@ export class MeshManager {
       // Tell them which endpoint we are before they answer us, so the id they
       // answer on is already the per-endpoint one when they hold two of us.
       this.announceTo(peerId);
+      this.announceRolesTo(peerId);
       this.reconcileEndpoints(peerId);
     }
     for (const [key, peer] of [...this.peerMap]) {
@@ -470,6 +529,8 @@ export class MeshManager {
       this.announced.delete(userId);
       this.announcedTo.delete(userId);
       this.perEndpoint.delete(userId);
+      this.announcedRoles.delete(userId);
+      this.roleAnnouncedTo.delete(userId);
     }
   }
 
@@ -552,6 +613,11 @@ export class MeshManager {
     const hello = this.parseHello(ev.payload.connectionId);
     if (hello !== null) {
       this.noteAnnouncement(fromUserId, hello.token, hello.lane);
+      return;
+    }
+    const roleHello = this.parseRoleHello(ev.payload.connectionId);
+    if (roleHello !== null) {
+      this.noteRoleAnnouncement(fromUserId, roleHello.streamId, roleHello.role);
       return;
     }
     // The connectionId is derived from (room, both ENDPOINTS): both sides
@@ -740,9 +806,23 @@ export class MeshManager {
     }
   }
 
-  /** Subscribe to remote tracks. Return unsubscribe. */
+  /**
+   * Subscribe to remote tracks. Return unsubscribe.
+   *
+   * `role` is what the SENDER published this track as, or null when this mesh
+   * genuinely cannot tell — an un-announcing peer, an announcement that has not
+   * landed, a stream id nobody claimed. Null is not a guess and must not be
+   * treated as one: the caller's fallback for null is whatever it did before
+   * roles existed, because the peers that answer null are the ones that predate
+   * them (see {@link classifyLinkStats} for the same rule about link paths).
+   */
   onRemoteTrack(
-    fn: (peerId: UserId, track: MediaStreamTrackLike, streams: unknown[]) => void,
+    fn: (
+      peerId: UserId,
+      track: MediaStreamTrackLike,
+      streams: unknown[],
+      role: TrackRole | null,
+    ) => void,
   ): () => void {
     this.trackSubs.add(fn);
     return () => {
@@ -776,6 +856,9 @@ export class MeshManager {
     this.announced.clear();
     this.announcedTo.clear();
     this.perEndpoint.clear();
+    this.announcedRoles.clear();
+    this.roleAnnouncedTo.clear();
+    this.roleStreams.clear();
   }
 
   // ---------- internals ----------
@@ -1043,6 +1126,193 @@ export class MeshManager {
     if (this.peerMap.has(personKey)) this.removePeer(personKey);
   }
 
+  /* ---------- track role announcements ---------- */
+
+  /**
+   * The connectionId a role announcement rides under.
+   *
+   * Same carrier as the endpoint hello above, for the same reason: the
+   * signalling channel is the only PER-SOCKET channel there is. Nothing
+   * derives a pair id with `role` where the first endpoint name goes, so a
+   * build that has never heard of role announcements drops this as unroutable
+   * — which is exactly right, and is what leaves it answering null.
+   */
+  private roleHelloId(role: TrackRole, streamId: string): string {
+    return `mesh:${this.roomId}:role:${role}:${streamId}`;
+  }
+
+  /** Read an inbound connectionId as a role announcement, or null when it is
+   *  something else. Both halves are validated against fixed rules before
+   *  either is stored, and the stream id is only ever compared afterwards. */
+  private parseRoleHello(connectionId: string): { role: TrackRole; streamId: string } | null {
+    const prefix = `mesh:${this.roomId}:role:`;
+    if (!connectionId.startsWith(prefix)) return null;
+    const rest = connectionId.slice(prefix.length);
+    const split = rest.indexOf(':');
+    if (split < 0) return null;
+    const roleName = rest.slice(0, split);
+    const streamId = rest.slice(split + 1);
+    if (!STREAM_ID_RE.test(streamId)) return null;
+    const role = TRACK_ROLES.find((r) => r === roleName);
+    if (role === undefined) return null;
+    return { role, streamId };
+  }
+
+  /**
+   * The stream a role's tracks ride on, minted on first use.
+   *
+   * One stream per ROLE, not per peer: the same local track is published to
+   * every connection, and what the far side is being told is what the track
+   * IS. Null means this mesh publishes that role bare — no factory was
+   * injected, the factory threw, or it returned an id no announcement could
+   * carry — and every receiver then answers null for it.
+   */
+  private roleStream(role: TrackRole): MediaStreamLike | null {
+    const held = this.roleStreams.get(role);
+    if (held !== undefined) return held;
+    if (this.mediaStreamFactory === undefined) {
+      this.roleStreams.set(role, null);
+      return null;
+    }
+    let stream: MediaStreamLike | null = null;
+    try {
+      const minted = this.mediaStreamFactory();
+      // Two roles sharing one id would announce each other away, and the far
+      // side would name tracks by whichever announcement landed last. A factory
+      // that repeats itself gets one role named and the rest published bare —
+      // null answers, never wrong ones.
+      if (STREAM_ID_RE.test(minted.id) && !this.roleStreamIdTaken(minted.id)) stream = minted;
+    } catch (err) {
+      // Ours, not a peer's — but a throwing platform primitive still has to
+      // surface here rather than escape an event path.
+      this.onError(this.localUserId, 'mediaStreamFactory', err);
+    }
+    this.roleStreams.set(role, stream);
+    return stream;
+  }
+
+  /** Whether another role already publishes under this stream id. */
+  private roleStreamIdTaken(streamId: string): boolean {
+    for (const stream of this.roleStreams.values()) {
+      if (stream !== null && stream.id === streamId) return true;
+    }
+    return false;
+  }
+
+  /** Everyone owed an announcement: the people we dial, plus anyone whose
+   *  connection we hold without dialling (an admitted auxiliary endpoint). */
+  private announcementAudience(): Set<UserId> {
+    const out = new Set<UserId>(this.dialed);
+    for (const peer of this.peerMap.values()) out.add(peer.userId);
+    return out;
+  }
+
+  /** Tell one identity which stream ids carry which of our roles — only the
+   *  ones they have not been told. Silent for a mesh that publishes bare: it
+   *  has nothing to say, and its receivers correctly answer null. */
+  private announceRolesTo(userId: UserId): void {
+    if (this.mediaStreamFactory === undefined) return;
+    let told = this.roleAnnouncedTo.get(userId);
+    if (told === undefined) {
+      told = new Set();
+      this.roleAnnouncedTo.set(userId, told);
+    }
+    for (const [role, stream] of this.roleStreams) {
+      if (stream === null || told.has(role)) continue;
+      told.add(role);
+      this.send({
+        type: 'webrtc.offer',
+        roomId: this.roomId,
+        seq: 0,
+        ts: Math.floor(this.now()),
+        payload: {
+          targetUserId: userId,
+          connectionId: this.roleHelloId(role, stream.id),
+          sdp: '',
+        },
+      });
+    }
+  }
+
+  /**
+   * Put a local track on one link, under the stream that names its role.
+   *
+   * The ORDER here is the entire guarantee. `send` is synchronous; the offer
+   * that will carry this track is not — it waits on createOffer /
+   * setLocalDescription — so an announcement written first is always ahead of
+   * that offer on the same ordered socket, and the far side holds the mapping
+   * before its `ontrack` fires. Reverse the two and the receiver is back to
+   * answering null for a track it could have named.
+   */
+  private publishOn(
+    peer: MeshPeer,
+    role: TrackRole,
+    track: MediaStreamTrackLike,
+  ): RtpSenderLike {
+    const stream = this.roleStream(role);
+    if (stream === null) return peer.pc.addTrack(track);
+    // ANNOUNCE FIRST, and the ordering is the whole guarantee. `send` is
+    // synchronous while `createOffer`/`setLocalDescription` are not, so an
+    // announcement written here is already on the same ordered socket ahead of
+    // the offer that carries this track — which is what makes the receiver
+    // certain to hold the id→role mapping by the time `ontrack` fires for it.
+    // Announcing after `addTrack` still lands eventually, but it races its own
+    // offer, and the track it loses to is the one this exists to name.
+    for (const userId of this.announcementAudience()) this.announceRolesTo(userId);
+    return peer.pc.addTrack(track, stream);
+  }
+
+  /** Record one stream-id→role fact about a remote identity. */
+  private noteRoleAnnouncement(userId: UserId, streamId: string, role: TrackRole): void {
+    let byStream = this.announcedRoles.get(userId);
+    if (byStream === undefined) {
+      byStream = new Map();
+      this.announcedRoles.set(userId, byStream);
+    }
+    if (byStream.get(streamId) === role) return;
+    byStream.delete(streamId);
+    // Oldest out first: unlike an endpoint token there is no live connection
+    // behind a stream id to protect, and a mapping a peer floods out of its own
+    // budget costs that peer a null answer on its own tracks — never a wrong
+    // role on anyone else's.
+    while (byStream.size >= MAX_ROLE_STREAMS_PER_USER) {
+      const oldest = byStream.keys().next();
+      if (oldest.done === true) break;
+      byStream.delete(oldest.value);
+    }
+    byStream.set(streamId, role);
+  }
+
+  /**
+   * What role a remote track was published as, or null when this mesh cannot
+   * say — an un-announcing peer, a stream nobody claimed, an announcement that
+   * never arrived. Null is the honest answer and never a guess; the two things
+   * this WILL answer from are both declarations the far side made.
+   */
+  private roleOfRemoteTrack(
+    peer: MeshPeer,
+    track: MediaStreamTrackLike,
+    streams: unknown[],
+  ): TrackRole | null {
+    const byStream = this.announcedRoles.get(peer.userId);
+    if (byStream !== undefined) {
+      for (const stream of streams) {
+        const id = streamIdOf(stream);
+        if (id === null) continue;
+        const role = byStream.get(id);
+        if (role !== undefined) return role;
+      }
+    }
+    // A LANE declares what a whole mesh is FOR. It is carried in the
+    // connectionId and matched against MESH_LANES before the link is built, and
+    // the 'share' lane is somebody's outbound-only share pipe: it is refused
+    // our own media (see publishesTo) and holds no camera to offer. Reading the
+    // link's declared purpose is not guessing from the track — and it is what
+    // names an extension share, which announces nothing.
+    if (peer.lane === 'share') return track.kind === 'video' ? 'share' : 'share-audio';
+    return null;
+  }
+
   /** Bring the connections we hold to one identity in line with how we address
    *  them: one per announced endpoint, or one person-level connection. Adds
    *  before it removes, so a person never momentarily reads as gone. */
@@ -1143,7 +1413,8 @@ export class MeshManager {
       this.peerMap.set(key, peer);
 
       pc.ontrack = (ev) => {
-        for (const fn of [...this.trackSubs]) fn(peerId, ev.track, ev.streams);
+        const role = this.roleOfRemoteTrack(peer, ev.track, ev.streams);
+        for (const fn of [...this.trackSubs]) fn(peerId, ev.track, ev.streams, role);
       };
       pc.onconnectionstatechange = () => {
         peer.state = pc.connectionState;
@@ -1167,7 +1438,7 @@ export class MeshManager {
       if (lane === null) {
         for (const [role, track] of this.localTracks) {
           if (!this.publishesTo(peer, role)) continue;
-          peer.senders.set(role, pc.addTrack(track));
+          peer.senders.set(role, this.publishOn(peer, role, track));
         }
         this.reconcileCapsEverywhere();
       }
@@ -1311,7 +1582,7 @@ export class MeshManager {
       return;
     }
     if (sender === undefined) {
-      peer.senders.set(role, peer.pc.addTrack(track));
+      peer.senders.set(role, this.publishOn(peer, role, track));
       // Preflight payoff: on a link already classified relayed, the brand-new
       // share sender is capped before its first frame, not at the next poll.
       peer.caps.delete(role);
@@ -1328,7 +1599,7 @@ export class MeshManager {
       return;
     }
     peer.pc.removeTrack(sender);
-    peer.senders.set(role, peer.pc.addTrack(track));
+    peer.senders.set(role, this.publishOn(peer, role, track));
     peer.caps.delete(role);
     this.reconcileCaps(peer);
   }

@@ -253,6 +253,13 @@ export class MockRtpSender implements RtpSenderLike {
   }
 }
 
+/** The id of a stream handed to addTrack; '' for anything without one. */
+function streamIdOf(stream: unknown): string {
+  if (typeof stream !== 'object' || stream === null) return '';
+  const id = (stream as { id?: unknown }).id;
+  return typeof id === 'string' ? id : '';
+}
+
 /** Extract the pc id embedded in a scripted SDP string, or null. */
 function pcIdFromSdp(sdp: string | undefined): number | null {
   if (sdp === undefined) return null;
@@ -295,8 +302,11 @@ export class MockPeerConnection implements RtcPeerConnectionLike {
 
   readonly channels = new Map<number, MockDataChannel>();
   readonly senders: MockRtpSender[] = [];
-  /** Tracks not yet delivered to the linked counterpart. */
-  readonly pendingTracks: MediaStreamTrackLike[] = [];
+  /** Tracks not yet delivered to the linked counterpart, each with the streams
+   *  it was published under. `addTrack(track, ...streams)` writes those stream
+   *  ids into the SDP's msid, and they are what the far side's `ontrack` sees —
+   *  modelling that is the only way a role-discrimination test means anything. */
+  readonly pendingTracks: Array<{ track: MediaStreamTrackLike; streams: unknown[] }> = [];
 
   restartIce?: () => void;
 
@@ -419,11 +429,11 @@ export class MockPeerConnection implements RtcPeerConnectionLike {
     return Promise.resolve();
   }
 
-  addTrack(track: MediaStreamTrackLike, ..._streams: unknown[]): RtpSenderLike {
+  addTrack(track: MediaStreamTrackLike, ...streams: unknown[]): RtpSenderLike {
     this.assertNotClosed();
     const sender = new MockRtpSender(track);
     this.senders.push(sender);
-    this.pendingTracks.push(track);
+    this.pendingTracks.push({ track, streams });
     this.triggerNegotiationNeeded();
     this.net.deliverPendingTracks(this);
     return sender;
@@ -641,10 +651,14 @@ export class MockNetwork {
     const counterpart = this.linkedCounterpart(pc);
     if (counterpart === undefined) return;
     if (pc.connectionState !== 'connected') return;
-    const tracks = pc.pendingTracks.splice(0, pc.pendingTracks.length);
-    for (const track of tracks) {
+    const pending = pc.pendingTracks.splice(0, pc.pendingTracks.length);
+    for (const { track, streams } of pending) {
+      // The receiving end gets its OWN MediaStream objects carrying the
+      // sender's ids — a browser never hands over the sender's instance — so
+      // anything matching on identity rather than on id fails here.
+      const received = streams.map((s) => ({ id: streamIdOf(s) }));
       this.clock.setTimeoutFn(() => {
-        counterpart.ontrack?.({ track, streams: [] });
+        counterpart.ontrack?.({ track, streams: received });
       }, this.faultsFor(pc, counterpart).delayMs);
     }
   }

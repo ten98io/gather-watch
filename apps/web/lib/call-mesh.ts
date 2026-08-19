@@ -32,6 +32,7 @@
 import { MeshManager, TurnCredentialManager } from '@gather/p2p';
 import type {
   IceServerLike,
+  MediaStreamLike,
   MeshConnectionState,
   MeshLinkState,
   RtcPeerConnectionLike,
@@ -45,6 +46,11 @@ const browserRtcFactory = (config: { iceServers: IceServerLike[] }): RtcPeerConn
   new RTCPeerConnection({
     iceServers: config.iceServers as RTCIceServer[],
   }) as unknown as RtcPeerConnectionLike;
+
+/** One MediaStream per published ROLE, so the far side can name what it is
+ *  receiving. The mesh reads only `.id` — the id is what rides in the SDP's
+ *  msid and reaches the receiver's `ev.streams`. */
+const browserMediaStreamFactory = (): MediaStreamLike => new MediaStream();
 
 /** Link classification happens only inside MeshManager.pollStats(), and the
  *  app layer owns the interval — connection diagnostics read the result. */
@@ -138,7 +144,17 @@ export interface RemoteTrackEntry {
 /** What kind of failure a note describes; one note per kind, per mesh. */
 type FailureKind = 'setup' | 'peer' | 'peer-lost';
 
-type RemoteTrackListener = (source: UserId, track: MediaStreamTrack) => void;
+/**
+ * A remote track arriving or leaving. `role` is what the publisher said it is,
+ * or null when the mesh genuinely cannot tell — an older client that announces
+ * nothing, or an announcement that never landed. Null is not a guess: a
+ * listener's answer to it must be whatever it did before roles existed.
+ */
+type RemoteTrackListener = (
+  source: UserId,
+  track: MediaStreamTrack,
+  role: TrackRole | null,
+) => void;
 type LocalTrackListener = (role: TrackRole, track: MediaStreamTrack | null) => void;
 type FailureListener = (note: string) => void;
 type ConnectionStateListener = (peerId: UserId, state: MeshConnectionState) => void;
@@ -156,6 +172,10 @@ export class CallMesh {
   private readonly linkStateSubs = new Set<LinkStateListener>();
   /** Live remote tracks, per peer, keyed by track id (replayed to new subs). */
   private readonly remoteTracks = new Map<UserId, Map<string, MediaStreamTrack>>();
+  /** The role each live remote track was published as. Held beside the tracks
+   *  rather than inside them so a REPLAYED track reaches a late subscriber
+   *  with the same answer the first one got. */
+  private readonly remoteRoles = new Map<MediaStreamTrack, TrackRole | null>();
   /** Live local tracks by role (replayed to new subs). */
   private readonly localTracks = new Map<TrackRole, MediaStreamTrack>();
   /** Failures worth telling the user about, held until media is at stake. */
@@ -210,6 +230,10 @@ export class CallMesh {
       // derive one connectionId and take turns resetting each other's link.
       endpointId: ENDPOINT_TOKEN,
       rtcFactory: browserRtcFactory,
+      // Without this a remote track carries no role and the share stage has
+      // nothing to tell a screen from a camera by (see onRemoteTrack).
+      mediaStreamFactory: browserMediaStreamFactory,
+
       send: (event) => {
         conn.rawSocket.send(event.type, event.payload);
       },
@@ -225,6 +249,10 @@ export class CallMesh {
           this.reportFailure('peer-lost', CALL_PEER_LOST_NOTE);
           return;
         }
+        // A platform that cannot mint a MediaStream costs role NAMES, not the
+        // call: the share stage falls back to what it did before roles existed.
+        // Telling the user their connection died would simply be untrue.
+        if (context === 'mediaStreamFactory') return;
         this.reportFailure('peer', CALL_PEER_NOTE);
       },
       ...(capRelayedVideoKbps === undefined ? {} : { capRelayedVideoKbps }),
@@ -234,9 +262,9 @@ export class CallMesh {
     // Retention starts at construction, BEFORE any pane subscribes — a track
     // that lands while the rail is closed is still there when it opens.
     this.unsubscribers.push(
-      this.mesh.onRemoteTrack((peerId, raw) => {
+      this.mesh.onRemoteTrack((peerId, raw, _streams, role) => {
         const track = raw as unknown as MediaStreamTrack;
-        this.retainRemote(peerId, track);
+        this.retainRemote(peerId, track, role);
       }),
     );
     this.unsubscribers.push(
@@ -450,11 +478,16 @@ export class CallMesh {
   onRemoteTrack(fn: RemoteTrackListener): () => void {
     this.remoteTrackSubs.add(fn);
     for (const [userId, tracks] of this.remoteTracks) {
-      for (const track of tracks.values()) fn(userId, track);
+      for (const track of tracks.values()) fn(userId, track, this.remoteTrackRole(track));
     }
     return () => {
       this.remoteTrackSubs.delete(fn);
     };
+  }
+
+  /** What a live remote track was published as, or null when unknown. */
+  remoteTrackRole(track: MediaStreamTrack): TrackRole | null {
+    return this.remoteRoles.get(track) ?? null;
   }
 
   /** Subscribe to remote tracks going away (ended, or the peer disconnected). */
@@ -554,6 +587,7 @@ export class CallMesh {
     this.turn.stop();
     this.started = false;
     this.remoteTracks.clear();
+    this.remoteRoles.clear();
     this.localTracks.clear();
     this.remoteTrackSubs.clear();
     this.remoteTrackRemovedSubs.clear();
@@ -603,7 +637,7 @@ export class CallMesh {
     return this.localTracks.size > 0 || this.remoteTracks.size > 0;
   }
 
-  private retainRemote(peerId: UserId, track: MediaStreamTrack): void {
+  private retainRemote(peerId: UserId, track: MediaStreamTrack, role: TrackRole | null): void {
     let byId = this.remoteTracks.get(peerId);
     if (byId === undefined) {
       byId = new Map();
@@ -611,13 +645,14 @@ export class CallMesh {
     }
     if (byId.get(track.id) === track) return; // same track re-delivered
     byId.set(track.id, track);
+    this.remoteRoles.set(track, role);
     this.flushPendingNotes();
     const onEnded = (): void => {
       track.removeEventListener('ended', onEnded);
       this.forgetRemote(peerId, track);
     };
     track.addEventListener('ended', onEnded);
-    for (const fn of [...this.remoteTrackSubs]) fn(peerId, track);
+    for (const fn of [...this.remoteTrackSubs]) fn(peerId, track, role);
   }
 
   private forgetRemote(peerId: UserId, track: MediaStreamTrack): void {
@@ -625,7 +660,9 @@ export class CallMesh {
     if (byId === undefined || !byId.has(track.id)) return;
     byId.delete(track.id);
     if (byId.size === 0) this.remoteTracks.delete(peerId);
-    for (const fn of [...this.remoteTrackRemovedSubs]) fn(peerId, track);
+    const role = this.remoteRoles.get(track) ?? null;
+    this.remoteRoles.delete(track);
+    for (const fn of [...this.remoteTrackRemovedSubs]) fn(peerId, track, role);
   }
 
   private dropPeer(peerId: UserId): void {
@@ -679,11 +716,13 @@ export function inCallIntent(conn: RoomConnection): boolean {
  *
  * The claimant that matters is the share viewer: it plays the sharing host's
  * sound whether or not you ever joined the call, which is the whole point of
- * giving share audio a role of its own. Note what the RECEIVING end can and
- * cannot know — a remote track carries no role, so a viewer cannot tell the
- * host's microphone from their tab audio and the viewer claims BOTH, playing
- * each exactly once. When no share viewer is mounted nothing is claimed and
- * the call sinks behave exactly as they always did.
+ * giving share audio a role of its own. What it claims is now exactly what it
+ * plays — the mesh names a remote track's role (see {@link
+ * CallMesh.remoteTrackRole}), so the host's MICROPHONE stays the call's to
+ * sink. A track the mesh cannot name is claimed the old way, by the host it
+ * came from: an older client that answers null must not lose its sound. When
+ * no share viewer is mounted nothing is claimed and the call sinks behave
+ * exactly as they always did.
  */
 const audioSinkClaims = new Map<MediaStreamTrack, object>();
 const audioSinkSubs = new Set<() => void>();

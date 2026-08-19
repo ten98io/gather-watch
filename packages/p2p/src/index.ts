@@ -14,6 +14,8 @@ export type {
   FetchResponseLike,
   IceServerLike,
   InboundSignal,
+  MediaStreamFactory,
+  MediaStreamLike,
   MediaStreamTrackLike,
   NowFn,
   OutboundSignal,
@@ -31,6 +33,8 @@ export type {
   TimeoutHandle,
   TrackRole,
 } from './types';
+
+export { TRACK_ROLES } from './types';
 
 export { PerfectNegotiator } from './negotiation';
 export type { PerfectNegotiatorOptions } from './negotiation';

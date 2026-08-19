@@ -176,9 +176,11 @@ class FakePc {
   close(): void {
     this.closed = true;
   }
-  /** Simulate the remote side publishing a track. */
-  emitTrack(t: MediaStreamTrack): void {
-    this.ontrack?.({ track: t, streams: [] });
+  /** Simulate the remote side publishing a track. `streams` is what the
+   *  platform puts on the event — the sender's msid, and the only thing a
+   *  receiver can name a role from. */
+  emitTrack(t: MediaStreamTrack, streams: unknown[] = []): void {
+    this.ontrack?.({ track: t, streams });
   }
   /** Simulate a connection-state transition the mesh listens to. */
   setConnectionState(state: string): void {
@@ -207,12 +209,15 @@ interface FakeConnection {
   setPresence(next: Record<string, PresenceEntry>): void;
   /** Everything the mesh sent over the room socket, in order. */
   sent: SentFrame[];
+  /** Deliver one server-relayed frame, as the hub would stamp it. */
+  deliver(type: string, payload: Record<string, unknown>): void;
 }
 
 function fakeConnection(initial: Record<string, PresenceEntry>): FakeConnection {
   const listeners = new Set<(s: unknown, prev: unknown) => void>();
   const state = { presence: initial };
   const sent: SentFrame[] = [];
+  const inbound = new Map<string, Set<(ev: unknown) => void>>();
   const connection = {
     roomId: 'room_test' as RoomId,
     rawSocket: {
@@ -227,11 +232,21 @@ function fakeConnection(initial: Record<string, PresenceEntry>): FakeConnection 
         return () => listeners.delete(fn);
       },
     },
-    on: () => () => undefined,
+    on: (type: string, fn: (ev: unknown) => void) => {
+      const set = inbound.get(type) ?? new Set<(ev: unknown) => void>();
+      set.add(fn);
+      inbound.set(type, set);
+      return () => set.delete(fn);
+    },
   } as unknown as RoomConnection;
   return {
     connection,
     sent,
+    deliver(type, payload) {
+      for (const fn of [...(inbound.get(type) ?? [])]) {
+        fn({ type, roomId: 'room_test' as RoomId, seq: 1, ts: 0, payload });
+      }
+    },
     setPresence(next) {
       const prev = { presence: state.presence };
       state.presence = next;
@@ -878,5 +893,128 @@ describe('CallMesh link path', () => {
 
     // A badge that mounts after the poll must not read 'unknown' forever.
     expect(seen).toEqual([[PEER, 'relayed']]);
+  });
+});
+
+/**
+ * TRACK ROLES — the layer the "guest sees the host's face instead of their
+ * screen" bug is finally answerable at.
+ *
+ * A host sharing with the camera on publishes 'cam' and 'share' down one peer
+ * connection. Both are video; `pc.ontrack` says nothing about which is which.
+ * The sender announces a stream id per role, and this is where a receiver's
+ * question gets a role — or an honest null.
+ */
+describe('CallMesh track roles', () => {
+  const created: CallMesh[] = [];
+  let streamCount = 0;
+
+  /** The mesh reads nothing off a MediaStream but its id. */
+  class FakeMediaStream {
+    readonly id = `s-${(streamCount += 1)}`;
+  }
+
+  beforeEach(() => {
+    FakePc.reset();
+    streamCount = 0;
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    (globalThis as { MediaStream?: unknown }).MediaStream = FakeMediaStream;
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+  });
+
+  afterEach(() => {
+    for (const mesh of created.splice(0)) mesh.close();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    delete (globalThis as { MediaStream?: unknown }).MediaStream;
+  });
+
+  const startedMesh = async (): Promise<{ mesh: CallMesh; conn: FakeConnection }> => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    await settle();
+    return { mesh, conn };
+  };
+
+  /** One role announcement, as the hub relays it from the peer. */
+  const announce = (conn: FakeConnection, role: string, streamId: string): void => {
+    conn.deliver('webrtc.offer', {
+      fromUserId: PEER,
+      targetUserId: ME,
+      connectionId: `mesh:room_test:role:${role}:${streamId}`,
+      sdp: '',
+    });
+  };
+
+  it('names the host’s share and camera apart on one connection', async () => {
+    const { mesh, conn } = await startedMesh();
+    announce(conn, 'cam', 'peer-cam');
+    announce(conn, 'share', 'peer-share');
+
+    const seen: Array<[string, string | null]> = [];
+    mesh.onRemoteTrack((_userId, t, role) => seen.push([t.id, role]));
+    FakePc.instances[0]?.emitTrack(track('cam-1', 'video'), [{ id: 'peer-cam' }]);
+    FakePc.instances[0]?.emitTrack(track('screen-1', 'video'), [{ id: 'peer-share' }]);
+
+    // Without this the share stage takes the newest video, which is the face.
+    expect(seen).toEqual([
+      ['cam-1', 'cam'],
+      ['screen-1', 'share'],
+    ]);
+  });
+
+  it('answers null for a track nobody announced, and still delivers it', async () => {
+    const { mesh } = await startedMesh();
+    const seen: Array<[string, string | null]> = [];
+    mesh.onRemoteTrack((_userId, t, role) => seen.push([t.id, role]));
+    FakePc.instances[0]?.emitTrack(track('screen-1', 'video'), [{ id: 'unknown-stream' }]);
+
+    // An older extension build announces nothing. Dropping its share would be
+    // a worse failure than the one roles exist to fix.
+    expect(seen).toEqual([['screen-1', null]]);
+    expect(mesh.remoteTrackList()).toHaveLength(1);
+  });
+
+  it('replays a track to a late subscriber with the role it arrived under', async () => {
+    const { mesh, conn } = await startedMesh();
+    announce(conn, 'share-audio', 'peer-tab-audio');
+    const tabAudio = track('tab-1', 'audio');
+    FakePc.instances[0]?.emitTrack(tabAudio, [{ id: 'peer-tab-audio' }]);
+
+    // The share stage mounts after the track landed; a replay that forgot the
+    // role would hand it back as un-nameable.
+    const seen: Array<[string, string | null]> = [];
+    mesh.onRemoteTrack((_userId, t, role) => seen.push([t.id, role]));
+    expect(seen).toEqual([['tab-1', 'share-audio']]);
+    expect(mesh.remoteTrackRole(tabAudio)).toBe('share-audio');
+  });
+
+  it('announces a stream id for each role it publishes', async () => {
+    const { mesh, conn } = await startedMesh();
+    mesh.setLocalTrack('cam', track('my-cam', 'video'));
+    mesh.setLocalTrack('share', track('my-screen', 'video'));
+
+    const roleFrames = conn.sent
+      .map((f) => f.payload.connectionId ?? '')
+      .filter((id) => id.startsWith('mesh:room_test:role:'));
+    // One per role, each on a stream id of its own — two roles sharing an id
+    // would rename each other on the far side.
+    expect(roleFrames).toEqual([
+      'mesh:room_test:role:cam:s-1',
+      'mesh:room_test:role:share:s-2',
+    ]);
+  });
+
+  it('forgets a track’s role when the track goes away', async () => {
+    const { mesh, conn } = await startedMesh();
+    announce(conn, 'share', 'peer-share');
+    const raw = new FakeTrack('screen-1', 'video');
+    const screen = raw as unknown as MediaStreamTrack;
+    FakePc.instances[0]?.emitTrack(screen, [{ id: 'peer-share' }]);
+    expect(mesh.remoteTrackRole(screen)).toBe('share');
+
+    raw.end();
+    expect(mesh.remoteTrackRole(screen)).toBeNull();
   });
 });

@@ -280,7 +280,7 @@ function CastHint() {
   const hint = platformCastHint();
   if (hint === null) return null;
   return (
-    <p className="w-full shrink-0 bg-surface-1 px-4 py-1.5 text-center text-xs text-low">
+    <p className="w-full shrink-0 bg-surface-1 px-4 py-2 text-center text-label text-low">
       {hint}
     </p>
   );
@@ -303,10 +303,10 @@ function HostControls() {
         </Button>
       )}
       {phase === 'capturing' && (
-        <span className="text-xs text-low">Waiting for the picker…</span>
+        <span className="text-label text-low">Waiting for the picker…</span>
       )}
       {phase === 'starting' && (
-        <span className="text-xs text-low">Starting your share…</span>
+        <span className="text-label text-low">Starting your share…</span>
       )}
       {(phase === 'starting' || phase === 'live') && (
         <Button variant="destructive" size="sm" onClick={stopShare}>
@@ -317,7 +317,7 @@ function HostControls() {
       <Dialog open={preflightOpen} onOpenChange={setPreflightOpen}>
         <DialogContent aria-label="Before you share">
           <DialogTitle>Share your screen with the room</DialogTitle>
-          <div className="mt-2 flex flex-col gap-2 text-sm text-mid">
+          <div className="mt-3 flex flex-col gap-3 text-body text-mid">
             <p>
               Pick a <strong>tab or window with audio</strong> — everyone in the room
               sees it, sent straight from your device and encrypted on the way.
@@ -359,16 +359,26 @@ function HostControls() {
  * lived inside the call and was gated on having pressed Join. A viewer
  * watching a share who had not joined the call could not hear it. Ever.
  *
- * ONE element, because two elements on one track play it twice. The share
- * <video> carries the video and every audio track the host publishes, so the
- * "exactly one sink" rule holds by construction here, and `claimAudioSink`
- * tells the call's hidden sinks to stand down for the same tracks (see
- * lib/call-mesh.ts — a remote track carries no role, so this is the boundary
- * where ownership can be decided at all).
+ * ROLE, because a host sharing with their camera on publishes 'cam' AND
+ * 'share' over one peer connection, and this used to take every track from
+ * them: both are video, the camera was the newer one, and the stage rendered
+ * the host's FACE instead of their screen for everybody watching. The mesh
+ * names a remote track's role now, and the two CALL roles are refused at the
+ * door — they are CallSurface's to render and to sink.
  *
- * Newest video wins, and withdrawn tracks leave: a renegotiated share used to
- * leave its dead first track at the front of the MediaStream with the element
- * still rendering it.
+ * A null role means the mesh genuinely cannot say (an older extension build
+ * announces nothing), and the answer to null is what this always did: take the
+ * track, newest video wins. Losing the share outright would be a worse failure
+ * than the one being fixed.
+ *
+ * ONE element, because two elements on one track play it twice. The share
+ * <video> carries the video and the share's own sound, so the "exactly one
+ * sink" rule holds by construction here, and `claimAudioSink` tells the call's
+ * hidden sinks to stand down for exactly the tracks this element plays — no
+ * more, or the host's microphone goes quiet for the room (lib/call-mesh.ts).
+ *
+ * Withdrawn tracks leave: a renegotiated share used to leave its dead first
+ * track at the front of the MediaStream with the element still rendering it.
  */
 function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
   const connection = useRoomConnection();
@@ -385,8 +395,12 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
     const mesh = getCallMesh(connection, member.userId);
     mesh.start();
     const held = claims.current;
-    const off = mesh.onRemoteTrack((source, track) => {
+    const off = mesh.onRemoteTrack((source, track, role) => {
       if (source !== hostUserId) return;
+      // The host's camera and microphone are the CALL's, whatever else they
+      // are publishing. Refusing them here is the fix; a role the mesh could
+      // not name arrives as null and is taken, exactly as before.
+      if (role === 'cam' || role === 'mic') return;
       // Claimed on ARRIVAL rather than from an effect: the call surface picks
       // which tracks to sink during the very render this setState schedules,
       // and a claim that waited for the effect flush would leave a second
@@ -454,7 +468,7 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
   }, [playing, attemptPlay]);
 
   return (
-    <div className="flex h-full w-full flex-col bg-black">
+    <div className="flex h-full w-full flex-col bg-void">
       <div className="relative flex min-h-0 flex-1 items-center justify-center">
         <video
           ref={videoRef}
@@ -464,7 +478,7 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
           aria-label="Shared screen"
         />
         {playing.video === null && (
-          <p className="absolute text-sm text-mid">
+          <p className="absolute max-w-sm px-6 text-center text-body text-low">
             Connecting to the host’s screen… this can take a moment.
           </p>
         )}
@@ -502,24 +516,30 @@ export function ScreenShareStage({ restream }: { restream: RestreamState }) {
     return <ShareViewer hostUserId={restream.hostUserId} />;
   }
 
+  // `headline`, not `display`. This same component renders in TWO places — the
+  // stage, and inside the share dialog StagePane opens over it — so the step it
+  // takes has to be the one that is correct in a modal as well; a screen gets
+  // exactly one display setting and it is never a dialog's (§3, §10).
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
+    <div className="grain flex h-full w-full flex-col items-center justify-center gap-8 px-6 py-section text-center">
       {localStream !== null ? (
         <LocalPreview stream={localStream} />
       ) : (
-        <>
-          <p className="font-display text-lg font-semibold text-hi">
-            Share a tab, window, or screen
-          </p>
-          <p className="max-w-md text-sm text-mid">
+        <div className="flex max-w-md flex-col items-center gap-3">
+          <p className="text-caption text-low">Screen share</p>
+          <h2 className="text-headline text-hi">Share a tab, window, or screen</h2>
+          <p className="text-body text-low">
             Everyone in the room watches what you share, sent straight from your
             device and encrypted on the way. Up to 8 viewers — your connection sets
             the quality.
           </p>
-        </>
+        </div>
       )}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-3">
         <HostControls />
+        {/* The gradient's third sanctioned place: the live indicator (§2). It
+            is the only one on this stage — the transport is withheld during a
+            share, so nothing else here can spend the region's budget. */}
         {restream.active && (
           <Badge variant="aurora">
             Live · {restream.viewerCount} watching
@@ -546,7 +566,10 @@ function LocalPreview({ stream }: { stream: MediaStream }) {
       ref={ref}
       muted
       playsInline
-      className="max-h-[50vh] max-w-full rounded-card border border-border-glass"
+      // `shadow-e1` carries its own hairline ring (§4), so the border this had
+      // is gone rather than doubled — and a share preview floating on the void
+      // is exactly the "raised" rung.
+      className="max-h-[50vh] max-w-full rounded-card shadow-e1"
       aria-label="Your shared screen preview"
     />
   );
