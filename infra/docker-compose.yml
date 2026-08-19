@@ -45,8 +45,19 @@ services:
       # build and needs pnpm-workspace.yaml, packages/*, and the lockfile.
       context: ..
       dockerfile: apps/web/Dockerfile
-      # NEXT_PUBLIC_* values are baked at build time — pass them as build args
-      # here if the web app needs any beyond same-origin defaults.
+      # NEXT_PUBLIC_* are inlined into the CLIENT bundle at build time, so they
+      # are build args and not environment — setting them under `environment`
+      # below would change nothing about the shipped JavaScript.
+      #
+      # `${APP_URL}/api` is the only correct value in this stack: the browser
+      # talks to Caddy on the one public origin, and Caddy's `/api/*` block
+      # strips the prefix before forwarding to `api:4000` (see infra/Caddyfile).
+      # It is required rather than defaulted — without it apps/web/Dockerfile
+      # exits 1 by design, because the alternative is an image that builds,
+      # deploys, goes green, and calls http://localhost:4000 from every
+      # visitor's browser.
+      args:
+        NEXT_PUBLIC_API_URL: ${APP_URL:?set APP_URL in .env — it is the public origin, e.g. https://gather.example.com}/api
     restart: unless-stopped
     env_file:
       - ../.env

@@ -241,10 +241,17 @@ defence and no safe harbour, and output protection means a capture attempt yield
 rectangle anyway. Item 0.8 exists because the *enforcement* is currently weaker than the
 docs claim.
 
-**Room passwords.** Build `joinPolicy: 'open' | 'closed'` instead. A password would be the
-product's first stored credential — with hashing, rotation and recovery to invent — to
-gate a resource whose real key is a 12-character code from a confusable-free alphabet. It
-also adds a step to a flow that `DESIGN.md` §12 budgets at two.
+**Room passwords.** ~~Build `joinPolicy: 'open' | 'closed'` instead.~~
+**OVERRIDDEN by the owner in §7 and SHIPPED 2026-08-19** — read this entry as the record
+of the trade, never as advice. The objection was that a password would be the product's
+first stored credential — hashing, rotation and recovery to invent — to gate a resource
+whose real key is already a 12-character code from a confusable-free alphabet, and that it
+adds a step to a flow `DESIGN.md` §12 budgets at two. All of that was accepted and built
+anyway: scrypt `salt:hash` server-side (`services/api/src/lib/tokens.ts`), host-only
+`PATCH /rooms/:roomId/password`, rotation IS recovery (there is no reset flow), and the
+gate is probe-proof — unknown code, missing password and wrong password all answer the
+same `NOT_FOUND`. The wire carries `hasPassword`, never the hash. `DESIGN.md` §12 now
+budgets a password-gated join at 3. `joinPolicy` was never built and does not exist.
 
 **Public room discovery.** Not yet. The cost of discovery is moderation, and Gather has
 almost none: no slowmode, no per-user chat mute, no auto-moderation, and (until 0.1) no
@@ -301,6 +308,24 @@ deep-link to survive the sign-in round-trip (carry the invite code through
 the magic-link flow and land the user back on the join page) so the accepted
 friction — "reopen the invite after signing in" — mostly disappears.
 1.2 (instant rooms) is rejected with it.
+
+> **STATUS 2026-08-19 — NOT EXECUTED, and the codebase has moved the other
+> way.** `POST /auth/guest` is live (`services/api/src/modules/auth/routes.ts`)
+> and the sessions since this ruling have *extended* the guest lane rather than
+> retiring it: guest refresh scope was hardened (a guest whose membership is
+> gone can no longer refresh into an unscoped token), the room-password gate
+> covers guests and accounts alike, and `apps/extension/README.md` documents
+> popup guest join as a first-class identity path. The invite deep-link that
+> was supposed to make the cutover painless does not survive the sign-in
+> round-trip either.
+>
+> §9's own amendment already said the cutover must be gated on confirming the
+> Cloudflare email quota and must keep the route **feature-flagged off rather
+> than deleted** for one launch cycle. Neither the flag nor the deep-link
+> exists, so nothing about the cutover is ready. Treat the ruling as standing
+> intent and this box as the reason it has not happened — do not delete the
+> guest lane until the deep-link lands and the quota is confirmed, or every
+> invite in circulation breaks at once.
 
 ### Phase 0 rulings
 

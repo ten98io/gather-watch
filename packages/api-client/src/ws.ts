@@ -210,6 +210,18 @@ export class RoomSocket {
   }
 
   /**
+   * Whether the clock estimator has a MEASURED offset yet. Until the first pong
+   * lands `clock.offsetMs()` reads 0, which is indistinguishable from a genuine
+   * zero offset, so anything that drives a correction (expectedPositionMs into
+   * DriftController) must wait for this instead of correcting against a
+   * placeholder. Everything else about the clock — sampleCount, reanchorCount,
+   * state() — is on `clock` itself, which is public.
+   */
+  get clockReady(): boolean {
+    return this.clock.hasEstimate();
+  }
+
+  /**
    * Connects to `roomId`. Idempotent while a session to the SAME room is
    * active; connecting to a different room while active throws CONFLICT
    * (call `close()` first) instead of silently staying on the old room.
@@ -534,7 +546,18 @@ export class RoomSocket {
       }
       this.heartbeatHandle = this.setTimeoutFn(tick, this.heartbeatMs);
     };
-    this.heartbeatHandle = this.setTimeoutFn(tick, this.heartbeatMs);
+    // The first ping leaves NOW, not one heartbeat from now. Until a pong lands
+    // the clock estimator has no offset at all, and every position the app
+    // projects meanwhile is computed against a placeholder of 0 — which the
+    // drift controller then "corrects". Waiting `heartbeatMs` spent that blind
+    // window on every join AND every reconnect.
+    //
+    // Safe to call inline: the only caller is handleOpen, which has already set
+    // status 'open' and cleared missedPongs, so this ping starts the streak at 1
+    // and re-arms exactly one timer (stopHeartbeat above guarantees there is no
+    // second chain). If an onStatus handler closed the socket underneath us, the
+    // guard inside tick catches it and nothing is sent or armed.
+    tick();
   }
 
   private stopHeartbeat(): void {

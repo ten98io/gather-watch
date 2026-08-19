@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { UserId } from '@gather/contracts';
 import { ChannelFabric } from '../src/channels';
-import type { EmoteChannelMessage, FileChannelMessage, SyncBeacon } from '../src/channels';
+import type { FileChannelMessage, SyncBeacon } from '../src/channels';
 import { MockNetwork, VirtualClock, uid } from './harness';
 
 const BEACON: SyncBeacon = {
@@ -13,7 +13,6 @@ const BEACON: SyncBeacon = {
   epoch: 7,
 };
 const FILE_REQ: FileChannelMessage = { t: 'file.req', fileId: 'f1', offset: 65_536, length: 65_536 };
-const EMOTE: EmoteChannelMessage = { t: 'emote', emoji: '🎉', xPct: 25, yPct: 75 };
 
 describe('ChannelFabric', () => {
   it('typed roundtrip per label', async () => {
@@ -23,28 +22,22 @@ describe('ChannelFabric', () => {
     const fabricB = new ChannelFabric();
     const [dcSyncA, dcSyncB] = net.createChannelPair();
     const [dcFileA, dcFileB] = net.createChannelPair();
-    const [dcEmoteA, dcEmoteB] = net.createChannelPair();
     fabricA.attach(uid('b'), 'sync', dcSyncA);
     fabricA.attach(uid('b'), 'file', dcFileA);
-    fabricA.attach(uid('b'), 'emote', dcEmoteA);
     fabricB.attach(uid('a'), 'sync', dcSyncB);
     fabricB.attach(uid('a'), 'file', dcFileB);
-    fabricB.attach(uid('a'), 'emote', dcEmoteB);
 
     const got: Array<{ label: string; peer: UserId; msg: unknown }> = [];
     fabricB.onMessage('sync', (peer, msg) => got.push({ label: 'sync', peer, msg }));
     fabricB.onMessage('file', (peer, msg) => got.push({ label: 'file', peer, msg }));
-    fabricB.onMessage('emote', (peer, msg) => got.push({ label: 'emote', peer, msg }));
 
     expect(fabricA.send(uid('b'), 'sync', BEACON)).toBe(true);
     expect(fabricA.send(uid('b'), 'file', FILE_REQ)).toBe(true);
-    expect(fabricA.send(uid('b'), 'emote', EMOTE)).toBe(true);
 
     await clock.advance(20);
-    expect(got).toHaveLength(3);
+    expect(got).toHaveLength(2);
     expect(got).toContainEqual({ label: 'sync', peer: uid('a'), msg: BEACON });
     expect(got).toContainEqual({ label: 'file', peer: uid('a'), msg: FILE_REQ });
-    expect(got).toContainEqual({ label: 'emote', peer: uid('a'), msg: EMOTE });
   });
 
   it('malformed inbound frames dropped silently', async () => {

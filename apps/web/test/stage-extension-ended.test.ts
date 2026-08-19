@@ -47,8 +47,16 @@ vi.mock('@/lib/extension-bridge', async (importOriginal) => {
   };
 });
 
-/** The extension is installed, compatible, and driving the user's own tab. */
-vi.mock('@/lib/player/extension-driver', () => ({
+/**
+ * The extension is installed, compatible, and driving the user's own tab.
+ *
+ * Spread over the real module rather than replacing it: the sync engine also
+ * reads this module's playback store (the driven tab's position and length), so
+ * a total replacement makes every one of these cases fail on a missing export
+ * that has nothing to do with what they test.
+ */
+vi.mock('@/lib/player/extension-driver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/player/extension-driver')>()),
   useExtensionDriver: () => ({
     state: {
       phase: 'ready' as const,

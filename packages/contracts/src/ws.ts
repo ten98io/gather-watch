@@ -204,6 +204,45 @@ export const ClientSyncBuffering = clientEvent(
 );
 export type ClientSyncBuffering = z.infer<typeof ClientSyncBuffering>;
 
+/**
+ * "My player says this item is THIS long." An observation, never a command.
+ *
+ * WHY A CLIENT HAS TO SAY IT. `QueueItem.durationMs` is nullable and is null
+ * for nearly every row the product actually carries: the server-side resolver
+ * reads a duration out of oEmbed, and of the six keyless oEmbed endpoints only
+ * Vimeo's response has the field. YouTube's does not, SoundCloud's does not,
+ * the Open Graph fallback carries no duration at all, and a DRM title page or a
+ * `{ kind: 'page' }` link never had one to give. So "resolve the duration on
+ * insert" cannot close the gap however well it is built — the fact is not on
+ * the wire the server is allowed to read. It IS in every viewer's player, one
+ * `HTMLMediaElement.duration` away, the moment metadata loads.
+ *
+ * WHAT KNOWING IT BUYS, all of it already written and waiting on the number:
+ *   • `sync.advance`'s guard verifies an ending instead of pricing one at 20 s
+ *     (services/api/src/modules/sync/service.ts `endingIsPlausible`).
+ *   • `DriftController` clamps the room's projection to the item's own end
+ *     instead of prescribing a seek past it once per tick (`durationMs` in
+ *     packages/sync-core `DriftDecideOptions`).
+ *   • The transport draws a real scrubber instead of a bare elapsed counter.
+ *
+ * WHY IT IS SAFE TO TAKE FROM ANY MEMBER. The server writes it ONLY onto an
+ * item whose duration is still unknown, so this is a fill, never an edit: the
+ * first honest report wins and every later one — including a liar's — is a
+ * no-op. It cannot move the room, cannot name a different item (the id is
+ * compare-and-set against the row that is actually there), and the value is
+ * bounded by the same `sanitizeDurationMs` ceiling a queue insert already
+ * passes through. The worst a lie achieves is a wrong duration on one row of
+ * one room, which the next track change discards.
+ *
+ * Live streams report `Infinity`, which is not a duration; clients send
+ * nothing rather than a number, and the guard's unknown branch still applies.
+ */
+export const ClientSyncDuration = clientEvent(
+  'sync.duration',
+  z.object({ itemId: QueueItemId, durationMs: z.number().finite().positive() }),
+);
+export type ClientSyncDuration = z.infer<typeof ClientSyncDuration>;
+
 // ── WebRTC signaling ──────────────────────────────────────────────────────────
 
 /** Minimal RTCIceCandidateInit shape relayed between peers. */
@@ -322,6 +361,7 @@ export const ClientEvent = z.discriminatedUnion('type', [
   ClientSyncAdvance,
   ClientSyncWaitForAll,
   ClientSyncBuffering,
+  ClientSyncDuration,
   ClientWebrtcOffer,
   ClientWebrtcAnswer,
   ClientWebrtcIce,

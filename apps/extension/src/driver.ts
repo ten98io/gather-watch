@@ -305,7 +305,10 @@ export type DriveReason =
   | 'transport'
   | 'nudge'
   | 'seek'
-  /** A seek was warranted but refused (voice live, player can't seek, or too soon). */
+  /** A seek was warranted but the player refused it (cannot seek, has ignored
+   *  the last ones, or one went out too recently). Live voice does NOT land
+   *  here: the controller withholds the seek itself while it tightens, and
+   *  releases it past its own ceiling — see {@link ElasticDriver.canSeekNow}. */
   | 'seek-suppressed'
   /** The player is buffering. Correcting into a stall makes it worse. */
   | 'stalled'
@@ -755,7 +758,16 @@ export class ElasticDriver {
     // "not known yet" (pre-metadata, or a live stream) and must not be passed
     // as a length, or a real lag would stop being corrected. Infinity is a live
     // stream's honest answer and clamps nothing, here or in the controller.
-    const action = this.controller.decide(room.expectedMs, local.positionMs, {
+    //
+    // The sample is measured AT THIS INSTANT, never as it was captured. It
+    // crossed a process boundary to get here and the player kept playing while
+    // it travelled, so a raw reading overstates the lag by the sample's own
+    // age — and always in the one direction that says this viewer is behind,
+    // which is the direction that prescribes a speed-up or a seek. A tab
+    // reporting at 1 Hz would therefore be permanently ~1 s "late" and be
+    // corrected for it forever.
+    const observedMs = this.observedPositionMs(local, nowMs);
+    const action = this.controller.decide(room.expectedMs, observedMs, {
       nowMs,
       ...(local.durationMs > 0 ? { durationMs: local.durationMs } : {}),
     });
@@ -766,10 +778,12 @@ export class ElasticDriver {
     // in the status chip while the player is simply over.
     const expectedMs =
       local.durationMs > 0 ? Math.min(room.expectedMs, local.durationMs) : room.expectedMs;
-    this.driftMs = expectedMs - anchorNow - local.positionMs;
+    this.driftMs = expectedMs - anchorNow - observedMs;
 
     if (action.action === 'seek') {
-      if (!this.canSeekNow(nowMs)) {
+      // Only the player's own refusals. The controller has already ruled on
+      // voice — see {@link canSeekNow}.
+      if (!this.seekIsAffordable(nowMs)) {
         // Honest stop. If the player structurally cannot seek there is nothing
         // left to fight with, so adopt the lag and play smoothly at it rather
         // than prescribing a correction that will never land.
@@ -885,14 +899,52 @@ export class ElasticDriver {
     return this.caps.canSeek && this.seekMisses < MAX_SEEK_MISSES;
   }
 
-  private canSeekNow(nowMs: number): boolean {
+  /**
+   * The refusals that are this driver's own knowledge of the PLAYER, and
+   * therefore outrank anybody's decision to seek: it cannot seek at all, it
+   * has ignored the last {@link MAX_SEEK_MISSES} we sent, or one went out too
+   * recently (a DRM licence renegotiation is expensive — hence the DRM floor).
+   * The controller knows none of this, so it is asked here and nowhere else.
+   */
+  private seekIsAffordable(nowMs: number): boolean {
     if (!this.seekAvailable()) return false;
-    // While people are actually talking, converge with rate only. A seek is the
-    // one correction guaranteed to wreck a live reaction (Consequence B).
-    if (this.controller.isVoiceTightening()) return false;
     if (this.lastSeekAtMs === null) return true;
     const floor = this.caps.isDrmProtected ? MIN_SEEK_INTERVAL_DRM_MS : MIN_SEEK_INTERVAL_MS;
     return nowMs - this.lastSeekAtMs >= floor;
+  }
+
+  /**
+   * …plus the voice question, for a seek THIS driver prescribes itself. While
+   * people are actually talking, converge with rate only: a seek is the one
+   * correction guaranteed to wreck a live reaction (Consequence B).
+   *
+   * A seek the CONTROLLER decided does not come through here, and must not:
+   * sync-core weighed voice against the drift already and let that one past
+   * `voiceSeekCeilingMs` deliberately — the magnitude at which the two are no
+   * longer watching the same moment, so there is no live reaction left to
+   * spoil, and past which rate alone can never rescue the viewer anyway (over
+   * two hours of playback to close five minutes at the watch band's ±3%; see
+   * packages/sync-core/src/drift.ts). Re-asking it there refused every one of
+   * those rescues and stranded a badly-lagged viewer for as long as anybody in
+   * the room held a mic open.
+   */
+  private canSeekNow(nowMs: number): boolean {
+    if (this.controller.isVoiceTightening()) return false;
+    return this.seekIsAffordable(nowMs);
+  }
+
+  /**
+   * Where the player IS now, not where it was when it last reported.
+   *
+   * Clamped to the item's own length for the same reason the room's
+   * expectation is clamped (see the `durationMs` note in {@link tick}): the
+   * source runs out, so a projection that runs past it is arithmetic, not a
+   * position — and it would read as this viewer racing ahead of a room that is
+   * simply over. 0 is "not known yet" and clamps nothing.
+   */
+  private observedPositionMs(local: DriverTelemetry, nowMs: number): number {
+    const projected = projectedPositionMs(local, nowMs);
+    return local.durationMs > 0 ? Math.min(projected, local.durationMs) : projected;
   }
 
   private armSeek(toMs: number, nowMs: number): void {

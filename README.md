@@ -107,7 +107,7 @@ Then chrome://extensions → Developer mode → Load unpacked →
 | Path | What |
 |---|---|
 | `apps/web` | Next.js PWA — the room interface |
-| `apps/extension` | Chromium MV3 extension — the playback **driver and value-add** (not a replacement for the web app). Drives media on arbitrary sites; chat, queue, call UI all stay in the web app |
+| `apps/extension` | Chromium MV3 extension — the playback **driver and value-add** (not a replacement for the web app). Drives media on arbitrary sites, and injects an in-page overlay carrying the room's **chat and people list** onto the site being watched. Queue and call stay in the web app |
 | `apps/mobile` | Expo (iOS + Android) |
 | `services/api` | Fastify control plane: auth, rooms, chat, queue, sync, restream, rtc, push, metadata, compliance, admin |
 | `packages/contracts` | Zod schemas — single source of truth for REST + WS |
@@ -124,10 +124,11 @@ Then chrome://extensions → Developer mode → Load unpacked →
 | [HANDOFF.md](HANDOFF.md) | Live state, open items, the traps list — read first when resuming |
 | [DESIGN.md](DESIGN.md) | Binding design system, locked UX decisions, the ≤3-step budget |
 | [docs/EXTENSION_FIRST.md](docs/EXTENSION_FIRST.md) | The architecture: elastic sync, extension-first playback, casting honestly |
+| [docs/FEATURE_PLAN.md](docs/FEATURE_PLAN.md) | The backlog and, in §5/§7/§8, the **binding owner rulings** — what is deliberately never built (VBrowser, torrents, DRM re-streaming, region VPN) and why |
 | [docs/CONTENT_MATCHING.md](docs/CONTENT_MATCHING.md) | Cross-region/DRM content resolution |
 | [docs/CAST_RELAY.md](docs/CAST_RELAY.md) | Getting a share onto a TV: Chromecast participant, AirPlay stance |
 | [docs/COST_MODEL.md](docs/COST_MODEL.md) | Verified Cloudflare cost model |
 | [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.md) | The deploy runbook |
 | [docs/WEB_SLIMMING.md](docs/WEB_SLIMMING.md) | Active migration: playback out of the web app (steps 4–5 pending) |
 | [infra/README.md](infra/README.md) | The self-hosted compose stack, ports, TURN notes |
-| [docs/history/](docs/history/) | Superseded plans and the four worker briefs the code was built from — historical only, never build from these |
+| [docs/history/](docs/history/README.md) | What the seven superseded specs and worker briefs were, why they were removed, and the one command that recovers any of them from git |

@@ -2,7 +2,8 @@
  * Ducking — the content steps back while somebody is actually talking, and
  * comes back when they stop.
  *
- * docs/history/BUILD_PROMPT.md named this and it was never built: a room full
+ * The original build spec named this and it was never built (that spec is gone;
+ * docs/history/README.md says where): a room full
  * of people watching something loud has to choose between hearing the film and
  * hearing each other, and today it chooses by hand, every time, with the
  * volume slider.

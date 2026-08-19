@@ -158,14 +158,13 @@ extension never reads one.
   read the token) and is restored on wake, and a 30 s `chrome.alarms` keepalive
   (`periodInMinutes: 0.5`) revives the worker if nothing else does — so the
   worst case is a stale position for a few seconds, not a dead room.
-- **A revived session has an unknown queue until the next mutation.** The
-  room's queue arrives with the join snapshot, and the server answers a *first*
-  heartbeat with one — but a revived worker beats into a presence entry that is
-  still alive, so no snapshot comes back. `sync.advance` names the item that
-  ended, so with an unknown queue the worker returns null rather than guessing,
-  and an item that finishes in that window is silently not reported. The same
-  recycle leaves `playback` null and stops the worker driving at all, so it is
-  not a new blind spot — but it is a real one, and it is tracked in HANDOFF.
+  A revived worker also **asks** for the room again rather than waiting to be
+  told: it sends `presence.update { state: 'watching', wantSnapshot: true }` on
+  the resumed path, the same door the web client uses after a refresh. Without
+  that ask it beat into a presence entry that was still alive, no snapshot came
+  back, and the worker held an unknown queue — which meant `sync.advance` (it
+  names the item that ended) returned null rather than guessing, so an item
+  finishing in that window was silently never reported.
 - Frames in **closed** shadow roots are unreachable by design (no extension
   can pierce them), and a site that renders its player into a cross-origin
   frame we are not allowed to script stays undrivable.

@@ -3,8 +3,8 @@ import {
   AUDIO_NOMINAL_AREA,
   HARD_SEEK_MS,
   LEGACY_BANDS,
+  applyDecision,
   decideDrive,
-  expectedPositionMs,
   isPlausibleMain,
   mediaIsUsable,
   parseMetrics,
@@ -105,17 +105,83 @@ describe('decideDrive with explicit bands', () => {
   });
 });
 
-describe('expectedPositionMs', () => {
-  it('projects a playing room forward at its rate', () => {
-    const room = { positionMs: 30_000, rate: 1, playing: true, serverTs: 1_000_000 };
-    expect(expectedPositionMs(room, 1_000_000)).toBe(30_000);
-    expect(expectedPositionMs(room, 1_002_000)).toBe(32_000);
-    expect(expectedPositionMs({ ...room, rate: 2 }, 1_002_000)).toBe(34_000);
+/**
+ * Applying a decision to a player that refuses part of it.
+ *
+ * A driver does not own the player it corrects, so every assignment is a
+ * request: DRM elements throw on `playbackRate`, and an element with no
+ * seekable range (a live edge, a source still loading) throws on
+ * `currentTime`. What must survive either refusal is the ROOM'S TRANSPORT —
+ * play and pause are the host's intent and are never subject to any band.
+ */
+describe('applyDecision', () => {
+  /** A player that throws on one assignment and works normally otherwise. */
+  function player(refuses: 'currentTime' | 'playbackRate' | null): {
+    el: MediaElementLike;
+    log: string[];
+  } {
+    const log: string[] = [];
+    let time = 10;
+    let rate = 1;
+    const el: MediaElementLike = {
+      get currentTime() {
+        return time;
+      },
+      set currentTime(v: number) {
+        if (refuses === 'currentTime') throw new Error('no seekable range');
+        time = v;
+        log.push(`seek:${v}`);
+      },
+      duration: 100,
+      paused: true,
+      get playbackRate() {
+        return rate;
+      },
+      set playbackRate(v: number) {
+        if (refuses === 'playbackRate') throw new Error('rate is not settable');
+        rate = v;
+        log.push(`rate:${v}`);
+      },
+      play: () => {
+        log.push('play');
+      },
+      pause: () => {
+        log.push('pause');
+      },
+    };
+    return { el, log };
+  }
+
+  it('carries every field of the decision to the element', () => {
+    const { el, log } = player(null);
+    applyDecision(el, { seekToMs: 5000, setRate: 1.03, action: 'play' });
+    expect(log).toEqual(['seek:5', 'rate:1.03', 'play']);
+    // A negative target is a projection, not a position: no element has one.
+    applyDecision(el, { seekToMs: -4000, setRate: null, action: 'pause' });
+    expect(el.currentTime).toBe(0);
   });
 
-  it('freezes a paused room at its stored position', () => {
-    const room = { positionMs: 30_000, rate: 1, playing: false, serverTs: 1_000_000 };
-    expect(expectedPositionMs(room, 1_099_000)).toBe(30_000);
+  it("still applies the room's transport when the element refuses the seek", () => {
+    const { el, log } = player('currentTime');
+
+    expect(() => {
+      applyDecision(el, { seekToMs: 5000, setRate: 1.03, action: 'pause' });
+    }).not.toThrow();
+
+    // An unguarded write threw out of applyDecision before ever reaching the
+    // rate and the pause, so a refused seek silently cost the room the pause
+    // it actually asked for — the room says stop and the player plays on.
+    expect(log).toEqual(['rate:1.03', 'pause']);
+  });
+
+  it("still applies the room's transport when the element refuses the rate", () => {
+    const { el, log } = player('playbackRate');
+
+    expect(() => {
+      applyDecision(el, { seekToMs: 5000, setRate: 1.03, action: 'play' });
+    }).not.toThrow();
+
+    expect(log).toEqual(['seek:5', 'play']);
   });
 });
 

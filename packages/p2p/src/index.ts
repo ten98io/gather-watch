@@ -40,7 +40,6 @@ export type {
   ChannelFabricOptions,
   ChannelLabel,
   ChannelMessages,
-  EmoteChannelMessage,
   FileChannelMessage,
   SyncBeacon,
   SyncChannelMessage,

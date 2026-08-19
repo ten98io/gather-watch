@@ -1,13 +1,35 @@
 # Web slimming: migrating playback out of the web app
 
-> **STATUS (re-verified 2026-08-18): steps 1–3 done, steps 4–5 NOT executed.**
-> The extension has `desktopCapture`, extension-preferred driving is wired, and
-> the install funnel exists. What remains is the deletions themselves (web
-> player adapters + web `getDisplayMedia`, then dead-code/registry dedupe),
-> and they are **gated, not merely unfinished**: the ordering rule requires a
-> real room with the extension installed to drive playback correctly,
-> verified end-to-end, before any web playback path is removed. That
-> verification has not happened. Confirmed still present today:
+> **STATUS (re-verified 2026-08-19): steps 1–2 done. STEP 3 IS NOT DONE — the
+> earlier claim that it was is withdrawn. Steps 4–5 NOT executed and must not
+> be.**
+>
+> The extension has `desktopCapture` and extension-preferred driving is wired.
+> The install funnel is **built but unreachable**, which is a different thing
+> from existing, and step 4 deletes the web's ability to play anything:
+>
+> - `<ExtensionGate>` (`apps/web/components/extension/ExtensionGate.tsx`) is a
+>   complete, tested component with **no production caller** — grep it across
+>   `apps/web` and you get the component and its own test suite.
+> - `extensionInstallUrl()` (`apps/web/lib/player/extension-driver.ts`) returns
+>   **null** unless `NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL` or
+>   `NEXT_PUBLIC_GATHER_EXTENSION_ID` is inlined at build time — and there is
+>   no store listing to point either at (`manifest.json` is version 0.1.0 with
+>   an empty `icons` object).
+> - The one shipped no-extension surface, `PageLinkStage` in
+>   `apps/web/components/stage/StagePane.tsx`, renders its "Add the extension"
+>   link only when that null-returning function returns non-null.
+>
+> So today a visitor without the extension is told what they need and given no
+> way to get it — and that is the state step 4 would make load-bearing for
+> *every* source rather than just `page`-kind items. Executing steps 4–5 now
+> ships a room link that opens to a page which cannot play anything and cannot
+> tell anyone how to fix that.
+>
+> The deletions are therefore **gated twice over**: on the funnel actually
+> being reachable, and on the original ordering rule — a real room, a real
+> site, the installed extension, playback verified end to end. Neither has
+> happened. Confirmed still present today:
 > `apps/web/lib/player/{adapter,embed,native,soundcloud,vimeo,youtube}.ts` and
 > the `getDisplayMedia` call at
 > `apps/web/components/stage/ScreenShareStage.tsx:113`. Blast radius when it
@@ -85,6 +107,14 @@ one. Required before step 4 lands:
    SSR-safely with a short timeout. The room must render a clear, friendly
    state: what Gather needs, why, and a one-click install link — never a
    broken player or a spinner.
+   **NOT DONE.** The component exists (`<ExtensionGate>`) and nothing mounts
+   it. Mounting it is only half the job: the "one-click install link" needs a
+   destination, and `extensionInstallUrl()` has none to return until the
+   extension is either listed on the Chrome Web Store
+   (`docs/FEATURE_PLAN.md` 3.1, gated on the manifest narrowing in 3.2) or
+   pointed at an honest self-install docs page. Pick one before this item can
+   be called closed; a gate that says "install it" and links nowhere is worse
+   than the blank stage it replaced.
 2. **The room stays usable without it.** Chat, call, queue and presence must
    all work with no extension. You can be in the room, talking to friends,
    before you can watch. This keeps the link shareable.

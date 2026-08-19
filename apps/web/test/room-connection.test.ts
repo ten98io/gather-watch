@@ -217,7 +217,15 @@ describe('RoomConnection', () => {
     sock?.open();
     // Two frames: the connection's own snapshot ask (every open sends one)
     // followed by the envelope the user queued while the socket was down.
-    const flushed = (sock?.sent ?? []).map((raw) => (JSON.parse(raw) as { type: string }).type);
+    //
+    // The heartbeat is filtered out rather than pinned. RoomSocket's first
+    // clock.ping leaves on open (it is what gives the drift engine a real
+    // offset before it starts correcting), and it is not a send — asserting on
+    // its position here would make this test fail for a change to the heartbeat
+    // cadence, which is not what it is about.
+    const flushed = (sock?.sent ?? [])
+      .map((raw) => (JSON.parse(raw) as { type: string }).type)
+      .filter((type) => type !== 'clock.ping');
     expect(flushed).toEqual(['presence.update', 'chat.typing']);
     conn.close();
   });

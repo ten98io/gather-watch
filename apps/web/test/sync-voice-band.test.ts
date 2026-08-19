@@ -38,6 +38,24 @@ import {
   resetRoomAudio,
 } from '@/lib/player/room-audio';
 
+/**
+ * The engine reports the playing item's LENGTH back to the room, so it reads
+ * the room connection. Nothing here has a queue or a socket — and this file is
+ * about the band, not the report — so the context answers with a connection
+ * whose queue is empty, which `durationReportFor` correctly declines to name an
+ * item from. The report itself is pinned in sync-duration-report.test.ts.
+ */
+vi.mock('@/lib/room-context', () => ({
+  useRoomConnection: () => ({
+    useRoomState: { getState: () => ({ queue: { items: [] } }) },
+    rawSocket: {
+      send: () => {
+        throw new Error('no socket in this harness');
+      },
+    },
+  }),
+}));
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const MP4: MediaRef = { kind: 'url', url: 'https://cdn.example/clip.mp4', mime: 'video/mp4' };
@@ -125,7 +143,13 @@ describe('the sync band follows presence mic state', () => {
       seq: 1,
       queueIndex: null,
     };
+    // One accepted sample, offset 0. The engine refuses to correct a PLAYING
+    // room against a clock that has never been measured (`offsetMs()` answers 0
+    // before the first sample, which is indistinguishable from a real zero), so
+    // an estimator straight out of the constructor would make every case below
+    // pass by doing nothing at all.
     const clock = new ClockEstimator();
+    clock.addSample({ clientSendTs: startedAt, serverTs: startedAt, clientRecvTs: startedAt });
     function Harness(): null {
       useSyncEngine({ adapter, playback, clock, tickMs: TICK_MS });
       return null;

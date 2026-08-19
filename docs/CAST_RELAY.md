@@ -33,7 +33,7 @@ assumption to a rate, or an absence to a seconds figure.
 | Path | Verdict | One line |
 |---|---|---|
 | Chromecast: receiver page joins the room as a WebRTC viewer | **Build** (primary) | No server in the media path; the TV is one more peer |
-| AirPlay: per-platform mirroring hint | **Build** (it is copy) — **not written yet** | Mirroring is OS-owned with no API for anyone; guidance is the entire client-side surface |
+| AirPlay: per-platform mirroring hint | **Built** 2026-08-19 (`CastHint`, below the share picture — see §2) | Mirroring is OS-owned with no API for anyone; guidance is the entire client-side surface |
 | AirPlay: server-minted HLS via Cloudflare Stream Live | **Defer** | Requires an always-on transcoder for a multi-second experience mirroring already gives free |
 | Native iOS `AVRoutePickerView` | Roadmap | The durable AirPlay fix lives there, not in the web ceiling |
 
@@ -154,8 +154,11 @@ the share stage itself (`CastHint` in
 `apps/web/components/stage/ScreenShareStage.tsx`), as a bar BELOW the picture
 rather than over it, shown to share viewers on Apple platforms only.
 
-- **Where it goes:** rows inside the always-visible cast control popover,
-  shown only while a screen share is on stage, keyed by platform.
+- **Where it goes:** a bar directly below the share picture (`CastHint` in
+  `apps/web/components/stage/ScreenShareStage.tsx`), shown only while a screen
+  share is on stage, keyed by platform, to viewers on Apple platforms. NOT the
+  cast popover — StagePane withholds the whole transport bar during a share, so
+  at the one moment this copy is wanted, that popover does not exist.
 - **macOS copy:** *"To put this on your TV: menu bar → Control Center →
   Screen Mirroring."*
 - **iPhone/iPad copy:** *"To put this on your TV: Control Center (swipe down
@@ -275,8 +278,10 @@ does later.
 5. **Player-bar cast UI.** The live-triage wave (shipped 2026-08-17) made
    the cast control always-visible with honest states; this slice **extends
    that control, it does not duplicate it**: a "Watch on Chromecast" action
-   that launches the CAF session when a share is live, the two AirPlay
-   guidance rows (§2), and the old-device fallback line (§1). Extend
+   that launches the CAF session when a share is live, and the old-device
+   fallback line (§1). The AirPlay guidance is NOT part of this slice — it
+   shipped in §2, below the share picture rather than in this popover, for the
+   reason recorded there. Extend
    `apps/web/test/cast-affordance.test.ts` for the new states.
 6. **Presentation API fallback (low priority).** Same `/tv` URL via
    `new PresentationRequest(url)` for gen 1–3 devices, labeled honestly

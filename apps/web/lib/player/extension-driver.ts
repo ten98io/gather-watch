@@ -11,12 +11,21 @@
  *     the bridge's status port,
  *   - the forced re-check the install funnel needs (docs/WEB_SLIMMING.md, "the
  *     room comes alive the moment the extension is added"),
- *   - handoff / intent / release, already turned into plain-language results.
+ *   - handoff / intent / release, already turned into plain-language results,
+ *   - and, in its own store, WHAT THE DRIVEN PLAYER IS DOING — position,
+ *     length, and what the source can honestly be said to support.
  *
- * It deliberately does NOT: speak the wire protocol (the bridge does),
- * subscribe to telemetry (the sync engine owns that stream — one subscriber
- * per concern keeps the port's lifetime obvious), render anything, or decide
- * copy for the install funnel beyond the one sentence each state carries.
+ * It deliberately does NOT: speak the wire protocol (the bridge does), render
+ * anything, or decide copy for the install funnel beyond the one sentence each
+ * state carries.
+ *
+ * WHY TELEMETRY IS A SECOND STORE AND NOT A FIELD ON THIS ONE. Telemetry
+ * arrives about once a second while a tab is driven; session status changes
+ * perhaps twice a session. Folding the numbers into `ExtensionDriverSnapshot`
+ * would re-render every consumer of `useExtensionDriver` — the stage shell and
+ * the transport bar — at 1 Hz for a value most of them never read. Two stores,
+ * one shared port (the bridge owns the port's lifetime and counts listeners
+ * across both), so a component subscribes to the concern it renders.
  *
  * ── Constraints a future reader would otherwise trip on ───────────────────
  *
@@ -47,7 +56,9 @@ import {
   getExtensionStatus,
   handoffRoom,
   isExtensionChannelSupported,
+  onCapability,
   onStatus,
+  onTelemetry,
   parseExtensionIds,
   stopDriving,
   updateIntent,
@@ -61,7 +72,10 @@ import type {
   ProtocolErrorCode,
   ProviderSummary,
   SessionStatus,
+  TelemetryPayload,
 } from '@/lib/extension-bridge';
+import { providerById } from '@/lib/providers';
+import type { ProviderCapability } from '@/lib/providers';
 
 /* ════════════════════════════ user-facing copy ════════════════════════════ */
 
@@ -644,4 +658,265 @@ export function useExtensionDriver(): ExtensionDriver {
     }),
     [snapshot, store, supports],
   );
+}
+
+/* ═════════════════════ what the driven player is doing ════════════════════ */
+
+/**
+ * The driven tab's own numbers, and what its source can honestly do.
+ *
+ * THIS IS THE WEB'S TRANSPORT WHILE THE EXTENSION DRIVES. When the extension
+ * is the driver this page builds no adapter at all (StagePane nulls the adapter
+ * kind), so every reading `PlayerControls` normally takes from a
+ * `PlayerAdapter` — position, length, playing — has no source. The extension
+ * has been streaming all of it once a second the whole time; it reached
+ * `onTelemetry` and stopped there, with no caller, which is why an
+ * extension-driven room showed a frozen counter, 00:00 for the length and a
+ * scrubber that could not move.
+ *
+ * `positionMs` is the raw last reading, NOT a live clock: read it through
+ * {@link extensionPositionMs}, which projects it forward the way the
+ * extension's own driver does. A component that renders this field directly
+ * shows a value that steps once a second and freezes whenever the tab stops
+ * reporting.
+ */
+export interface ExtensionPlayback {
+  /** The provider of the driven tab, or null when nothing is being driven. */
+  provider: ProviderSummary | null;
+  /**
+   * This app's own honesty tier for that provider (lib/providers.ts).
+   *
+   * DERIVED FROM THE ID, NOT FROM THE WIRE. `ProviderSummary.tier` is the
+   * extension's LEGACY vocabulary ('api' | 'drm' | 'generic', see `tierFor` in
+   * apps/extension/src/providers.ts) and does not name the same axis. The two
+   * registries carry the same ids on purpose, so the id is what we look up; a
+   * provider this build has never heard of is 'generic', which is exactly what
+   * an unrecognised host is.
+   */
+  capability: ProviderCapability;
+  /** Protected media: never capture, mirror or re-encode it (docs/
+   *  EXTENSION_FIRST.md Part 3). The wire tier is the only DRM signal that
+   *  crosses the channel; the registry's 'extension' tier means the same thing
+   *  for the services that have no embed at all. */
+  drm: boolean;
+  /** Position at `updatedAt` — project it, do not render it. 0 = nothing yet. */
+  positionMs: number;
+  /** The item's length. 0 = not known (and a live stream reads as 0: the
+   *  content script sends 0 rather than Infinity, which no JSON channel could
+   *  carry intact anyway). */
+  durationMs: number;
+  playing: boolean;
+  rate: number;
+  /** Extension-side `Date.now()` when the reading was CAPTURED — same machine,
+   *  same clock, so it is comparable with ours. 0 = no frame has arrived. */
+  updatedAt: number;
+}
+
+/**
+ * Nothing is being driven. Frozen and shared so it is also a stable
+ * `getServerSnapshot` answer — a fresh literal per call re-renders forever.
+ */
+export const NO_EXTENSION_PLAYBACK: ExtensionPlayback = Object.freeze({
+  provider: null,
+  capability: 'generic' as ProviderCapability,
+  drm: false,
+  positionMs: 0,
+  durationMs: 0,
+  playing: false,
+  rate: 1,
+  updatedAt: 0,
+});
+
+/**
+ * How old a reading may be and still describe now. Mirrors the extension's own
+ * `TELEMETRY_STALE_MS` (apps/extension/src/driver.ts) against a 1 Hz reporter:
+ * four missed frames is a tab that has stopped talking, not one that is late.
+ */
+export const EXTENSION_TELEMETRY_STALE_MS = 4000;
+
+/** Is the driven tab still reporting? False freezes the transport rather than
+ *  letting it run on a reading from a minute ago. */
+export function extensionTelemetryLive(playback: ExtensionPlayback, nowMs: number): boolean {
+  return playback.updatedAt > 0 && nowMs - playback.updatedAt <= EXTENSION_TELEMETRY_STALE_MS;
+}
+
+/**
+ * Where the driven player is NOW.
+ *
+ * The reading crossed a process boundary and the player kept playing while it
+ * travelled, so the raw field is always a little behind — at 1 Hz, by up to a
+ * second. Projecting at the rate it was running is the same correction the
+ * extension's driver applies to its own samples (`projectedPositionMs`), and it
+ * is what turns a value that steps once a second into a counter that moves.
+ *
+ * A stale or paused reading is not projected: it is reported as it stands,
+ * because a counter that keeps climbing after the tab went quiet is a lie about
+ * a player nobody is watching.
+ */
+export function extensionPositionMs(playback: ExtensionPlayback, nowMs: number): number {
+  if (!playback.playing || !extensionTelemetryLive(playback, nowMs)) return playback.positionMs;
+  const projected = playback.positionMs + Math.max(0, nowMs - playback.updatedAt) * playback.rate;
+  // No item plays past its own end — the same terminal state the drift
+  // controller applies to the room's projection.
+  return playback.durationMs > 0 ? Math.min(projected, playback.durationMs) : projected;
+}
+
+/** A length only counts once a player has really measured it: 0 is "not known"
+ *  everywhere in this app, and a live stream never had one to give. */
+function readDuration(raw: number): number {
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function sameTelemetry(a: ExtensionPlayback, b: TelemetryPayload): boolean {
+  return (
+    a.positionMs === b.positionMs &&
+    a.durationMs === readDuration(b.durationMs) &&
+    a.playing === b.playing &&
+    a.rate === b.rate &&
+    a.updatedAt === b.at
+  );
+}
+
+export interface ExtensionPlaybackStore {
+  getSnapshot: () => ExtensionPlayback;
+  /** React subscription (`useSyncExternalStore`). */
+  subscribe: (listener: () => void) => () => void;
+  /** Value subscription for code that must not re-render on every frame — the
+   *  sync engine's duration report reads the stream this way. */
+  observe: (cb: (playback: ExtensionPlayback) => void) => () => void;
+  /** Drop listeners and the bridge subscriptions. Tests/teardown. */
+  dispose: () => void;
+}
+
+/**
+ * Isolated instance for tests. The app holds exactly one (see
+ * {@link extensionPlaybackStore}) for the same reason the driver store is a
+ * singleton: the bridge's event port is shared and counts listeners globally.
+ */
+export function createExtensionPlaybackStore(): ExtensionPlaybackStore {
+  const listeners = new Set<() => void>();
+  let snapshot: ExtensionPlayback = NO_EXTENSION_PLAYBACK;
+  let offTelemetry: (() => void) | null = null;
+  let offCapability: (() => void) | null = null;
+  let disposed = false;
+
+  function publish(next: ExtensionPlayback): void {
+    if (disposed) return;
+    snapshot = next;
+    for (const listener of [...listeners]) {
+      try {
+        listener();
+      } catch {
+        // One bad subscriber must not stop the others, or stall the stream.
+      }
+    }
+  }
+
+  function attach(): void {
+    if (disposed || offTelemetry !== null || listeners.size === 0) return;
+    offTelemetry = onTelemetry((t) => {
+      // Identical frames arrive once a second from a paused tab; re-publishing
+      // one would re-render every subscriber for no change at all.
+      if (sameTelemetry(snapshot, t)) return;
+      publish({
+        ...snapshot,
+        positionMs: Number.isFinite(t.positionMs) && t.positionMs > 0 ? t.positionMs : 0,
+        durationMs: readDuration(t.durationMs),
+        playing: t.playing,
+        rate: Number.isFinite(t.rate) && t.rate > 0 ? t.rate : 1,
+        updatedAt: t.at,
+      });
+    });
+    offCapability = onCapability((raw) => {
+      const provider = readProvider(raw);
+      if (sameProvider(snapshot.provider, provider)) return;
+      publish({
+        ...snapshot,
+        provider,
+        capability: drivenCapability(provider),
+        drm: drivenIsDrm(provider),
+        // A different source is a different item: its predecessor's position
+        // and length describe nothing here, and holding them would draw the
+        // old scrubber over the new tab until the next frame lands.
+        positionMs: 0,
+        durationMs: 0,
+        playing: false,
+        rate: 1,
+        updatedAt: 0,
+      });
+    });
+  }
+
+  function detach(): void {
+    const telemetry = offTelemetry;
+    const capability = offCapability;
+    offTelemetry = null;
+    offCapability = null;
+    // The bridge closes the shared port once its last listener leaves.
+    telemetry?.();
+    capability?.();
+  }
+
+  function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    attach();
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) detach();
+    };
+  }
+
+  return {
+    getSnapshot: () => snapshot,
+    subscribe,
+    observe: (cb) => subscribe(() => cb(snapshot)),
+    dispose: () => {
+      disposed = true;
+      detach();
+      listeners.clear();
+      snapshot = NO_EXTENSION_PLAYBACK;
+    },
+  };
+}
+
+/**
+ * This app's honesty tier for a driven source. Exported because the sentence a
+ * component writes about the source ("plays in sync", "starts together") is
+ * this answer, and it must not be re-derived from the wire tier by eye.
+ */
+export function drivenCapability(provider: ProviderSummary | null): ProviderCapability {
+  if (provider === null) return 'generic';
+  return providerById(provider.id)?.capability ?? 'generic';
+}
+
+/** Protected media. Either signal alone is enough: the wire says so, or this
+ *  build's registry classifies the service as extension-only, which is the same
+ *  fact wearing the other registry's vocabulary. */
+export function drivenIsDrm(provider: ProviderSummary | null): boolean {
+  if (provider === null) return false;
+  return provider.tier === 'drm' || drivenCapability(provider) === 'extension';
+}
+
+let sharedPlayback: ExtensionPlaybackStore | null = null;
+
+/** The one playback store the app uses. Lazy — nothing runs at import time. */
+export function extensionPlaybackStore(): ExtensionPlaybackStore {
+  sharedPlayback ??= createExtensionPlaybackStore();
+  return sharedPlayback;
+}
+
+function getPlaybackServerSnapshot(): ExtensionPlayback {
+  return NO_EXTENSION_PLAYBACK;
+}
+
+/**
+ * Subscribe a component to the driven player.
+ *
+ * Renders {@link NO_EXTENSION_PLAYBACK} on the server and until the first frame
+ * arrives, so a page with no extension — and every SSR pass — reads exactly as
+ * "nothing is being driven" rather than as a player stopped at zero.
+ */
+export function useExtensionPlayback(): ExtensionPlayback {
+  const store = extensionPlaybackStore();
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, getPlaybackServerSnapshot);
 }

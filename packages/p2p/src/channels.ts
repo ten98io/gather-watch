@@ -11,11 +11,26 @@
 import type { UserId } from '@gather/contracts';
 import type { DataChannelLike } from './types';
 
-/** The fixed set of channel labels the mesh negotiates per peer. */
-export type ChannelLabel = 'sync' | 'file' | 'emote';
+/**
+ * The fixed set of channel labels the mesh negotiates per peer.
+ *
+ * THERE WAS A THIRD, `'emote'`, and it was removed 2026-08-19 because nothing
+ * ever sent on it or subscribed to it. Emoji bursts have always travelled the
+ * room WebSocket (`emote.burst`, ephemeral at seq 0) — which is the right
+ * transport for them: a burst has to reach every member of the room including
+ * the ones not in the call, and a peer channel only reaches peers. Negotiating
+ * it per link cost a channel on every call and told a reader that emotes were
+ * peer-to-peer.
+ *
+ * The two that remain both have named consumers and a recorded plan, so they
+ * stay negotiated even though neither carries traffic today: `'sync'` for the
+ * beacon pipeline and `'file'` for chunked file transfer. Both are listed in
+ * HANDOFF's orphan inventory.
+ */
+export type ChannelLabel = 'sync' | 'file';
 
 /** Fixed pre-negotiated DataChannel ids per label (both peers create the same id). */
-export const CHANNEL_IDS: Record<ChannelLabel, number> = { sync: 0, file: 1, emote: 2 };
+export const CHANNEL_IDS: Record<ChannelLabel, number> = { sync: 0, file: 1 };
 
 /** Master-clock beacon broadcast at 1 Hz + on every mutation. */
 export interface SyncBeacon {
@@ -40,14 +55,10 @@ export type FileChannelMessage =
   | { t: 'file.abort'; fileId: string }
   | { t: 'file.err'; fileId: string; code: 'NOT_FOUND' | 'RANGE' | 'INTERNAL' };
 
-/** Messages carried on the emote channel (ephemeral emoji bursts). */
-export type EmoteChannelMessage = { t: 'emote'; emoji: string; xPct: number; yPct: number };
-
 /** Label → message union carried on that channel. */
 export interface ChannelMessages {
   sync: SyncChannelMessage;
   file: FileChannelMessage;
-  emote: EmoteChannelMessage;
 }
 
 /** Options for {@link ChannelFabric}. */

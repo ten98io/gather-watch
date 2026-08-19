@@ -315,7 +315,7 @@ describe('ElasticDriver — a player that ignores playbackRate', () => {
 });
 
 describe('ElasticDriver — live voice (Consequence B)', () => {
-  it('never seeks while anybody is on mic, however far behind the viewer is', () => {
+  it('holds the seek while anybody is on mic, and converges with rate instead', () => {
     const driver = new ElasticDriver({ profile: 'watch' });
     driver.setVoiceActive(true);
     const { commands } = simulate(driver, { ticks: 40, lagMs: 20_000 });
@@ -332,6 +332,107 @@ describe('ElasticDriver — live voice (Consequence B)', () => {
     const quiet = new ElasticDriver({ profile: 'watch' });
     const { commands } = simulate(quiet, { ticks: 4, lagMs: 20_000 });
     expect(seeks(commands).length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Suppression protects a live reaction, and past a point there is no longer
+   * one to protect: sync-core lifts it above `voiceSeekCeilingMs` (30 s, twice
+   * the largest lag the elastic design will deliberately hold) because rate
+   * alone cannot rescue a viewer that far back — five minutes at the watch
+   * band's ±3% is over two hours of playback. The extension used to ask the
+   * voice question a SECOND time in its own seek gate and refuse every one of
+   * those rescues, so a viewer who lost five minutes to a stall stayed lost
+   * for as long as anybody in the room held a mic open.
+   */
+  it('seeks a viewer minutes behind even while somebody is on mic', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    driver.setVoiceActive(true);
+    const { commands } = simulate(driver, { ticks: 4, lagMs: 300_000 });
+
+    expect(seeks(commands).length).toBeGreaterThan(0);
+    expect(driver.state().voiceTightening).toBe(true);
+  });
+
+  it('still refuses that seek when the player itself cannot seek', () => {
+    const driver = new ElasticDriver({ profile: 'watch', capabilities: { canSeek: false } });
+    driver.setVoiceActive(true);
+    const { commands } = simulate(driver, { ticks: 4, lagMs: 300_000 });
+
+    // The controller's decision is not authority over the player: what this
+    // driver knows about the element outranks it, mic or no mic.
+    expect(seeks(commands)).toHaveLength(0);
+    expect(commands.some((c) => c.reason === 'seek-suppressed')).toBe(true);
+  });
+});
+
+/**
+ * Telemetry crosses a process boundary: the content script reads the element,
+ * posts it, and the worker decides against that reading some time later —
+ * while the media kept playing. Measuring at the reading rather than at the
+ * decision therefore reports a lag equal to the sample's age, in the one
+ * direction that prescribes a speed-up or a seek.
+ */
+describe('ElasticDriver — the sample is measured at the decision, not at capture', () => {
+  it('leaves a viewer who is exactly in sync alone, however stale the sample', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    // Read 3.9 s before the decision it feeds — the oldest a sample can be
+    // and still be used at all (TELEMETRY_STALE_MS).
+    const { commands } = simulate(driver, { ticks: 20, lagMs: 0, telemetryAgeMs: 3900 });
+
+    expect(commands.every((c) => c.reason === 'idle')).toBe(true);
+    expect(commands.every((c) => c.driftMs === 0)).toBe(true);
+  });
+
+  it('does not seek on a lag the sample only appears to have', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const now = START_NOW;
+    // Read a second ago at 587.5 s, still playing: the element is at 588.5 s
+    // now, 11.5 s behind the room — inside the watch band's 12 s seek escape.
+    // Read as it stands, it is 12.5 s behind and gets a seek nobody needed.
+    const cmd = driver.tick(
+      { expectedMs: 600_000, playing: true, rate: 1, mediaKey: 'yt:abc' },
+      { positionMs: 587_500, durationMs: 5_400_000, playing: true, rate: 1, atMs: now - 1000 },
+      now,
+    );
+
+    expect(cmd.seekToMs).toBeNull();
+    expect(cmd.reason).toBe('nudge');
+    expect(cmd.driftMs).toBeCloseTo(11_500, 5);
+  });
+
+  it('projects nothing out of a player that is not playing', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const now = START_NOW;
+    // A paused room and a paused player. Three seconds passed since the
+    // reading and the element moved not one frame in them: projecting a
+    // paused player invents playback that never happened, and would talk this
+    // 12.5 s gap down under the seek escape.
+    const cmd = driver.tick(
+      { expectedMs: 600_000, playing: false, rate: 1, mediaKey: 'yt:abc' },
+      { positionMs: 587_500, durationMs: 5_400_000, playing: false, rate: 1, atMs: now - 3000 },
+      now,
+    );
+
+    expect(cmd.seekToMs).toBe(600_000);
+    expect(cmd.driftMs).toBeCloseTo(12_500, 5);
+  });
+
+  it('never projects a sample past the end of the item', () => {
+    const driver = new ElasticDriver({ profile: 'watch' });
+    const now = START_NOW;
+    // Two seconds of item left when it was read three seconds ago: the
+    // element is sitting on its last frame, not a second past an end that
+    // does not exist. The room's projection is clamped to the same end, so
+    // the honest answer for a finished item is a drift of zero — not a
+    // viewer who is somehow ahead of a room that is simply over.
+    const cmd = driver.tick(
+      { expectedMs: 130_000, playing: true, rate: 1, mediaKey: 'yt:abc' },
+      { positionMs: 98_000, durationMs: 100_000, playing: true, rate: 1, atMs: now - 3000 },
+      now,
+    );
+
+    expect(cmd.driftMs).toBe(0);
+    expect(cmd.seekToMs).toBeNull();
   });
 });
 

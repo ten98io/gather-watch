@@ -59,8 +59,25 @@ Compose gating and Docker HEALTHCHECKs both probe this.
    `mongodb://mongo:27017/gather` and `redis://redis:6379` per service, so the
    empty dev defaults (in-memory adapters) can never leak into prod containers.
 2. **Domain.** In `infra/Caddyfile`, replace `gather.example.com` with your
-   domain. Point DNS A/AAAA at the host. Update `APP_URL` and
-   `S3_PUBLIC_BASE_URL` (`https://your.domain/media/gather-media`) in `.env`.
+   domain. Point DNS A/AAAA at the host. Set `APP_URL` in `.env` to that same
+   public origin (`https://your.domain`, no trailing slash).
+
+   **`APP_URL` is load-bearing at BUILD time, not just at runtime.** The web
+   image inlines `NEXT_PUBLIC_API_URL` into the client bundle, and compose
+   derives it as `${APP_URL}/api` (`infra/docker-compose.yml`, the `web`
+   service's `build.args`). Compose fails the build with a named error if
+   `APP_URL` is unset, because the alternative is an image that builds, goes
+   green, and then calls `http://localhost:4000` from every visitor's browser.
+   The matching half is in `infra/Caddyfile`: its `/api/*` block **strips the
+   prefix** before forwarding to `api:4000`, because the API mounts every route
+   at a bare path. Change one of those two and you must change the other.
+
+   `S3_PUBLIC_BASE_URL` needs nothing: it parses into `AppConfig` and is read
+   by no code path. Attachments are served through the API's own capability
+   route (`GET /assets/:assetId/content` → a short-lived presigned GET), which
+   is what keeps the bucket private. The Caddyfile's `/media/*` block and this
+   variable are both there for a self-hoster who wants to expose their bucket
+   directly; nothing in the product does.
 3. **Launch** from the repo root (the `--env-file` flag is required — compose
    interpolation otherwise looks for `infra/.env`):
 

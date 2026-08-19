@@ -522,6 +522,17 @@ export function resetExtensionBridge(): void {
   activeId = null;
   negotiatedVersion = PROTOCOL_VERSION;
   closePort();
+  // A reset pulls the port out from under whatever listeners are still on it,
+  // and nothing else re-opens it for them: `ensurePort` runs when a listener is
+  // ADDED, and a local `disconnect()` does not fire our own `onDisconnect`, so
+  // the reconnect path is never reached either. A subscriber attached before a
+  // forced re-check would go silent for the rest of the session — for telemetry
+  // that is a scrubber frozen at whatever second the user clicked "check
+  // again". Re-open here so surviving the reset is the port's job, not every
+  // subscriber's (lib/player/extension-driver.ts still detaches its status
+  // listener across a forced pass, which stays correct: it is re-attached only
+  // once the pass says the extension is still there).
+  if (hasListeners()) void ensurePort();
 }
 
 async function helloTo(extensionId: string, timeoutMs: number): Promise<ExtensionInfo | null> {

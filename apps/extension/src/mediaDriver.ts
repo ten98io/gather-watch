@@ -22,24 +22,15 @@ export interface MediaTelemetry {
   rate: number;
 }
 
-export interface RoomPlaybackLike {
-  positionMs: number;
-  rate: number;
-  playing: boolean;
-  /** Server timestamp of the state; the caller converts to an expected
-   *  position — the driver never does clock math itself. */
-  serverTs: number;
-}
-
-/**
- * Where the room *should* be right now, in media time. The caller supplies a
- * server-domain clock reading (RoomSocket.clock.serverNow) — this module never
- * touches Date.now, which is what makes it testable.
- */
-export function expectedPositionMs(p: RoomPlaybackLike, serverNowMs: number): number {
-  if (!p.playing) return p.positionMs;
-  return p.positionMs + (serverNowMs - p.serverTs) * p.rate;
-}
+// ---------------------------------------------------------------------------
+// WHERE THE ROOM SHOULD BE RIGHT NOW is deliberately NOT here. This module
+// carried its own `expectedPositionMs` and it had drifted from the one in
+// packages/sync-core/src/playback.ts: the copy was missing that one's
+// `Math.max(0, …)` floor, so a client whose clock runs behind the server's —
+// every client, until the offset estimator settles — projected the room to a
+// NEGATIVE position. Two spellings of the room's own clock math is one too
+// many, and the copy is the one that goes: background.ts imports sync-core's.
+// ---------------------------------------------------------------------------
 
 /** Pick the "main" media element: the largest visible one by area. Pure
  *  given a pre-measured candidate list (jsdom-free testable). Kept as the
@@ -256,7 +247,16 @@ export function readTelemetry(el: MediaElementLike): MediaTelemetry {
 
 /** Apply a decision to a live element. */
 export function applyDecision(el: MediaElementLike, d: DriveDecision): void {
-  if (d.seekToMs !== null) el.currentTime = Math.max(0, d.seekToMs / 1000);
+  if (d.seekToMs !== null) {
+    try {
+      el.currentTime = Math.max(0, d.seekToMs / 1000);
+    } catch {
+      // Some players reject a currentTime write outright (a live edge with no
+      // seekable range, a DRM element mid-licence) — and an unguarded throw
+      // here would carry off the play/pause below with it, so a refused seek
+      // would silently cost the room its transport too.
+    }
+  }
   if (d.setRate !== null) {
     try {
       el.playbackRate = d.setRate;

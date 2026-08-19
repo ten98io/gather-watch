@@ -26,9 +26,10 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import type { VideoPlayer } from 'expo-video';
 import { WebView } from 'react-native-webview';
 import { useStore } from 'zustand';
-import type { MemberRole, PlaybackState, RoomKind } from '@gather/contracts';
+import type { MemberRole, PlaybackState, QueueItemId, RoomKind } from '@gather/contracts';
 import type { RoomConnection } from '../room-connection';
 import { canAct } from '../permissions';
+import { durationReportFor, endedQueueItemId } from '../sync/advance';
 import { useSyncEngine } from '../sync/useSyncEngine';
 import { roomVoiceActive } from '../sync/voice';
 import { auroraGradient, layout, palette, radii, spacing, type as typeScale } from '../theme';
@@ -171,7 +172,40 @@ function Controls(props: {
   );
 }
 
-function EmbedStage(props: { uri: string; label: string }) {
+/**
+ * An embed plays inside a react-native-webview, which exposes NO position and
+ * NO end signal to this app. Two consequences, and the panel below owes the
+ * room an honest account of both:
+ *
+ *  1. Sync is approximate. The web says as much under its own embed tier
+ *     ("Approximate sync — this service plays in its own player on each
+ *     device", StagePane.tsx), and this is the same admission.
+ *  2. NOTHING HERE CAN SAY THE ITEM ENDED. The queue moves on because some
+ *     client reports an ending (`sync.advance`); on the web only the four
+ *     approximate-tier music services are mute, because its YouTube/SoundCloud/
+ *     Vimeo adapters have iframe APIs that fire `ended`. On mobile all four
+ *     embed kinds are mute. In a room where everybody is on a phone, a finished
+ *     embed used to sit on the stage forever with the app showing nothing to
+ *     say so. That is HANDOFF open item 6, and the real fix is the postMessage
+ *     bridge into the WebView, not another producer here.
+ *
+ * So the panel says it, and hands the person the report the player cannot
+ * make. `sync.advance` is ungated and compare-and-set by design — every device
+ * that sees an ending may name it — and the server still tests the claim
+ * against the room's own clock for anyone the playback policy does not admit
+ * (services/api sync/service.ts `endingIsPlausible`). Pressing this grants no
+ * authority a member did not already have; it supplies the one fact this
+ * device can no longer observe for itself.
+ */
+function EmbedStage(props: {
+  uri: string;
+  label: string;
+  /** null when no queue row matches what is on the stage, and then there is
+   *  nothing to report an ending FOR. */
+  onFinished: (() => void) | null;
+  /** This device has already said this item finished. */
+  reported: boolean;
+}) {
   return (
     <View style={styles.stageBody}>
       <WebView
@@ -181,9 +215,23 @@ function EmbedStage(props: { uri: string; label: string }) {
         mediaPlaybackRequiresUserAction={false}
       />
       <Text style={styles.limitation}>
-        {props.label} on mobile: sync is approximate (embed bridge pending) — direct/HLS
-        sources are frame-accurate.
+        {props.label} on mobile: sync is approximate, and this app can’t tell when the
+        item ends (embed bridge pending) — so the queue won’t move on by itself here.
+        Direct/HLS sources are frame-accurate and advance on their own.
       </Text>
+      {props.onFinished !== null && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Tell the room this item finished"
+          disabled={props.reported}
+          onPress={props.onFinished}
+          style={[styles.finishedButton, props.reported && styles.disabled]}
+        >
+          <Text style={styles.finishedText}>
+            {props.reported ? 'Told the room it finished' : 'It’s finished — move on'}
+          </Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -276,11 +324,60 @@ export function Stage(props: {
     p.timeUpdateEventInterval = 0.5;
   });
 
+  // Buffering reports drive the server's wait-for-all coordination — and the
+  // drift controller's anchor learning, which is why this is read before the
+  // engine is wired rather than after it.
+  const [status, setStatus] = useState(player.status);
+  useEventListener(player, 'statusChange', (payload) => {
+    setStatus(payload.status);
+  });
+  const buffering = nativeSource !== null && status === 'loading';
+  useEffect(() => {
+    if (nativeSource === null) return;
+    conn.syncBuffering(status === 'loading');
+  }, [conn, status, nativeSource]);
+
   useSyncEngine({
     player: nativeSource === null ? null : player,
     playback,
     clock: conn.clock,
     voiceActive,
+    buffering,
+    /**
+     * The length of the item, measured where it actually exists. The server's
+     * resolver almost never gets one out of an oEmbed payload, so the row is
+     * stored with `durationMs: null` — and that null is what makes the advance
+     * guard price a skip at 20 s instead of verifying an ending, leaves the
+     * drift controller with no terminal clamp, and leaves the transport with a
+     * denominator of zero. The player knows. See sync/advance.ts.
+     *
+     * Only the native player knows, though: an embed's WebView reports no
+     * duration, so a `sync.duration` from this app is always about an hls/url
+     * item. The web reports the rest.
+     *
+     * SENT THROUGH THE SOCKET DIRECTLY, unlike every other send on this screen.
+     * RoomConnection has no `reportDuration` yet; when it grows one it should
+     * resolve the row from the store the way `reportEndedItem` does, and this
+     * call site becomes one line.
+     */
+    onDuration: (durationMs) => {
+      const { playback: current, queue } = conn.store.getState();
+      const report = durationReportFor(
+        {
+          queueIndex: current?.queueIndex ?? null,
+          items: queue.items,
+          mediaRef: current?.mediaRef ?? null,
+        },
+        durationMs,
+      );
+      // Null is a real answer: no queue row matches what is playing, so there
+      // is no row to write a length onto. See sync/advance.ts. Saying so is
+      // what stops the engine latching this item as reported — the queue
+      // snapshot may simply not have arrived yet.
+      if (report === null) return false;
+      conn.socket.send('sync.duration', report);
+      return true;
+    },
     /**
      * The queue moves on because somebody watching says the item ended, and
      * on a phone that somebody is this player. Sent unconditionally, by every
@@ -297,15 +394,23 @@ export function Stage(props: {
     onEnded: () => conn.reportEndedItem(),
   });
 
-  // Buffering reports drive the server's wait-for-all coordination.
-  const [status, setStatus] = useState(player.status);
-  useEventListener(player, 'statusChange', (payload) => {
-    setStatus(payload.status);
-  });
-  useEffect(() => {
-    if (nativeSource === null) return;
-    conn.syncBuffering(status === 'loading');
-  }, [conn, status, nativeSource]);
+  /** The queue row the stage is playing, or null when none matches — the same
+   *  resolution `reportEndedItem` does internally, done out here so the embed
+   *  panel can hide a report button that would have nothing to report. */
+  const queueItems = useStore(conn.store, (s) => s.queue.items);
+  const stageItemId = useMemo(
+    () =>
+      endedQueueItemId({
+        queueIndex: playback?.queueIndex ?? null,
+        items: queueItems,
+        mediaRef,
+      }),
+    [playback, queueItems, mediaRef],
+  );
+  /** The item this device has told the room about by hand (embed panel). Held
+   *  by ID rather than as a flag, so it clears itself the moment the room moves
+   *  on — and says only what THIS device did, never that the server agreed. */
+  const [reportedItemId, setReportedItemId] = useState<QueueItemId | null>(null);
 
   const controlEnabled =
     room !== null ? canAct(room.policies.playbackControl, role) : false;
@@ -344,6 +449,15 @@ export function Stage(props: {
       ) : embedUri !== null ? (
         <EmbedStage
           uri={embedUri}
+          onFinished={
+            stageItemId === null
+              ? null
+              : () => {
+                  setReportedItemId(stageItemId);
+                  conn.reportEndedItem();
+                }
+          }
+          reported={stageItemId !== null && reportedItemId === stageItemId}
           label={
             mediaRef?.kind === 'youtube'
               ? 'YouTube'
@@ -421,6 +535,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     margin: spacing.md,
   },
+  finishedButton: {
+    alignSelf: 'center',
+    minHeight: layout.tap,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.pill,
+    backgroundColor: palette.surfaceRaised,
+    marginBottom: spacing.md,
+  },
+  finishedText: { ...typeScale.bodyStrong, color: palette.aurora1 },
   controls: {
     flexDirection: 'row',
     alignItems: 'center',

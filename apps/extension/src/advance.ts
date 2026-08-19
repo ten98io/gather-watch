@@ -50,6 +50,12 @@ export interface EndedTrackInput {
  * driver keys its anchor on. Comparing extension keys to extension keys is
  * what matters; the web's spelling of the same idea differs for `hls` and does
  * not have to agree, because the two never compare their keys to each other.
+ *
+ * ALSO ASKED OF AN ITEM THAT IS STILL PLAYING. `sync.duration` names a row the
+ * same way (background.ts's `reportItemDuration`), and the question underneath
+ * both is one question — WHICH ROW OF THE ROOM'S QUEUE IS THIS PLAYER PLAYING?
+ * — so it is answered once, here. Nothing in this function is about the end:
+ * that fact belongs to the caller, and null is the safe answer to both.
  */
 export function endedQueueItemId(input: EndedTrackInput): QueueItemId | null {
   const { queueIndex, items, mediaRef } = input;

@@ -106,15 +106,23 @@ fixed by a cheaper per-minute price.
    relay it" video fallback. TURN-over-TLS/443 works only on
    turn.cloudflare.com, not custom domains.
 
-   **Status: half-built, and the missing half is a one-line wiring job.**
-   `packages/p2p/src/mesh.ts` already classifies every link `direct`/`relayed`
-   from ICE stats and will bitrate-cap the `share` sender the moment a link
-   goes relayed (uncapping it again when the link goes direct; voice is never
-   capped). It does that only when a caller passes `capRelayedVideoKbps`, and
-   **no caller passes it**, so every share runs uncapped today. The old
-   400 kbps guard was deleted along with billing — correctly, since it was
-   gating on a plan lookup that no longer existed and therefore capping every
-   share unconditionally. The lever that replaced it is unset, not absent.
+   **Status: the static ceiling is WIRED; the dynamic governor is not.**
+   `packages/p2p/src/mesh.ts` classifies every link `direct`/`relayed` from ICE
+   stats and bitrate-caps the `share` sender the moment a link goes relayed
+   (uncapping it again when the link goes direct; voice is never capped). Both
+   share producers now pass the cap — `apps/web/lib/call-mesh.ts`
+   (`DEFAULT_CAP_RELAYED_VIDEO_KBPS`) and `apps/extension/src/offscreen.ts`
+   (`SHARE_RELAYED_VIDEO_CAP_KBPS`), 400 kbps each — so a share that falls back
+   to TURN no longer bills full rate per relayed viewer. The old 400 kbps guard
+   this replaced was deleted along with billing, correctly: it gated on a plan
+   lookup that no longer existed and was therefore capping every share
+   unconditionally.
+
+   What remains is the *dynamic* half: `BitrateGovernor` + `LinkAdaptor`
+   (`packages/p2p/src/adaptation.ts`) are built, exported and unit-tested with
+   **zero mesh callers**. The static cap is meant to become a ceiling on top of
+   that governor for relayed links only. Build order in
+   `docs/FEATURE_PLAN.md` §8.
 2. **DO hibernation defeated** (if the API ever moves to Workers): one
    abandoned room with a naive 30 s client keepalive burns 81% of the monthly
    duration allowance; 1,000 such rooms ≈ $4,000/mo. The one-line fix is

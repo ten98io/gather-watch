@@ -42,6 +42,7 @@ import {
   sanitizeTitle,
 } from '../metadata/resolver';
 import { policyAllows } from '../sync/policy';
+import { recordPlayback } from '../rooms/history';
 
 /**
  * The largest a `mediaRef` may serialize to. Bounding the item COUNT alone
@@ -321,6 +322,10 @@ export class QueueService {
       await this.deps.events.emit(room.id, 'queue.state', queue);
       return;
     }
+    if (target === null) {
+      await this.leaveRemovedItem(room, queue, prevPlayback);
+      return;
+    }
     // A playback snapshot only reaches clients when its seq ADVANCES —
     // applyServerState keeps `prev` unless `next.seq > prev.seq` — so the
     // realignment has to mint a new one from the playback counter, the same
@@ -346,6 +351,79 @@ export class QueueService {
     await this.deps.store.rooms.updateOne({ id: room.id }, { queue, playback });
     await this.deps.events.emit(room.id, 'queue.state', queue);
     await this.deps.events.emit(room.id, 'sync.state', playback);
+  }
+
+  /**
+   * The row that was PLAYING has left the queue — a vote-skip carried it off,
+   * or somebody removed it mid-play. Move the room off it.
+   *
+   * WHY THIS IS THE QUEUE'S JOB AND NOT AUTO-ADVANCE'S. It used to be neither,
+   * and that was the bug: this function's absence left `playback.queueIndex`
+   * detached to null while `mediaRef` and `playing` carried on untouched, so
+   * the skipped track kept playing on every client — and then nothing could
+   * ever move it on. `SyncService.advance` early-returns on a null
+   * `queueIndex`, and every client's ending resolver deliberately returns null
+   * for an item that is no longer in the queue (naming the row that shifted
+   * down into the gap would skip a second item from one vote). Each half was
+   * individually correct, documented, and pointed at the other. A vote-skip
+   * did not skip, and then the room could not auto-advance again for the rest
+   * of its life.
+   *
+   * The successor is the row that now SITS AT the removed item's old index —
+   * everything after a removal shifts down by one, so that is the next item in
+   * the order the room was already walking. Resolving it here, from the
+   * post-mutation array, is what makes it safe: the client that could not name
+   * it honestly is not being asked to.
+   *
+   * An empty tail is the end of the queue, and the end of the queue PAUSES —
+   * the same answer `advance` gives, for the same reason. Leaving `playing`
+   * true on a track that has been carried off shows every viewer a running
+   * playhead on something the room is no longer watching.
+   */
+  private async leaveRemovedItem(
+    room: RoomDoc,
+    queue: { items: QueueItem[]; version: number },
+    prevPlayback: PlaybackState,
+  ): Promise<void> {
+    const at = prevPlayback.queueIndex;
+    const successor = at === null ? undefined : queue.items[at];
+    const seq = await this.deps.store.nextSeq(`playback:${room.id}`);
+    const now = Date.now();
+    const playback: PlaybackState =
+      successor === undefined
+        ? {
+            ...prevPlayback,
+            queueIndex: null,
+            positionMs: expectedPositionMs(prevPlayback, now),
+            playing: false,
+            seq,
+            serverTs: now,
+          }
+        : {
+            ...prevPlayback,
+            mediaRef: successor.mediaRef,
+            queueIndex: at,
+            positionMs: 0,
+            seq,
+            serverTs: now,
+          };
+    await this.deps.store.rooms.updateOne({ id: room.id }, { queue, playback });
+    await this.deps.events.emit(room.id, 'queue.state', queue);
+    await this.deps.events.emit(room.id, 'sync.state', playback);
+    if (successor !== undefined) {
+      // Same contract as SyncService's track change: after the broadcast, and
+      // it swallows its own failures — no viewer waits on a log row to see the
+      // next thing start.
+      await recordPlayback(this.deps, {
+        roomId: room.id,
+        mediaRef: successor.mediaRef,
+        title: successor.title,
+        artworkUrl: successor.artworkUrl,
+        durationMs: successor.durationMs,
+        queuedBy: successor.addedBy,
+        startedBy: successor.addedBy,
+      });
+    }
   }
 }
 

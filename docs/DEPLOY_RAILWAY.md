@@ -389,9 +389,11 @@ sessions, or deletes the room and its invites, depending on the target kind.
   the edge); it serves as CDN in front of Railway, plus Realtime TURN and
   Email Service. The Realtime SFU is in the design, not in the deploy.
 - **One tier, no billing.** There is no payment processor to configure, no
-  webhook endpoint to register and no Stripe variable to set. Three tombstone
+  webhook endpoint to register and no Stripe variable to set. Four tombstone
   suites fail if any of that comes back (`services/api/test/no-billing.test.ts`,
-  `rooms-ungated.test.ts`, `apps/web/test/no-paywall.test.ts`).
+  `services/api/test/rooms-ungated.test.ts`,
+  `packages/contracts/test/no-billing.test.ts`,
+  `apps/web/test/no-paywall.test.ts`).
 - **Rooms never expire.** Nothing on the deploy needs a TTL, a cron or a
   cleanup job: the only sweep deletes rooms that are *empty* and 30 days
   quiet, and it runs in-process.

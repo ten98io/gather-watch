@@ -68,7 +68,7 @@ describe('MeshManager', () => {
 
     expect(alice.connectionStates().get(uid('bob'))).toBe('connected');
     expect(bob.connectionStates().get(uid('alice'))).toBe('connected');
-    for (const label of ['sync', 'file', 'emote'] as const) {
+    for (const label of ['sync', 'file'] as const) {
       expect(alice.fabric.isOpen(uid('bob'), label)).toBe(true);
       expect(bob.fabric.isOpen(uid('alice'), label)).toBe(true);
     }

@@ -265,20 +265,22 @@ describe('RoomConnection room-state reducers', () => {
     conn.syncSeek(12_000);
     conn.presenceUpdate({ micOn: true });
 
-    const types = (sock?.sent ?? []).map(
-      (raw) => (JSON.parse(raw) as { type: string }).type,
-    );
+    // The heartbeat is not a send: RoomSocket's first clock.ping leaves on open
+    // so the drift engine has a measured offset before it corrects anything,
+    // and this test is about the typed client events, in order.
+    const frames = (sock?.sent ?? [])
+      .map((raw) => JSON.parse(raw) as { type: string; payload: { kind?: string } })
+      .filter((frame) => frame.type !== 'clock.ping');
     // The connection's own frame leads: every open asks the server for the
     // room back before the user has done anything (test/refresh-recovery).
-    expect(types).toEqual([
+    expect(frames.map((frame) => frame.type)).toEqual([
       'presence.update',
       'chat.send',
       'queue.voteSkip',
       'sync.seek',
       'presence.update',
     ]);
-    const first = JSON.parse(sock?.sent[1] ?? '{}') as { payload: { kind: string } };
-    expect(first.payload.kind).toBe('text');
+    expect(frames[1]?.payload.kind).toBe('text');
     conn.close();
   });
 });

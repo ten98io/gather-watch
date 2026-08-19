@@ -20,8 +20,16 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 
 - The api authenticates REST **and** WS exclusively via
   `Authorization: Bearer <accessToken>` (`services/api/src/plugins/auth.ts`
-  reads only that header; WS takes the same access JWT as `?token=`).
-  **Bearer is supported.**
+  reads only that header). **Bearer is supported.**
+- **The WS credential is NOT in the URL.** A browser cannot set headers on a
+  WebSocket handshake, so the token travels as a `Sec-WebSocket-Protocol`
+  subprotocol value (`WS_AUTH_SUBPROTOCOL_PREFIX` in `@gather/contracts`);
+  `services/api/src/ws/hub.ts` reads that header first. Mobile gets this for
+  free — `src/room-connection.ts` builds the shared `RoomSocket` from
+  `@gather/api-client`, which is the one place the URL is constructed. The old
+  `?token=` form is still accepted server-side for already-installed builds,
+  and it is the reason for the change: a query-string credential lands in every
+  access log the upgrade request touches.
 - The only cookie is `gather_rt` (httpOnly, path=/auth) — the refresh token.
   RN has no cookie jar, so `src/api.ts#captureFetch` (a) scrapes `Set-Cookie`
   on `/auth/verify|/auth/guest|/auth/refresh`, (b) re-attaches
@@ -70,13 +78,13 @@ default). WS is `<ws(s)://host>/ws` (one multiplexed room socket).
 - **Ambient glow**: static aurora wash; per-media colour sampling (DESIGN.md
   §5.1) is a follow-up. Motion uses core RN Animated (Reanimated deferred —
   install weight); reduced-motion handling is a follow-up.
-- **Fonts**: `expo-font` is **not installed**, so Space Grotesk / Inter /
-  JetBrains Mono are named by the theme and never loaded — RN falls back to the
-  platform font, which is why `type.mono` numeric readouts jitter instead of
-  sitting on tabular figures. Tracked in HANDOFF.
-- **Hero type step**: RN has no viewport unit, so it takes the ramp's 28px
-  floor. Mobile's pre-redesign `displayL` was 34px, so the hero visibly shrank.
-  Tracked in HANDOFF.
+- **Fonts**: `expo-font` is **not installed**, so Space Grotesk and Inter are
+  named by the theme and never loaded — RN falls back to the platform font.
+  `type.mono` deliberately names NO face at all (`src/theme.ts`): JetBrains
+  Mono is unbundled and `ui-monospace` is a CSS generic React Native does not
+  know, so an unresolvable name would have been worse than none. Until the font
+  milestone lands, mono is body metrics and numeric readouts do not sit on
+  tabular figures.
 
 ## Theme
 
@@ -128,7 +136,8 @@ fallback), `tests/theme.test.ts` (WCAG + scale invariants),
 `tests/voice-band.test.ts`, `tests/queue-advance.test.ts` (which queue item
 `sync.advance` names, by identity rather than by raw index). **No RN rendering
 tests** — that policy came from the original worker brief
-(`docs/history/MOBILE_K3_BRIEF.md`) and is why mobile components have no render
+(the worker brief this app was built from, removed — see
+`docs/history/README.md`) and is why mobile components have no render
 coverage to this day. There is also no `build` script here: `apps/mobile` is the
 one workspace turbo's `build` task does not cover, which is why the repo's build
 gate is 8/8 and not 9/9.

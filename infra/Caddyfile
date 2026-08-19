@@ -8,10 +8,21 @@ gather.example.com {
 
 	# ── API: REST + the multiplexed room WebSocket ─────────────────────────
 	# Caddy proxies WebSocket upgrades transparently — no extra config needed.
-	# Routes are proxied with their prefix intact (the API serves /api/* and
-	# /ws itself; adjust with `uri strip_prefix` only if the API expects bare
-	# paths).
+	#
+	# THE PREFIX IS STRIPPED, and it has to be. The API mounts every module at
+	# a BARE path — `services/api/src/app.ts` registers each one with
+	# `app.register(mod.routes)` and no prefix, and `/healthz` is bare too — so
+	# a request forwarded as `/api/healthz` 404s at the API, and so does every
+	# REST call. `/api` exists only so one domain can carry both halves of the
+	# product; it is this proxy's word, never the API's.
+	#
+	# The web app is built with `NEXT_PUBLIC_API_URL=https://<domain>/api`, and
+	# `apps/web/lib/api.ts` derives the socket URL from it as
+	# `<base>/ws` — so the room socket arrives here as `/api/ws` and is
+	# stripped to `/ws` by this same block. The bare `/ws*` block below is for
+	# a client configured to reach the API directly rather than through `/api`.
 	handle /api/* {
+		uri strip_prefix /api
 		reverse_proxy api:4000
 	}
 	handle /ws* {
@@ -20,7 +31,14 @@ gather.example.com {
 
 	# ── Public media (MinIO S3) ────────────────────────────────────────────
 	# https://gather.example.com/media/<bucket>/<key>  →  minio:9000/<bucket>/<key>
-	# e.g. S3_PUBLIC_BASE_URL=https://gather.example.com/media/gather-media
+	#
+	# Reachable but currently UNUSED by the product: `S3_PUBLIC_BASE_URL` is
+	# parsed into `AppConfig` and read by no code path — chat attachments are
+	# served through the API's own capability route
+	# (`GET /assets/:assetId/content` → a short-lived presigned GET), which
+	# keeps the bucket private. Kept because a self-hoster pointing a browser
+	# at their own bucket is a reasonable thing to want; delete both this block
+	# and the variable if you never will.
 	handle /media/* {
 		uri strip_prefix /media
 		reverse_proxy minio:9000
@@ -37,6 +55,7 @@ gather.example.com {
 # http:// prefix stops Caddy from minting an internal TLS cert for localhost.
 http://localhost:8080 {
 	handle /api/* {
+		uri strip_prefix /api
 		reverse_proxy api:4000
 	}
 	handle /ws* {

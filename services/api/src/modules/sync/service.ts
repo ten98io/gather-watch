@@ -31,6 +31,7 @@ import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { Deps } from '../types';
 import { assertMediaRefWithinBounds } from '../queue/service';
+import { sanitizeDurationMs } from '../metadata/resolver';
 import { recordPlayback } from '../rooms/history';
 import { getRoomsRuntime } from '../rooms/runtime';
 import { policyAllows } from './policy';
@@ -291,6 +292,53 @@ export class SyncService {
     this.deps.events.emitEphemeral(roomId, 'sync.waiting', {
       waitingOn: this.prunedBuffering(roomId),
     });
+  }
+
+  /**
+   * Fill in a queue row's runtime from a viewer whose player just measured it.
+   *
+   * A FILL, NEVER AN EDIT. The write happens only while `durationMs` is still
+   * unknown on that exact row, so the first honest report wins and every later
+   * one is a no-op — which is what makes it safe to take from any member
+   * rather than from a seat nobody holds. Nothing here can move the room, name
+   * a different item, or change a duration somebody's player is already
+   * synchronised against.
+   *
+   * Why it exists at all: the metadata resolver can only read a duration out
+   * of an oEmbed payload, and only Vimeo's carries one — see
+   * `ClientSyncDuration` in packages/contracts for the full list of what does
+   * not. The number is nonetheless sitting in every viewer's player, and
+   * without it `endingIsPlausible` can only PRICE a skip at twenty seconds
+   * instead of verifying an ending, and the drift controller has no end to
+   * clamp the room's projection to.
+   *
+   * A wrong duration is bounded the same way a queue insert's is
+   * (`sanitizeDurationMs`: finite, positive, under the ceiling) and dies with
+   * the row. It is broadcast as a queue mutation because that is what it is —
+   * the queue row changed — and it bumps the queue version so late joiners and
+   * replaying clients converge on it like any other queue edit.
+   */
+  async reportDuration(
+    roomId: RoomId,
+    userId: UserId,
+    itemId: QueueItemId,
+    durationMs: number,
+  ): Promise<void> {
+    const value = sanitizeDurationMs(durationMs);
+    if (value === null) return;
+    const { room } = await this.loadContext(roomId, userId);
+    const current = room.queue.items.find((it) => it.id === itemId);
+    // Gone, or already answered by somebody's player — either way there is
+    // nothing to learn and nothing to say.
+    if (current === undefined || (current.durationMs !== null && current.durationMs > 0)) {
+      return;
+    }
+    const items = room.queue.items.map((it) =>
+      it.id === itemId ? { ...it, durationMs: value } : it,
+    );
+    const queue = { items, version: room.queue.version + 1 };
+    await this.deps.store.rooms.updateOne({ id: room.id }, { queue });
+    await this.deps.events.emit(room.id, 'queue.state', queue);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

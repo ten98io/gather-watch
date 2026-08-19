@@ -144,7 +144,7 @@ interface MeshPeer {
 }
 
 /** The fixed channel labels created pre-negotiated on every connection. */
-const FABRIC_LABELS: readonly ChannelLabel[] = ['sync', 'file', 'emote'];
+const FABRIC_LABELS: readonly ChannelLabel[] = ['sync', 'file'];
 
 /** A known link state only demotes to 'unknown' after this many consecutive
  *  unknown classifications — stats gaps during ICE restarts are transient and
@@ -754,7 +754,7 @@ export class MeshManager {
         // the fabric like any other.
         pc.ondatachannel = (ev) => {
           const label = ev.channel.label;
-          if (label === 'sync' || label === 'file' || label === 'emote') {
+          if (label === 'sync' || label === 'file') {
             this.fabric.attach(peerId, label, ev.channel);
           }
         };

@@ -167,9 +167,12 @@ correction one step down, 20/26 (1.30) → 20/28 (1.40). `caption` tracking went
 +0.04 → +0.06em: 11px uppercase is the one place in the ramp where under-tracking
 reads as cramped rather than tight.
 
-`hero` is the only genuinely fluid step. React Native has no viewport unit and takes
-the 28px floor, which is why mobile's hero is currently smaller than its
-pre-redesign 34px `displayL` (HANDOFF open item 10).
+`hero` is the only genuinely fluid step, and fluidity is a WEB-ONLY property.
+React Native has no viewport unit, so the step carries an explicit `rnFontSize: 34`
+(`packages/design/src/scales.ts`) — the old `displayL`, chosen over both the 28px
+web floor and the 56px fluid ceiling. `emitRnTypeRamp` reads `rnFontSize ?? fontSize`
+and `maxFontSize` NEVER reaches React Native; without that rule the ceiling was about
+to start leaking into body text too.
 
 Titles are `text-hi`; metadata is `text-low`, **never** `text-mid` — that two-tier
 contrast is what makes lists scan. Numeric readouts use `tabular-nums`.
@@ -377,7 +380,7 @@ a hard-coded colour, radius, duration or type size anywhere outside
 
 ## 11. Locked decisions (owner, 2026-08-16 — do not relitigate)
 
-Absorbed from the UX overhaul spec (now `docs/history/UX_OVERHAUL.md`); this is
+Absorbed from the UX overhaul spec (removed — see `docs/history/README.md`); this is
 the binding copy.
 
 - **D1 — Call layout:** video tiles live in the **right rail above chat**; the

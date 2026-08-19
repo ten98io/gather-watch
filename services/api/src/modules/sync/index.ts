@@ -37,6 +37,13 @@ const syncModule: ModulePlugin = {
       serviceFor(ctx.deps).setWaitForAll(ctx.roomId, ctx.auth.userId, event.payload.enabled),
     'sync.buffering': (event, ctx) =>
       serviceFor(ctx.deps).setBuffering(ctx.roomId, ctx.auth.userId, event.payload.buffering),
+    'sync.duration': (event, ctx) =>
+      serviceFor(ctx.deps).reportDuration(
+        ctx.roomId,
+        ctx.auth.userId,
+        event.payload.itemId,
+        event.payload.durationMs,
+      ),
   },
 };
 

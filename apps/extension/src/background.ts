@@ -25,6 +25,9 @@
  */
 import { RoomSocket } from '@gather/api-client';
 import { normalizeInviteCode } from '@gather/contracts';
+// The room's clock math, in ONE spelling: this file used to read a second copy
+// out of mediaDriver.ts that had lost sync-core's non-negative floor.
+import { expectedPositionMs } from '@gather/sync-core';
 import type {
   MemberRole,
   PlaybackState,
@@ -48,7 +51,7 @@ import {
 import type { ExternalHost, HandoffInput } from './external';
 import { electFrame, pruneClaims } from './frameElection';
 import type { FrameClaim } from './frameElection';
-import { expectedPositionMs, parseMetrics } from './mediaDriver';
+import { parseMetrics } from './mediaDriver';
 // Types only — the worker builds the overlay's state, it never draws anything,
 // so none of the overlay's DOM code is pulled into this bundle.
 import type {
@@ -106,6 +109,14 @@ interface Session {
   queueVersion: number;
   /** The last item this worker reported the end of. See {@link reportEndedItem}. */
   advancedItemId: QueueItemId | null;
+  /** …and the last one it reported a DURATION for. Separate latch, separate
+   *  fact: an item's length is learned when its metadata loads, its end when
+   *  it runs out. See {@link reportItemDuration}. */
+  durationReportedItemId: QueueItemId | null;
+  /** False from the instant the room renames the playing media until the page
+   *  has produced a telemetry frame under the NEW name. See
+   *  {@link reportItemDuration} for why one frame has to be thrown away. */
+  durationArmed: boolean;
   restream: RestreamState | null;
   /** How the room arrived: 'popup' (invite code) or 'web' (handoff). */
   source: 'popup' | 'web';
@@ -520,6 +531,86 @@ function reportEndedItem(): void {
   if (live.advancedItemId === endedItemId) return;
   live.advancedItemId = endedItemId;
   live.socket.send('sync.advance', { endedItemId });
+}
+
+/**
+ * The playing item is THIS long — the one fact only a viewer's player has.
+ *
+ * WHY THE ROOM CANNOT LEARN IT ANY OTHER WAY. `QueueItem.durationMs` is
+ * nullable and is null for nearly every row: the server reads a duration out
+ * of an oEmbed payload and, of the keyless endpoints, only Vimeo's carries one
+ * — YouTube's does not, SoundCloud's does not, the Open Graph fallback has
+ * none, and a `{ kind: 'page' }` link never had one to give (the full list is
+ * in `ClientSyncDuration`, packages/contracts). This extension is the surface
+ * that plays precisely those items, and the number is sitting on the element
+ * it drives, one telemetry read away. Without it `endingIsPlausible` can only
+ * PRICE an ending at twenty seconds instead of verifying one, the drift
+ * controller has no end to clamp the room's projection to, and the transport
+ * draws an elapsed counter where a scrubber belongs.
+ *
+ * ONCE PER ITEM, latched by id the way {@link reportEndedItem} latches. The
+ * server ignores a repeat, but telemetry arrives on every tick from every
+ * viewer in the room, and "the server drops it" is not a reason to send a
+ * broadcast storm. The room's own row is re-read as well — a duration another
+ * viewer's player already filled in costs this one nothing.
+ *
+ * NOTHING FOR A LIVE STREAM. `readTelemetry` maps a non-finite duration to 0
+ * and this refuses 0, so Infinity never becomes a number here — a live stream
+ * has no end and the guard's unknown branch is the honest answer for it.
+ *
+ * ONE FRAME IS THROWN AWAY AFTER EVERY TRACK CHANGE, and the asymmetry is the
+ * whole reason. A telemetry frame carries no media identity — it is a position,
+ * a length, a rate — so the item it belongs to is inferred from
+ * `session.playback`, which the room can rename between the page sampling its
+ * `<video>` and this worker reading the sample. In that window the page is
+ * still reporting the OUTGOING item's length while the room has already named
+ * the incoming one.
+ *
+ * That window matters here and not for {@link reportEndedItem}, because the
+ * two land on different kinds of server write. An `sync.advance` is a
+ * compare-and-set the server drops when it disagrees, so a misfire costs
+ * nothing. A `sync.duration` is a FILL-ONCE: the server writes only while the
+ * row is still null, so the first wrong number is the permanent one, no later
+ * report from any viewer can replace it, and every consumer downstream inherits
+ * it — `endingIsPlausible` refuses genuine endings against a too-long value and
+ * accepts premature ones against a too-short one, and the drift controller
+ * clamps the whole room's projection to it.
+ *
+ * So the trade is deliberately lopsided: skipping the first frame under a new
+ * name costs at most one telemetry tick of delay, and if that tick is the only
+ * one this page ever sends, the row simply stays unknown — which is exactly the
+ * state the room was already in, and which the next viewer, the next item, or
+ * this same player's next frame all still close. A wrong length closes nothing
+ * and cannot be undone.
+ */
+function reportItemDuration(durationMs: number): void {
+  const live = session;
+  if (live === null) return;
+  // The room renamed the media and this page has not spoken since. See the
+  // "ONE FRAME IS THROWN AWAY" paragraph above: this frame may still be the
+  // OUTGOING item's length, and attributing it to the incoming row is a
+  // mistake nothing can take back.
+  if (!live.durationArmed) {
+    live.durationArmed = true;
+    return;
+  }
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+  const itemId = endedQueueItemId({
+    queueIndex: live.playback?.queueIndex ?? null,
+    items: live.queue,
+    mediaRef: live.playback?.mediaRef ?? null,
+  });
+  // Null is the same real answer it is for an ending: what this player is
+  // playing is not a row of the room's queue, so there is no row to fill in.
+  if (itemId === null) return;
+  if (live.durationReportedItemId === itemId) return;
+  const row = live.queue.find((it) => it.id === itemId);
+  // Gone, or already answered by somebody else's player — the same test the
+  // server applies before it writes, so a length the room already knows costs
+  // this viewer one lookup and no frame at all.
+  if (row === undefined || (row.durationMs !== null && row.durationMs > 0)) return;
+  live.durationReportedItemId = itemId;
+  live.socket.send('sync.duration', { itemId, durationMs: Math.round(durationMs) });
 }
 
 /**
@@ -953,6 +1044,8 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     queue: [],
     queueVersion: -1,
     advancedItemId: null,
+    durationReportedItemId: null,
+    durationArmed: true,
     restream: null,
     source: input.source,
     target: input.target,
@@ -969,6 +1062,12 @@ async function openSession(input: OpenSessionInput): Promise<void> {
 
   socket.on('sync.state', (ev) => {
     if (session === null) return;
+    // A rename disarms the duration report until the page speaks again under
+    // the new name — the frame in flight may still describe the old item, and
+    // a duration is a fill-once. See reportItemDuration.
+    if (mediaKeyOf(ev.payload.mediaRef) !== mediaKeyOf(session.playback?.mediaRef ?? null)) {
+      session.durationArmed = false;
+    }
     session.playback = ev.payload;
     driveTab();
     pushOverlay();
@@ -2063,6 +2162,9 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       ) {
         lastTelemetry = payload;
         ports.broadcast((v) => eventMessage('telemetry', payload, v));
+        // The player just said how long the item is; the room's row very
+        // likely does not know. See reportItemDuration.
+        reportItemDuration(payload.durationMs);
       }
       return false;
     }

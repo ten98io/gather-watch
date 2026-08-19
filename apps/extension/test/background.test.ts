@@ -1045,6 +1045,25 @@ describe('driving a tab', () => {
     expect(rolesSent()).toEqual([{ frameId: 3, role: 'driver' }]);
   });
 
+  /**
+   * The client clock runs behind the server's until the offset estimator has
+   * settled — and on the very first state it has no samples at all. Projecting
+   * a state stamped in the future then yields a NEGATIVE position, which is
+   * not a place in any media. sync-core's expectedPositionMs floors it at 0;
+   * this worker used to read a SECOND copy of that projection out of
+   * mediaDriver.ts which had lost the floor, and put the negative number on
+   * the wire for the content script to seek to.
+   */
+  it('never puts a negative position on the wire when the clock runs behind', async () => {
+    await connectRoom();
+    claimFrom(7, 3);
+    fake.tabMessages.length = 0;
+
+    room.emit('sync.state', { ...playbackAt(0), serverTs: Date.now() + 5000 });
+
+    expect(messagesOfKind('drive').at(-1)?.msg['positionMs']).toBe(0);
+  });
+
   it('takes telemetry from the elected frame only', async () => {
     await connectRoom();
     claimFrom(7, 3);
@@ -1597,6 +1616,184 @@ describe('the end of an item reaches the room from the worker itself', () => {
     endedFromDriver();
 
     expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
+  });
+});
+
+/* ── how long the item is: the one fact only a viewer's player has ── */
+
+/**
+ * `QueueItem.durationMs` is null on nearly every row. The server can only read
+ * a duration out of an oEmbed payload and, of the keyless endpoints, only
+ * Vimeo's carries one — YouTube's does not, SoundCloud's does not, the Open
+ * Graph fallback has none, and a `{kind:'page'}` link never had one to give.
+ * This extension is the surface that plays precisely those items, and the
+ * number is sitting on the element it drives. So the worker reports it: once
+ * per item, into a row that does not already know, and never for a live
+ * stream, which has no length to report.
+ */
+describe('the length of the playing item reaches the room from the worker', () => {
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  const FEATURE = { kind: 'url', url: 'https://cdn.example.com/feature.m3u8', mime: 'video/mp4' };
+  const SECOND = { kind: 'url', url: 'https://cdn.example.com/second.m3u8', mime: 'video/mp4' };
+
+  /** A queue row, in the shape queue.state delivers it. */
+  const item = (
+    id: string,
+    mediaRef: Record<string, unknown>,
+    durationMs: number | null = null,
+  ): Record<string, unknown> => ({
+    id,
+    mediaRef,
+    title: id,
+    durationMs,
+    artworkUrl: null,
+    addedBy: 'user_1',
+    votesToSkip: [],
+  });
+
+  const durations = (): unknown[] =>
+    room.sent.filter((m) => m.type === 'sync.duration').map((m) => m.payload);
+
+  /** One telemetry frame, as the driven frame's 1 Hz heartbeat sends it. */
+  function telemetry(durationMs: number, frameId = 3): void {
+    notify(
+      { kind: 'telemetry', positionMs: 1000, durationMs, playing: true, rate: 1 },
+      { tab: { id: 7 }, frameId },
+    );
+  }
+
+  /**
+   * The settling frame every track change really produces: the page has
+   * re-elected its element and its metadata has not loaded, so it reports a
+   * duration of 0. The worker throws the first frame under a new name away
+   * (see reportItemDuration) precisely because a frame in flight may still
+   * describe the OUTGOING item, and this is that frame.
+   */
+  function settle(frameId = 3): void {
+    telemetry(0, frameId);
+  }
+
+  /** A driven room sitting on `index` of the queue it was given, with the
+   *  post-track-change settling frame already delivered. */
+  async function playingItem(
+    items: Array<Record<string, unknown>>,
+    index = 0,
+    mediaRef: Record<string, unknown> = FEATURE,
+  ): Promise<void> {
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('queue.state', { items, version: 1 });
+    room.emit('sync.state', { ...playbackAt(1000, mediaRef), queueIndex: index });
+    settle();
+  }
+
+  it("reports the playing item's length once its player knows it", async () => {
+    await playingItem([item('q_a', FEATURE), item('q_b', SECOND)]);
+
+    telemetry(5_400_000);
+
+    expect(durations()).toEqual([{ itemId: 'q_a', durationMs: 5_400_000 }]);
+  });
+
+  it('sends it once per item, not once per telemetry tick', async () => {
+    await playingItem([item('q_a', FEATURE), item('q_b', SECOND)]);
+
+    // A frame every second from every viewer in the room is a broadcast
+    // storm; that the server drops repeats is not a reason to send them.
+    telemetry(5_400_000);
+    telemetry(5_400_000);
+    telemetry(5_400_000);
+
+    expect(durations()).toHaveLength(1);
+  });
+
+  it('does not latch: the NEXT item is reported too', async () => {
+    await playingItem([item('q_a', FEATURE), item('q_b', SECOND)]);
+    telemetry(5_400_000);
+
+    room.emit('sync.state', { ...playbackAt(0, SECOND), queueIndex: 1 });
+    settle();
+    telemetry(1_800_000);
+
+    expect(durations()).toEqual([
+      { itemId: 'q_a', durationMs: 5_400_000 },
+      { itemId: 'q_b', durationMs: 1_800_000 },
+    ]);
+  });
+
+  it("never attributes the OUTGOING item's length to the incoming one", async () => {
+    // A duration is a FILL-ONCE on the server, so the first wrong number is
+    // the permanent one and no later report from anybody can replace it. The
+    // hazard is real because a telemetry frame carries no media identity: the
+    // page samples its <video>, the room renames the media, and the worker
+    // reads a frame that still describes what just finished.
+    await playingItem([item('q_a', FEATURE), item('q_b', SECOND)]);
+    telemetry(5_400_000);
+
+    room.emit('sync.state', { ...playbackAt(0, SECOND), queueIndex: 1 });
+    // In flight when the rename landed: still the finished item's length.
+    telemetry(5_400_000);
+
+    expect(durations()).toEqual([{ itemId: 'q_a', durationMs: 5_400_000 }]);
+
+    // …and the page's first honest frame under the new name still lands.
+    telemetry(1_800_000);
+    expect(durations()).toEqual([
+      { itemId: 'q_a', durationMs: 5_400_000 },
+      { itemId: 'q_b', durationMs: 1_800_000 },
+    ]);
+  });
+
+  it('says nothing for a live stream, which has no length', async () => {
+    await playingItem([item('q_a', FEATURE)]);
+
+    // The content script maps a non-finite duration to 0 (readTelemetry), and
+    // 0 is also every player's "metadata has not loaded yet". Neither is a
+    // duration, and the server's unknown branch is the honest answer for both.
+    telemetry(0);
+
+    expect(durations()).toEqual([]);
+  });
+
+  it("says nothing when the room's own row already carries a length", async () => {
+    await playingItem([item('q_a', FEATURE, 5_400_000)]);
+
+    telemetry(5_400_000);
+
+    expect(durations()).toEqual([]);
+  });
+
+  it('says nothing when the playing item is not in the room queue', async () => {
+    // Vote-skip carried it off while it was still on the stage. Naming a row
+    // by the index it used to sit at would fill in a different item's length.
+    await playingItem([item('q_b', SECOND)], 0, FEATURE);
+
+    telemetry(5_400_000);
+
+    expect(durations()).toEqual([]);
+  });
+
+  it('takes it from the elected frame of the driven tab only', async () => {
+    await playingItem([item('q_a', FEATURE)]);
+
+    // Another frame of the same tab has media of its own — an ad slot, a
+    // trailer in a sidebar. Its length is not the room's item's length.
+    telemetry(90_000, 9);
+    telemetry(90_000, 9);
+
+    expect(durations()).toEqual([]);
+  });
+
+  it('reports whole milliseconds: the row stores an integer', async () => {
+    await playingItem([item('q_a', FEATURE)]);
+
+    // `currentTime * 1000` on a real element is rarely a round number.
+    telemetry(5_400_000.4);
+
+    expect(durations()).toEqual([{ itemId: 'q_a', durationMs: 5_400_000 }]);
   });
 });
 

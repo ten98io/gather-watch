@@ -40,6 +40,11 @@ const setup = (over?: {
   };
 };
 
+/** The frames the APP sent. Heartbeats are the socket's own traffic and every
+ *  open now starts with one, so assertions about app envelopes must exclude them. */
+const appFrames = (sent: readonly string[]): string[] =>
+  sent.filter((raw) => !raw.includes('"clock.ping"'));
+
 describe('RoomSocket', () => {
   it('emits in-order events and drops duplicates', () => {
     const { sock, seen, replayCalls } = setup();
@@ -152,15 +157,16 @@ describe('RoomSocket', () => {
     sock.send('chat.typing', { typing: true });
     expect(ws.sent).toEqual([]);
     ws.open();
-    expect(ws.sent.length).toBe(1);
+    // The queued envelope flushes first, then the immediate opening ping.
+    expect(ws.sent.length).toBe(2);
     const first = JSON.parse(ws.sent[0]!) as { type: string; seq: number; roomId: string };
     expect(first.type).toBe('chat.typing');
     expect(first.seq).toBe(0);
     expect(first.roomId).toBe('r1');
     expect(timers.delays()).toEqual([5000]);
     timers.runNext();
-    expect(ws.sent.length).toBe(2);
-    const ping = JSON.parse(ws.sent[1]!) as { type: string; payload: { clientTs: number } };
+    expect(ws.sent.length).toBe(3);
+    const ping = JSON.parse(ws.sent[2]!) as { type: string; payload: { clientTs: number } };
     expect(ping.type).toBe('clock.ping');
     expect(ping.payload.clientTs).toBe(1000);
     // The next heartbeat is rescheduled immediately after firing.
@@ -174,6 +180,96 @@ describe('RoomSocket', () => {
     // rtt = 200; sample offset = 5300 - (800 + 200/2) = 4400;
     // EWMA alpha 0.25: 4200 + 0.25 * (4400 - 4200) = 4250.
     expect(sock.clock.offsetMs()).toBeCloseTo(4250, 10);
+  });
+
+  it('sends the first clock.ping on open, without waiting a whole heartbeat', () => {
+    // Every ms before the first pong is a ms the app projects the room's
+    // position against an offset of 0 that it cannot tell from a real one.
+    const { timers, sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    expect(ws.sent).toEqual([]);
+    ws.open();
+    const types = ws.sent.map((s) => (JSON.parse(s) as { type: string }).type);
+    expect(types).toEqual(['clock.ping']);
+    // Exactly one timer, on the normal cadence — the opening ping does not add
+    // a second heartbeat chain.
+    expect(timers.delays()).toEqual([5000]);
+    expect(sock.clockReady).toBe(false);
+    ws.message(pongEvt(room, 600, 5000));
+    expect(sock.clockReady).toBe(true);
+    expect(sock.clock.offsetMs()).toBe(4200);
+  });
+
+  it('pings immediately on every reconnect too, not just the first open', () => {
+    const { timers, sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws1 = MockWebSocket.instances[0]!;
+    ws1.open();
+    ws1.end();
+    timers.runNext(); // backoff elapses
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.open();
+    expect(ws2.sent.map((s) => (JSON.parse(s) as { type: string }).type)).toEqual(['clock.ping']);
+    expect(timers.delays()).toEqual([5000]);
+  });
+
+  it('the opening ping counts once against the missed-pong watchdog', () => {
+    const { timers, sock } = setup({ opts: { maxMissedPongs: 3 } });
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    ws.open();
+    const pings = () => ws.sent.filter((s) => s.includes('clock.ping')).length;
+    // One ping per tick, opening ping included: 3 pings, not 4, before the
+    // streak hits the limit.
+    expect(pings()).toBe(1);
+    timers.runNext();
+    expect(pings()).toBe(2);
+    timers.runNext();
+    expect(pings()).toBe(3);
+    expect(sock.status).toBe('open');
+    timers.runNext();
+    expect(sock.status).toBe('reconnecting');
+    expect(pings()).toBe(3);
+  });
+
+  it('an onStatus handler that closes on open suppresses the opening ping', () => {
+    // The ping is sent inline from handleOpen, so it must still obey the same
+    // "is this socket actually open" guard the scheduled ticks obey.
+    const { timers, sock } = setup();
+    sock.connect(rid('r1'), 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    sock.onStatus((status) => {
+      if (status === 'open') sock.close();
+    });
+    ws.open();
+    expect(ws.sent).toEqual([]);
+    expect(timers.delays()).toEqual([]);
+  });
+
+  it('a confirmed device-clock step re-anchors the socket clock in one move', () => {
+    // The signal apps poll to learn the clock moved under them (see
+    // DriftController.noteHostSeek).
+    const { timers, sock } = setup();
+    const room = rid('r1');
+    sock.connect(room, 'tok');
+    const ws = MockWebSocket.instances[0]!;
+    ws.open();
+    // now() is fixed at 1000, so each pong's rtt is (1000 - clientTs).
+    ws.message(pongEvt(room, 1000, 1000)); // offset 0
+    expect(sock.clock.offsetMs()).toBe(0);
+    expect(sock.clock.reanchorCount()).toBe(0);
+    timers.runNext();
+    ws.message(pongEvt(room, 1000, 31_000)); // +30s jump: held, not smoothed
+    expect(sock.clock.offsetMs()).toBe(0);
+    timers.runNext();
+    ws.message(pongEvt(room, 1000, 31_000)); // confirmed
+    expect(sock.clock.offsetMs()).toBe(30_000);
+    expect(sock.clock.reanchorCount()).toBe(1);
+    expect(sock.clock.lastReanchorMs()).toBe(30_000);
   });
 
   it('close() is final: no reconnect scheduled', () => {
@@ -244,7 +340,7 @@ describe('RoomSocket', () => {
     const ws2 = MockWebSocket.instances[1]!;
     ws2.open();
     // The room-A envelope must not be flushed into room B's socket.
-    expect(ws2.sent).toEqual([]);
+    expect(appFrames(ws2.sent)).toEqual([]);
   });
 
   it('drops events from a foreign room instead of poisoning the seq tracker', () => {
@@ -305,13 +401,13 @@ describe('RoomSocket', () => {
     sock.connect(room, 'tok');
     const ws = MockWebSocket.instances[0]!;
     ws.open();
-    // Three pings leave unanswered; the socket still looks open to the transport.
-    timers.runNext();
+    // Three pings leave unanswered (the opening one plus two ticks); the socket
+    // still looks open to the transport.
     timers.runNext();
     timers.runNext();
     expect(ws.sent.filter((s) => s.includes('clock.ping')).length).toBe(3);
     expect(sock.status).toBe('open');
-    // Fourth tick: the streak is at the limit — the half-open socket is dropped.
+    // Next tick: the streak is at the limit — the half-open socket is dropped.
     timers.runNext();
     expect(sock.status).toBe('reconnecting');
     expect(ws.closeCalls).toBe(1);
@@ -455,8 +551,9 @@ describe('RoomSocket', () => {
     sock.connect(room, 'tok2');
     const ws2 = MockWebSocket.instances[1]!;
     ws2.open();
-    expect(ws2.sent.length).toBe(1);
-    const sent = JSON.parse(ws2.sent[0]!) as { type: string };
+    const flushed = appFrames(ws2.sent);
+    expect(flushed.length).toBe(1);
+    const sent = JSON.parse(flushed[0]!) as { type: string };
     expect(sent.type).toBe('chat.typing');
   });
 
@@ -469,7 +566,7 @@ describe('RoomSocket', () => {
     sock.connect(room, 'tok');
     const ws2 = MockWebSocket.instances[1]!;
     ws2.open();
-    expect(ws2.sent).toEqual([]);
+    expect(appFrames(ws2.sent)).toEqual([]);
   });
 
   it('exhausted replay retries surface onGapLoss, then flush leniently', async () => {
