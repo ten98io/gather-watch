@@ -72,6 +72,30 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
   got the call with no picture, the other half the share with no voice. The
   lane is folded into the id, and an auxiliary mesh also builds no DataChannel
   fabric — the call keeps this person's sync, file and emote channels.
+  The share is a **conversation with the room**, not an announcement. The
+  document asks for the roster on **every open** —
+  `presence.update { state: 'watching', wantSnapshot: true }` — because the
+  server volunteers one only to a presence entry it just created, and this
+  person's already exists (their web tab made it, or the worker's 15 s beat
+  did); without the ask no roster came back, `syncPeers` ran on an empty set,
+  the mesh offered to nobody, and every extension share was a black stage for
+  the whole room while the popup said it was sharing. It then reads the room's
+  **answer** to `restream.start`: a refusal (`FORBIDDEN`, `ROOM_POLICY`,
+  `QUOTA_EXCEEDED`, `CONFLICT`) stops the capture and hands the sharer the
+  room's own sentence, and a `restream.state` that moves off this capture — a
+  moderator's stop, a handoff — stops it too. `sharing: true` is claimed only
+  once the room says the stage is ours, so this document is never its own
+  exemption from the room's `maxPublishers` ceiling. Its audio is negotiated as
+  **stereo Opus** at 128 kbps (`preferStereoOpus` munges the audio m-line, and
+  only that one); Opus with no `fmtp` at all is the speech default — one
+  channel, ~32 kbps — which is the difference between hearing the film and
+  hearing that a film is playing.
+- **One person, one share.** A room's stage names one host, and the server lets
+  that host replace their own share without a word — so a second capture under
+  the same user id collides with the first on the same lane and the room sees
+  one of the two at random. Starting a share while this extension is already
+  capturing, or while the room's stage already names you (your web tab is
+  sharing), is refused **before the picker opens**.
 - **Identity**: two ways in, and they are not equivalent.
   1. **Popup guest join** with an invite code — room-scoped, no account, joins
      as "Extension". Driving playback obeys the room's `playbackControl` policy
@@ -188,6 +212,14 @@ extension never reads one.
 - Pressing a site's cast button happens without user activation in the page,
   so a site that demands a real gesture for its cast prompt may ignore it.
   That surfaces as "nothing happened" — never as a capture fallback.
+- **The cast selectors are data** (`providers.ts`), so a reskinned site
+  outdates them; that is the normal end of a selector's life, not an
+  exceptional case. A miss says so in the popup and the sentence **stays** until
+  the next press — the popup re-polls every 2 s, and a site Gather *can* cast
+  from has no standing reason of its own, so a blanked slot read as a button
+  that does nothing at all. When finding the button meant opening the site's
+  own overflow menu, the same toggle closes it again rather than leaving it
+  hanging open over the video.
 - **No voice yet.** The extension carries the room's chat, its queue and its
   playback — not the call. Mic in the overlay (offscreen `getUserMedia`,
   reusing the screen-share plumbing) is backlog. Nothing in the overlay, the

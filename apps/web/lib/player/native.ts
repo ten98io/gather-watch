@@ -22,6 +22,8 @@ export class NativeAdapter implements PlayerAdapter {
   private hls: Hls | null = null;
   private hlsGeneration = 0;
   private buffering = false;
+  /** hls.js's own verdict on the playlist; see `isLive`. */
+  private playlistIsLive = false;
 
   constructor(el: HTMLMediaElement) {
     this.el = el;
@@ -50,6 +52,8 @@ export class NativeAdapter implements PlayerAdapter {
   load(ref: Extract<MediaRef, { kind: 'hls' | 'url' }>): void {
     const generation = (this.hlsGeneration += 1);
     this.destroyHls();
+    // A fact about the source that is going away, not about the one arriving.
+    this.playlistIsLive = false;
     // Loading IS buffering: it keeps the room's wait-for-all honest, and it
     // stops the stage mistaking "still fetching" for "the browser refused".
     this.setBuffering(true);
@@ -65,6 +69,13 @@ export class NativeAdapter implements PlayerAdapter {
           }
           const hls = new HlsCtor({ enableWorker: true });
           this.hls = hls;
+          // Subscribed BEFORE the source is loaded, or the first level load —
+          // the one that decides this — has already happened by the time
+          // anybody is listening.
+          hls.on(HlsCtor.Events.LEVEL_LOADED, (_evt, data) => {
+            if (generation !== this.hlsGeneration) return;
+            this.playlistIsLive = data.details.live;
+          });
           hls.loadSource(url);
           hls.attachMedia(this.el);
         })
@@ -109,6 +120,24 @@ export class NativeAdapter implements PlayerAdapter {
     return Number.isFinite(this.el.duration) ? this.el.duration * 1000 : 0;
   }
 
+  /**
+   * A sliding window with no start, so there is no room position to correct
+   * toward — see the live guard in lib/player/useSyncEngine.ts.
+   *
+   * TWO SOURCES, because there are two playback paths through this adapter.
+   * hls.js parses the playlist and states it outright (a live one carries no
+   * ENDLIST), and Safari plays m3u8 natively where the fact arrives the way
+   * HTML states it: an unbounded stream's `duration` is Infinity.
+   *
+   * NaN IS NOT LIVE. `duration` is NaN on any element that has not read its
+   * metadata yet — which is every element for its first moments — and reading
+   * "unknown" as "live" would switch drift correction off for the start of
+   * every ordinary file.
+   */
+  isLive(): boolean {
+    return this.playlistIsLive || this.el.duration === Number.POSITIVE_INFINITY;
+  }
+
   setMuted(muted: boolean): void {
     this.el.muted = muted;
   }
@@ -143,6 +172,7 @@ export class NativeAdapter implements PlayerAdapter {
 
   destroy(): void {
     this.destroyHls();
+    this.playlistIsLive = false;
     this.el.removeAttribute('src');
     this.el.load();
     this.listeners.clear();

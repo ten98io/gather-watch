@@ -95,6 +95,9 @@ export class YouTubeAdapter implements PlayerAdapter {
   private pendingVideoId: string | null = null;
   private destroyed = false;
   private buffering = false;
+  /** This player has actually run at least once on the CURRENT video — the
+   *  precondition for reading a length of 0 as anything at all; see `isLive`. */
+  private everPlayed = false;
 
   /** @param container an empty div the iframe is mounted into. */
   constructor(container: HTMLElement) {
@@ -103,6 +106,8 @@ export class YouTubeAdapter implements PlayerAdapter {
 
   load(ref: Extract<MediaRef, { kind: 'youtube' }>): void {
     if (this.destroyed) return;
+    // Said about the video that is leaving. The next one has not run here yet.
+    this.everPlayed = false;
     if (this.ready && this.player !== null) {
       this.player.loadVideoById(ref.videoId);
       return;
@@ -158,6 +163,7 @@ export class YouTubeAdapter implements PlayerAdapter {
             },
             onStateChange: (ev) => {
               if (ev.data === YT_STATE.PLAYING) {
+                this.everPlayed = true;
                 this.setBuffering(false);
                 this.emit('playing');
               } else if (ev.data === YT_STATE.PAUSED) this.emit('paused');
@@ -214,6 +220,22 @@ export class YouTubeAdapter implements PlayerAdapter {
     return Number.isFinite(d) ? d * 1000 : 0;
   }
 
+  /**
+   * A live broadcast, which the IFrame API states by refusing to name a length:
+   * `getDuration()` answers 0 for one, while `getCurrentTime()` answers
+   * elapsed-since-broadcast-start. A room projecting from 0 therefore measures
+   * minutes of "drift" that no seek can close — see the live guard in
+   * lib/player/useSyncEngine.ts.
+   *
+   * ONLY ONCE IT HAS PLAYED. 0 is also the answer before the player has read
+   * its metadata, so asking any earlier would call every ordinary video live
+   * for its first seconds — which would switch drift correction off exactly
+   * when a fresh player needs to be landed.
+   */
+  isLive(): boolean {
+    return this.everPlayed && this.durationMs() === 0;
+  }
+
   setMuted(muted: boolean): void {
     if (muted) this.player?.mute();
     else this.player?.unMute();
@@ -255,6 +277,7 @@ export class YouTubeAdapter implements PlayerAdapter {
     this.player = null;
     this.ready = false;
     this.buffering = false;
+    this.everPlayed = false;
     this.container.replaceChildren();
     this.listeners.clear();
   }

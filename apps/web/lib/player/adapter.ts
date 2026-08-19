@@ -40,6 +40,13 @@ export interface PlayerAdapter {
   positionMs(): number;
   /** MILLISECONDS; 0 while unknown (pre-metadata / YouTube pre-ready). */
   durationMs(): number;
+  /**
+   * True once this player is known to be sitting on a LIVE edge rather than
+   * inside a timeline. OPTIONAL because most adapters can never be: only the
+   * two that can (native/HLS and YouTube) implement it, and callers ask through
+   * {@link adapterIsLive} so "cannot say" and "not live" are one answer.
+   */
+  isLive?(): boolean;
   setMuted(muted: boolean): void;
   isMuted(): boolean;
   setVolume(volume: number): void; // 0..1
@@ -94,6 +101,25 @@ export function adapterKindFor(ref: MediaRef | null): AdapterKind | null {
 /** True when the adapter kind supports transport + drift correction. */
 export function isFullSyncKind(kind: AdapterKind | null): boolean {
   return kind === 'native' || kind === 'youtube' || kind === 'soundcloud' || kind === 'vimeo';
+}
+
+/**
+ * Is the mounted player on a live edge?
+ *
+ * ASKED OF THE PLAYER, NEVER OF THE URL. A YouTube live id and a live `.m3u8`
+ * are ordinary refs — `parseProviderUrl` cannot tell them from a VOD and should
+ * not try — so the fact only exists once a player has the source open and can
+ * see that its timeline has no beginning the room could name. That is also why
+ * the answer changes during an item's life: it is false until the player says
+ * otherwise.
+ *
+ * FALSE IS THE DEFAULT, AND DELIBERATELY THE CORRECTED ONE. Turning drift
+ * correction off is the exceptional branch (lib/player/useSyncEngine.ts), so an
+ * adapter that cannot answer keeps the ordinary behaviour rather than silently
+ * opting a normal item out of sync.
+ */
+export function adapterIsLive(adapter: PlayerAdapter | null): boolean {
+  return adapter?.isLive?.() === true;
 }
 
 /**

@@ -19,7 +19,7 @@ import { newId } from '../../lib/tokens';
 import { requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
 import { policyAllows } from '../sync/policy';
-import { QUEUE_MAX_ITEMS, assertQueueItemWithinBounds } from './service';
+import { QUEUE_MAX_ITEMS, assertQueueItemWithinBounds, commitQueueWrite } from './service';
 
 type PlaylistParams = { Params: { playlistId: string } };
 
@@ -131,15 +131,20 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
     // of checks: this path used to spell out the count and the mediaRef and
     // stop there, so `artworkUrl` — `WebUrl`, unbounded — rode straight onto
     // the shared document. A caller cannot enforce a subset of one call.
-    if (room.queue.items.length + playlist.items.length > QUEUE_MAX_ITEMS) {
-      throw new AppError(
-        'VALIDATION',
-        `that playlist does not fit — the queue holds ${QUEUE_MAX_ITEMS} items`,
-      );
-    }
+    const assertItFits = (items: readonly QueueItem[]): void => {
+      if (items.length + playlist.items.length > QUEUE_MAX_ITEMS) {
+        throw new AppError(
+          'VALIDATION',
+          `that playlist does not fit — the queue holds ${QUEUE_MAX_ITEMS} items`,
+        );
+      }
+    };
+    assertItFits(room.queue.items);
     for (const item of playlist.items) assertQueueItemWithinBounds(item);
 
     // Append COPIES with fresh ids so playlist edits never alias queue items.
+    // Minted once, above the retry loop, so a re-applied copy is the SAME
+    // rows rather than a second set of them.
     const copies: QueueItem[] = playlist.items.map((item) => ({
       id: newId() as QueueItemId,
       mediaRef: item.mediaRef,
@@ -149,12 +154,33 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       addedBy: auth.userId,
       votesToSkip: [],
     }));
-    const next = {
-      items: [...room.queue.items, ...copies],
-      version: room.queue.version + 1,
-    };
-    await store.rooms.updateOne({ id: body.roomId }, { queue: next });
-    await app.deps.events.emit(body.roomId, 'queue.state', next);
+    // Compare-and-set, like every other write to this array: an unconditional
+    // one erases whatever landed between the read above and this write, and a
+    // playlist copy is the LARGEST such loss available — a whole queue's worth
+    // of somebody else's adds.
+    await commitQueueWrite(
+      store,
+      room,
+      (current) => {
+        // Re-checked against the queue the write will actually land on: the
+        // ceiling protects the DOCUMENT, not the read.
+        assertItFits(current.queue.items);
+        return {
+          items: [...current.queue.items, ...copies],
+          version: current.queue.version + 1,
+        };
+      },
+      async (current, next) => {
+        const queue = { items: [...next.items], version: next.version };
+        const written = await store.rooms.updateOne(
+          { id: current.id, queue: current.queue },
+          { queue },
+        );
+        if (written === null) return false;
+        await app.deps.events.emit(body.roomId, 'queue.state', queue);
+        return true;
+      },
+    );
     return { added: copies.length };
   });
 };

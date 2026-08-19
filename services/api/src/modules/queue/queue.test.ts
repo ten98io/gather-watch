@@ -99,6 +99,10 @@ async function makeDeps(room: FakeRoom, present: string[]) {
             joinedAt: 0,
           };
         },
+        // voteSkip asks how many people the ROOM has, to tell "everybody
+        // present agreed" apart from "this instance can only see me". In this
+        // fixture the room's members are exactly the seeded present set.
+        count: async () => present.length,
       },
     },
   } as unknown as Deps;

@@ -46,10 +46,11 @@ import type { ClockEstimator } from '@gather/api-client';
 import { mediaKindFor } from '@/lib/media-kind';
 import { useRoomConnection } from '@/lib/room-context';
 import type { PlayerAdapter } from './adapter';
-import { mediaKey } from './adapter';
+import { adapterIsLive, mediaKey } from './adapter';
 import { durationReportFor } from './advance';
 import { attachContentDucking } from './ducking';
 import { extensionPlaybackStore } from './extension-driver';
+import { publishStageLive } from './live';
 import { getVoiceActive, subscribeVoiceActive } from './room-audio';
 
 export interface SyncEngineInput {
@@ -84,6 +85,29 @@ const RATE_EPSILON = 0.005;
 /** A rate assignment read back sooner than this proves nothing — the player
  *  has not had a frame to apply it. */
 const RATE_READBACK_GRACE_MS = 250;
+
+/**
+ * NEVER SEEK MORE OFTEN THAN THIS. The extension's driver has had the floor
+ * since it shipped (apps/extension/src/driver.ts, `MIN_SEEK_INTERVAL_MS` — the
+ * same number for the same reason) and this engine had none at all: a
+ * correction was prescribed, and if the player had not moved by the next pass
+ * it was prescribed again, twice a second.
+ *
+ * A seek is the most expensive thing a player can be asked for — it re-buffers,
+ * and a protected one renegotiates a licence — so a player asked at 2 Hz never
+ * finishes answering the first question. The elastic band is what covers the
+ * wait: a viewer who is far enough out to need a seek is far enough out that
+ * five more seconds change nothing.
+ */
+export const MIN_SEEK_INTERVAL_MS = 5000;
+
+/** A prescribed seek that lands further than this from where it asked for was
+ *  IGNORED, not merely snapped to a keyframe. */
+const SEEK_MISS_MS = 2000;
+
+/** Two ignored seeks in a row and this engine stops asking that player. The
+ *  anchor is what absorbs a difference nothing can close. */
+const MAX_SEEK_MISSES = 2;
 
 /** What changed when the server sent a new PlaybackState. */
 export type PlaybackTransition = 'none' | 'track' | 'seek' | 'transport';
@@ -283,10 +307,50 @@ export function useSyncEngine(input: SyncEngineInput): void {
   const lastStateRef = useRef<PlaybackState | null>(null);
   const lastAdapterRef = useRef<PlayerAdapter | null>(null);
 
+  /**
+   * SEEK DISCIPLINE — the refusals that belong to the PLAYER, which the
+   * controller knows nothing about and must not be asked to weigh (the same
+   * split the extension's driver makes in `seekIsAffordable`). sync-core decides
+   * whether a correction is warranted; these decide whether this player is
+   * still worth asking.
+   *
+   * Beliefs about a player, so they die with the player and with the item — the
+   * END GUARD effect below owns that lifetime — and never with a playback
+   * epoch, which is minted by every pause anybody presses.
+   */
+  const lastSeekAtRef = useRef<number | null>(null);
+  const pendingSeekRef = useRef<{ toMs: number; atMs: number } | null>(null);
+  const seekMissesRef = useRef(0);
+  const seekAvailable = (): boolean => seekMissesRef.current < MAX_SEEK_MISSES;
+  const seekIsAffordable = (nowMs: number): boolean => {
+    if (!seekAvailable()) return false;
+    const last = lastSeekAtRef.current;
+    return last === null || nowMs - last >= MIN_SEEK_INTERVAL_MS;
+  };
+  /** Seek, and remember what was asked for so a later pass can see whether the
+   *  player did it. */
+  const prescribeSeek = (player: PlayerAdapter, toMs: number, nowMs: number): void => {
+    lastSeekAtRef.current = nowMs;
+    pendingSeekRef.current = { toMs, atMs: nowMs };
+    player.seekTo(toMs);
+  };
+  const forgetSeekBeliefs = (): void => {
+    lastSeekAtRef.current = null;
+    pendingSeekRef.current = null;
+    seekMissesRef.current = 0;
+  };
+
   /** Put the player exactly where a track change says it belongs. */
   const land = (state: PlaybackState, player: PlayerAdapter): void => {
+    // A live stream has no such place — see the live guard in the tick below.
+    if (adapterIsLive(player)) return;
     const expected = expectedPositionMs(state, clock.serverNow(Date.now()));
     if (Math.abs(expected - player.positionMs()) > LANDING_TOLERANCE_MS) {
+      // Host intent, so it is not subject to the floor and not evidence about
+      // the player either: a landing goes to a player that may not have read
+      // its metadata yet, and one that cannot honour it yet has not ignored it.
+      // The floor STARTS here, so the first correction waits its turn.
+      lastSeekAtRef.current = Date.now();
       player.seekTo(expected);
     }
   };
@@ -307,15 +371,22 @@ export function useSyncEngine(input: SyncEngineInput): void {
 
     if (rebuilt) {
       // A different player object is a different player, and what we learned
-      // about the last one — that it drops playbackRate — was about IT. The
-      // controller has to be told too: `noteTrackChange` does not restore rate
-      // control, deliberately, because a track change alone is not evidence.
+      // about the last one — that it drops playbackRate, that it ignored the
+      // last two seeks — was about IT.  The controller has to be told too:
+      // `noteTrackChange` does not restore rate control, deliberately, because
+      // a track change alone is not evidence.
       rateRejectedRef.current = false;
       controller?.setRateControlAvailable(true);
+      forgetSeekBeliefs();
     }
 
     if (transition === 'track') {
       controller?.noteTrackChange();
+      // A miss counted against the last item says nothing about this one, and a
+      // floor left running from it would delay the first correction of the new
+      // one. Same clearing the extension does on a track change
+      // (`forgetPlayerBeliefs`), and it is what keeps the landing below free.
+      forgetSeekBeliefs();
       // The latch belongs to the item that ended, and this is a different one.
       // Cleared HERE as well as in the subscription below, because effects run
       // in declaration order: on the commit that carries a new item this one
@@ -342,13 +413,26 @@ export function useSyncEngine(input: SyncEngineInput): void {
       // ours, is not something rate can close.)
       // …and never onto a player that is already over: seeking a finished
       // player is what starts it again, which is the whole reason the END
-      // GUARD below exists.
-      if (playback.playing && !endedRef.current && projectionIsTrustworthy(playback)) {
+      // GUARD below exists. Nor onto a live one, which has no room position to
+      // realign to at all.
+      if (
+        playback.playing &&
+        !endedRef.current &&
+        !adapterIsLive(adapter) &&
+        projectionIsTrustworthy(playback)
+      ) {
+        const nowMs = Date.now();
         const target =
-          expectedPositionMs(playback, clock.serverNow(Date.now())) -
+          expectedPositionMs(playback, clock.serverNow(nowMs)) -
           (controller?.anchorOffsetMs() ?? 0);
-        if (Math.abs(target - adapter.positionMs()) > (preset.deadbandMs ?? 60)) {
-          adapter.seekTo(target);
+        // Subject to the floor: a resume is not a reason to ask a player that
+        // is already busy with the last seek, and someone tapping play/pause
+        // repeatedly must not become a seek per tap.
+        if (
+          Math.abs(target - adapter.positionMs()) > (preset.deadbandMs ?? 60) &&
+          seekIsAffordable(nowMs)
+        ) {
+          prescribeSeek(adapter, target, nowMs);
         }
       }
     }
@@ -389,6 +473,17 @@ export function useSyncEngine(input: SyncEngineInput): void {
   useEffect(() => {
     endedRef.current = false;
     startedHereRef.current = false;
+    // Liveness is discovered by the tick below, never assumed, so a badge can
+    // never outlive the stream it described.
+    //
+    // The seek beliefs are NOT dropped here, though they have the same
+    // lifetime: this body runs after the transition effect above, which has
+    // already forgotten them for a new item and then landed the track — and a
+    // landing starts the floor. Clearing them again here would let the first
+    // correction of every item go out one tick behind the landing, which is
+    // the loop this discipline exists to close. The teardown below is where
+    // that lifetime actually ends.
+    publishStageLive(false);
     if (adapter === null) return undefined;
     const controller = controllerRef.current;
     const offs = [
@@ -405,6 +500,8 @@ export function useSyncEngine(input: SyncEngineInput): void {
       for (const off of offs) off();
       endedRef.current = false;
       startedHereRef.current = false;
+      forgetSeekBeliefs();
+      publishStageLive(false);
     };
   }, [adapter, trackIdentity]);
 
@@ -489,6 +586,31 @@ export function useSyncEngine(input: SyncEngineInput): void {
       // start, not accumulated drift.
       if (gap > WAKE_GAP_MS) controller.noteBuffering();
 
+      /*
+       * A LIVE STREAM IS NAMED, AND THEN LEFT ALONE.
+       *
+       * The room's timeline starts at 0 and projects forward; a live player's
+       * does not start at 0 at all. YouTube's iframe answers
+       * elapsed-since-broadcast-start and refuses to name a length, and hls.js
+       * opens a sliding window a few target-durations behind an edge that keeps
+       * moving. So the measured "drift" is minutes; the controller's terminal
+       * clamp is disabled, because a live stream has no duration to clamp with
+       * (see sync-core drift.ts, `durationMs`); and every pass prescribes a
+       * seek toward a position outside the DVR window, which the player refuses
+       * or rounds — so the next pass prescribes it again, twice a second,
+       * forever.
+       *
+       * There is nothing to correct toward. Everyone sits at their own live
+       * edge, which for a broadcast is within seconds of everyone else's, and
+       * that is the sync. TRANSPORT STILL APPLIES — the room's play/pause is
+       * host intent and the effect above delivers it; only the position is left
+       * alone. No drift sample is reported either: 0 would claim a measurement
+       * this engine has deliberately stopped making.
+       */
+      const live = adapterIsLive(adapter);
+      publishStageLive(live);
+      if (live) return;
+
       // The length is worth reporting even while the room sits still — a
       // paused item has a duration, and a player that has started here has
       // certainly loaded the metadata for the item it started.
@@ -522,6 +644,29 @@ export function useSyncEngine(input: SyncEngineInput): void {
       const actual = adapter.positionMs();
       onDriftSample?.(expected - actual);
 
+      // DID THE LAST SEEK TAKE? A player that snaps a correction to a keyframe
+      // has honoured it; one that is still sitting where it was has not, and
+      // asking it again on the next pass is how a stage ends up in a seek loop
+      // nobody can see from the outside. Two in a row and this engine stops
+      // asking (see the suppression below) — the extension's driver counts the
+      // same misses, over telemetry, for the same reason.
+      //
+      // Measured where the seek WOULD BE by now, not where it was aimed: the
+      // player kept running while we waited to look.
+      const prescribed = pendingSeekRef.current;
+      if (prescribed !== null && nowMs > prescribed.atMs) {
+        pendingSeekRef.current = null;
+        const wanted = prescribed.toMs + (nowMs - prescribed.atMs) * playback.rate;
+        if (Math.abs(actual - wanted) > SEEK_MISS_MS) {
+          seekMissesRef.current += 1;
+          // Out of seeks: whatever lag the viewer settles at from here is a
+          // fact to be adopted, not fought.
+          if (!seekAvailable()) controller.noteBuffering();
+        } else {
+          seekMissesRef.current = 0;
+        }
+      }
+
       // Did the last nudge take? A player that silently drops playbackRate
       // (protected media is the usual one) must be reported ONCE, or the
       // controller goes on prescribing a correction that never happens while
@@ -554,7 +699,20 @@ export function useSyncEngine(input: SyncEngineInput): void {
         durationMs > 0 ? { durationMs } : undefined,
       );
       if (decision.action === 'seek') {
-        adapter.seekTo(decision.toMs);
+        if (seekIsAffordable(nowMs)) {
+          prescribeSeek(adapter, decision.toMs, nowMs);
+        } else if (!seekAvailable()) {
+          // An honest stop, and the reason the floor and the counter are worth
+          // having: this player has ignored the last two corrections, so there
+          // is nothing left to fight with. Adopt the lag and play smoothly at
+          // it — which is what the elastic anchor is FOR — instead of
+          // prescribing a correction that will never land. The magnitude is
+          // measured against the same clamped expectation the controller
+          // decides on, or a finished item would adopt an anchor made of
+          // arithmetic past its own end.
+          const ceiling = durationMs > 0 ? Math.min(expected, durationMs) : expected;
+          controller.noteSettledLag(ceiling - controller.anchorOffsetMs() - actual);
+        }
         adapter.setRate(playback.rate);
       } else if (decision.action === 'nudge') {
         const want = playback.rate * decision.rate;

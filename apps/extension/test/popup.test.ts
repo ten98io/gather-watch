@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { providerForUrl } from '../src/providers';
+import type { TabProvider } from '../src/providers';
+
 /**
  * The popup is a document that talks to the worker, so it is exercised the way
  * a user drives it: press a button, let the answer come back, read what the
@@ -60,8 +63,10 @@ interface Status {
   roomName: string | null;
   playing: boolean;
   telemetry: null;
-  provider: null;
+  provider: TabProvider | null;
   sharing: boolean;
+  /** Why the ROOM ended the last share; absent when nothing ended that way. */
+  shareEnded?: string;
 }
 
 interface Worker {
@@ -69,6 +74,8 @@ interface Worker {
   status: Status;
   /** What the worker answers the next `popup:share` with. */
   shareAnswer: Envelope;
+  /** …and the next `popup:cast`, which is answered by the page, not the worker. */
+  castAnswer: { clicked: boolean; reason: string };
 }
 
 let elements = new Map<string, FakeEl>();
@@ -94,7 +101,7 @@ async function sendMessage(msg: Record<string, unknown>): Promise<Envelope> {
       worker.status = { ...worker.status, connected: false, sharing: false };
       return { ok: true, value: null };
     case 'popup:cast':
-      return { ok: true, value: { clicked: false, reason: '' } };
+      return { ok: true, value: { ...worker.castAnswer } };
     default:
       return { ok: true, value: null };
   }
@@ -143,6 +150,7 @@ beforeEach(() => {
       sharing: false,
     },
     shareAnswer: SHARED_WINDOW,
+    castAnswer: { clicked: false, reason: '' },
   };
   globals.document = { getElementById: (id: string): FakeEl | null => elements.get(id) ?? null };
   globals.chrome = { runtime: { sendMessage } };
@@ -317,6 +325,111 @@ describe('stopping a share from the popup', () => {
       return kind === 'startShare' || kind === 'stopShare' || kind === 'shareEnded';
     });
     expect(internal).toEqual([]);
+  });
+});
+
+/* ── the cast control, which fails more often than it succeeds ── */
+
+/**
+ * The cast selectors are DATA (providers.ts), and a site that has been
+ * reskinned since they were written is the normal end of their life. What is
+ * left when that happens is the sentence, so the sentence has to survive the
+ * poll that redraws this document every two seconds — a site Gather can cast
+ * from has no standing reason of its own, so the redraw used to blank the slot
+ * and the press read as a button that does nothing at all.
+ */
+describe('what the popup says a cast press did', () => {
+  const youtube = providerForUrl('https://www.youtube.com/watch?v=abc');
+  const missed = "Couldn't find YouTube's cast control on this page — start playback first, or cast from the site's own player.";
+
+  it('keeps the miss on screen across the polls that follow', async () => {
+    worker.status.provider = youtube;
+    worker.castAnswer = { clicked: false, reason: missed };
+    await openPopup();
+    expect(el('cast').disabled).toBe(false);
+
+    el('cast').click();
+    await settle();
+    expect(el('cast-reason').textContent).toBe(missed);
+    expect(el('cast-reason').hidden).toBe(false);
+
+    vi.advanceTimersByTime(6000);
+    await settle();
+
+    expect(el('cast-reason').textContent).toBe(missed);
+    expect(el('cast-reason').hidden).toBe(false);
+  });
+
+  it('lets the site’s own standing reason replace it', async () => {
+    worker.status.provider = youtube;
+    worker.castAnswer = { clicked: false, reason: missed };
+    await openPopup();
+    el('cast').click();
+    await settle();
+
+    // The tab went somewhere Gather cannot cast from at all: that reason is
+    // about the page in front of the user and outranks a press already made.
+    worker.status.provider = providerForUrl('https://www.netflix.com/watch/80100172');
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(el('cast-reason').textContent).toBe(worker.status.provider.cast.reason);
+    expect(el('cast').disabled).toBe(true);
+  });
+
+  it('shows what the press achieved when it did work', async () => {
+    worker.status.provider = youtube;
+    worker.castAnswer = { clicked: true, reason: "Opened YouTube's cast picker." };
+    await openPopup();
+
+    el('cast').click();
+    await settle();
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(el('cast-reason').textContent).toBe("Opened YouTube's cast picker.");
+    expect(el('cast').disabled).toBe(false);
+  });
+});
+
+/* ── a share the ROOM ended ── */
+
+/**
+ * Refused outright, or stopped by a moderator. Nothing else on this page would
+ * say so: the share was reported as started — locally it had been — and the
+ * buttons simply come back a moment later, which is indistinguishable from the
+ * user's own stop.
+ */
+describe('a share the room ended', () => {
+  it('shows the room’s reason on the poll that reports the share gone', async () => {
+    await openPopup();
+    el('share-window').click();
+    await settle();
+    expect(el('share-stop').hidden).toBe(false);
+
+    worker.status.sharing = false;
+    worker.status.shareEnded = 'This room allows 4 people to publish at once.';
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(el('share-error').hidden).toBe(false);
+    expect(el('share-error').textContent).toBe('This room allows 4 people to publish at once.');
+    expect(el('share-stop').hidden).toBe(true);
+    expect(el('share-tab').disabled).toBe(false);
+  });
+
+  it('says nothing when the share ended in a way the user performed', async () => {
+    await openPopup();
+    el('share-window').click();
+    await settle();
+
+    worker.status.sharing = false;
+    worker.status.shareEnded = '';
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(el('share-error').hidden).toBe(true);
+    expect(el('share-error').textContent).toBe('');
   });
 });
 

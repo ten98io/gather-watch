@@ -11,10 +11,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PresenceEntry, RoomId, TurnCredentialsResponse, UserId } from '@gather/contracts';
 import {
+  CALL_PEER_LOST_NOTE,
   CALL_PEER_NOTE,
   CALL_SETUP_NOTE,
   CallMesh,
   CREDENTIAL_WAIT_MS,
+  DEFAULT_CAP_CAM_KBPS,
+  PUBLISH_BRIDGE_MS,
   closeCallMesh,
   getCallMesh,
 } from '@/lib/call-mesh';
@@ -82,10 +85,16 @@ class FakeDataChannel {
   close(): void {}
 }
 
+interface SentParameters {
+  encodings: Array<{ maxBitrate?: number }>;
+}
+
 interface FakeSender {
   track: unknown;
-  getParameters(): { encodings: [] };
-  setParameters(): Promise<void>;
+  /** Every parameter bag handed to setParameters — a cap write lands here. */
+  setCalls: SentParameters[];
+  getParameters(): SentParameters;
+  setParameters(p: SentParameters): Promise<void>;
   replaceTrack(next: unknown): Promise<void>;
 }
 
@@ -104,6 +113,8 @@ class FakePc {
   readonly senders: FakeSender[] = [];
   /** Every ICE list pushed onto this connection after construction. */
   readonly configured: unknown[] = [];
+  /** What the next getStats() resolves to; link classification reads it. */
+  statsResult: unknown = undefined;
   closed = false;
 
   constructor(readonly config?: { iceServers?: unknown[] }) {
@@ -135,8 +146,13 @@ class FakePc {
     this.addedTracks.push(t);
     const sender: FakeSender = {
       track: t,
-      getParameters: () => ({ encodings: [] }),
-      setParameters: () => Promise.resolve(),
+      setCalls: [],
+      // A fresh bag with one encoding per read, like the platform.
+      getParameters: () => ({ encodings: [{}] }),
+      setParameters: (p: SentParameters) => {
+        sender.setCalls.push(p);
+        return Promise.resolve();
+      },
       replaceTrack: (next: unknown) => {
         sender.track = next;
         return Promise.resolve();
@@ -153,6 +169,9 @@ class FakePc {
   }
   createDataChannel(label: string): FakeDataChannel {
     return new FakeDataChannel(label);
+  }
+  getStats(): Promise<unknown> {
+    return Promise.resolve(this.statsResult);
   }
   close(): void {
     this.closed = true;
@@ -177,17 +196,30 @@ const presenceEntry = (userId: string, state: PresenceEntry['state']): PresenceE
   lastSeenTs: 0,
 });
 
+/** One signalling frame the mesh handed to the room socket. */
+interface SentFrame {
+  type: string;
+  payload: { targetUserId?: UserId; connectionId?: string };
+}
+
 interface FakeConnection {
   connection: RoomConnection;
   setPresence(next: Record<string, PresenceEntry>): void;
+  /** Everything the mesh sent over the room socket, in order. */
+  sent: SentFrame[];
 }
 
 function fakeConnection(initial: Record<string, PresenceEntry>): FakeConnection {
   const listeners = new Set<(s: unknown, prev: unknown) => void>();
   const state = { presence: initial };
+  const sent: SentFrame[] = [];
   const connection = {
     roomId: 'room_test' as RoomId,
-    rawSocket: { send: () => undefined },
+    rawSocket: {
+      send: (type: string, payload: SentFrame['payload']) => {
+        sent.push({ type, payload });
+      },
+    },
     useRoomState: {
       getState: () => state,
       subscribe: (fn: (s: unknown, prev: unknown) => void) => {
@@ -199,6 +231,7 @@ function fakeConnection(initial: Record<string, PresenceEntry>): FakeConnection 
   } as unknown as RoomConnection;
   return {
     connection,
+    sent,
     setPresence(next) {
       const prev = { presence: state.presence };
       state.presence = next;
@@ -555,5 +588,295 @@ describe('CallMesh failure reporting', () => {
       [PEER, 'disconnected'],
     ]);
     expect(mesh.connectionStates().get(PEER)).toBe('connected');
+  });
+
+  it('stops promising a recovery once it has given up on one', async () => {
+    vi.useFakeTimers();
+    try {
+      const { mesh, notes } = await startedMesh();
+      mesh.setLocalTrack('mic', track('mic-local', 'audio'));
+
+      FakePc.instances[0]?.setConnectionState('failed');
+      expect(notes).toEqual([CALL_PEER_NOTE]);
+
+      // The mesh restarts ICE a bounded number of times, with backoff. FakePc
+      // never comes back, so the budget runs out.
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      // "Trying to get it back" stops being true the moment it stops trying,
+      // and a spinner that never resolves is how nobody learns to reload.
+      expect(notes).toEqual([CALL_PEER_NOTE, CALL_PEER_LOST_NOTE]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Who our media actually goes to
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The mesh connects the ROOM — it carries the DataChannel fabric, and a
+ * lurker's connection is as real as a caller's. The camera belongs to the CALL,
+ * and it used to ride the connection: in a room of twelve where four were
+ * calling, each of those four encoded and uploaded eleven copies of their
+ * camera, eight of them to people who never pressed Join. Presence is what says
+ * who is in the call; this is where that answer is turned into who receives a
+ * track.
+ */
+describe('CallMesh publish audience', () => {
+  const created: CallMesh[] = [];
+
+  beforeEach(() => {
+    FakePc.reset();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+  });
+
+  afterEach(() => {
+    for (const mesh of created.splice(0)) mesh.close();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+  });
+
+  const LURKER = 'user_lurker' as UserId;
+
+  /** Track ids ARMED on a pc. A muted sender survives but publishes nothing. */
+  const armedOn = (pc: FakePc | undefined): string[] =>
+    (pc?.senders ?? []).flatMap((s) =>
+      s.track === null ? [] : [(s.track as MediaStreamTrack).id],
+    );
+
+  /** A caller and a lurker, in that order — so instances[0] is the caller. */
+  const roomWithLurker = async (): Promise<{ mesh: CallMesh; conn: FakeConnection }> => {
+    const conn = fakeConnection({
+      [PEER]: presenceEntry(PEER, 'in-call'),
+      [LURKER]: presenceEntry(LURKER, 'watching'),
+    });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    await settle();
+    return { mesh, conn };
+  };
+
+  it('sends the camera and microphone only to the people on the call', async () => {
+    const { mesh } = await roomWithLurker();
+    mesh.setLocalTrack('mic', track('mic-local', 'audio'));
+    mesh.setLocalTrack('cam', track('cam-local', 'video'));
+
+    expect(armedOn(FakePc.instances[0])).toEqual(['mic-local', 'cam-local']);
+    // The defect: the person who never pressed Join used to get both of these.
+    expect(armedOn(FakePc.instances[1])).toEqual([]);
+  });
+
+  it('still holds the lurker’s connection — the fabric is the room’s', async () => {
+    const { mesh } = await roomWithLurker();
+    mesh.setLocalTrack('cam', track('cam-local', 'video'));
+
+    // Gating the TRACK and never the connection: sync, file transfer and
+    // emotes all ride the lurker's link.
+    expect(FakePc.instances).toHaveLength(2);
+    expect(FakePc.instances[1]?.closed).toBe(false);
+  });
+
+  it('leaves the screen share room-wide', async () => {
+    const { mesh } = await roomWithLurker();
+    mesh.setLocalTrack('share', track('screen-local', 'video'));
+    mesh.setLocalTrack('share-audio', track('tab-audio-local', 'audio'));
+
+    // Watching a share is not joining a call — Mode B viewers who never
+    // pressed Join are most of its audience.
+    expect(armedOn(FakePc.instances[1])).toEqual(['screen-local', 'tab-audio-local']);
+  });
+
+  it('publishes to someone the moment presence says they joined the call', async () => {
+    const { mesh, conn } = await roomWithLurker();
+    mesh.setLocalTrack('cam', track('cam-local', 'video'));
+    expect(armedOn(FakePc.instances[1])).toEqual([]);
+
+    conn.setPresence({
+      [PEER]: presenceEntry(PEER, 'in-call'),
+      [LURKER]: presenceEntry(LURKER, 'in-call'),
+    });
+
+    expect(armedOn(FakePc.instances[1])).toEqual(['cam-local']);
+  });
+
+  it('rides out a presence blip, and stops when it turns out not to be one', async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+      const mesh = new CallMesh(conn.connection, ME);
+      created.push(mesh);
+      mesh.start();
+      await settle();
+      mesh.setLocalTrack('cam', track('cam-local', 'video'));
+      expect(armedOn(FakePc.instances[0])).toEqual(['cam-local']);
+
+      // A client re-announcing 'watching' for its own reasons overwrites its
+      // call state for about a round trip. Pulling the camera on that would
+      // cost two renegotiations and a black tile every time a queue moved.
+      conn.setPresence({ [PEER]: presenceEntry(PEER, 'watching') });
+      await vi.advanceTimersByTimeAsync(PUBLISH_BRIDGE_MS - 1);
+      expect(armedOn(FakePc.instances[0])).toEqual(['cam-local']);
+
+      await vi.advanceTimersByTimeAsync(2);
+      // Not a blip: they left. The bridge has to close on its own clock —
+      // nothing guarantees another presence event ever arrives.
+      expect(armedOn(FakePc.instances[0])).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-arms a peer whose presence comes back inside the bridge', async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+      const mesh = new CallMesh(conn.connection, ME);
+      created.push(mesh);
+      mesh.start();
+      await settle();
+      mesh.setLocalTrack('cam', track('cam-local', 'video'));
+
+      conn.setPresence({ [PEER]: presenceEntry(PEER, 'watching') });
+      await vi.advanceTimersByTimeAsync(1000);
+      conn.setPresence({ [PEER]: presenceEntry(PEER, 'in-call') });
+      await vi.advanceTimersByTimeAsync(PUBLISH_BRIDGE_MS * 2);
+
+      // The bridge that closed behind them must not take the camera with it.
+      expect(armedOn(FakePc.instances[0])).toEqual(['cam-local']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caps the camera by default, and never the microphone', async () => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = getCallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    await settle();
+
+    mesh.setLocalTrack('mic', track('mic-local', 'audio'));
+    mesh.setLocalTrack('cam', track('cam-local', 'video'));
+
+    const pc = FakePc.instances[0];
+    const capsOn = (trackId: string): Array<number | undefined> =>
+      (pc?.senders ?? [])
+        .filter((s) => (s.track as MediaStreamTrack | null)?.id === trackId)
+        .flatMap((s) => s.setCalls.flatMap((p) => p.encodings.map((e) => e.maxBitrate)));
+
+    // One receiver gets the whole budget; the mesh divides it as people join.
+    expect(capsOn('cam-local')).toEqual([DEFAULT_CAP_CAM_KBPS * 1000]);
+    // Audio is cheap, and it is the half people notice going missing.
+    expect(capsOn('mic-local')).toEqual([]);
+    closeCallMesh(conn.connection);
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Endpoint identity, and the truth about the path
+   ──────────────────────────────────────────────────────────────────────────── */
+
+describe('CallMesh endpoint identity', () => {
+  const created: CallMesh[] = [];
+
+  beforeEach(() => {
+    FakePc.reset();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+  });
+
+  afterEach(() => {
+    for (const mesh of created.splice(0)) mesh.close();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+  });
+
+  it('announces a token naming this tab, so two tabs are addressable apart', async () => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    await settle();
+
+    // Without this the same account in two tabs derives ONE connectionId, the
+    // far side holds one connection for the pair, and each tab's offer resets
+    // the other's ICE and DTLS — the call flips between them forever.
+    const hellos = conn.sent.filter((f) => f.payload.connectionId?.includes(':hello:') === true);
+    expect(hellos).toHaveLength(1);
+    expect(hellos[0]?.payload.targetUserId).toBe(PEER);
+
+    const token = hellos[0]?.payload.connectionId?.split(':hello::')[1] ?? '';
+    // A token the mesh will accept, and one that names the TAB — not the
+    // account, which is exactly the thing both tabs have in common.
+    expect(token).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(token).not.toBe(ME);
+  });
+});
+
+describe('CallMesh link path', () => {
+  const created: CallMesh[] = [];
+
+  beforeEach(() => {
+    FakePc.reset();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+  });
+
+  afterEach(() => {
+    for (const mesh of created.splice(0)) mesh.close();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+  });
+
+  /** Stats where the selected pair crosses a TURN relay on the local side. */
+  const relayedStats = [
+    { id: 'transport_1', type: 'transport', selectedCandidatePairId: 'pair_1' },
+    { id: 'pair_1', type: 'candidate-pair', localCandidateId: 'cand_l', remoteCandidateId: 'cand_r' },
+    { id: 'cand_l', type: 'local-candidate', candidateType: 'relay' },
+    { id: 'cand_r', type: 'remote-candidate', candidateType: 'host' },
+  ];
+
+  it('tells the app whether a peer’s media is relayed or direct', async () => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    await settle();
+
+    // Before the first poll nothing is known — and 'unknown' has to be sayable,
+    // because the alternative is a badge that guesses.
+    expect(mesh.linkState(PEER)).toBe('unknown');
+
+    const seen: Array<[UserId, string]> = [];
+    mesh.onLinkState((peerId, state) => seen.push([peerId, state]));
+
+    const pc = FakePc.instances[0];
+    if (pc !== undefined) pc.statsResult = relayedStats;
+    await mesh.pollLinkStats();
+
+    // Every byte of this call is crossing a server we rent. The badge said
+    // 'Private' because this answer had no way out of the p2p layer.
+    expect(mesh.linkState(PEER)).toBe('relayed');
+    expect(mesh.linkStates().get(PEER)).toBe('relayed');
+    expect(seen).toEqual([[PEER, 'unknown'], [PEER, 'relayed']]);
+  });
+
+  it('replays the current path to a subscriber that arrives late', async () => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    const mesh = new CallMesh(conn.connection, ME);
+    created.push(mesh);
+    mesh.start();
+    await settle();
+    const pc = FakePc.instances[0];
+    if (pc !== undefined) pc.statsResult = relayedStats;
+    await mesh.pollLinkStats();
+
+    const seen: Array<[UserId, string]> = [];
+    mesh.onLinkState((peerId, state) => seen.push([peerId, state]));
+
+    // A badge that mounts after the poll must not read 'unknown' forever.
+    expect(seen).toEqual([[PEER, 'relayed']]);
   });
 });

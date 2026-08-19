@@ -360,7 +360,16 @@ beforeAll(async () => {
   bg = await import('../src/background');
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  // End the previous test's share, through the worker's own door.
+  //
+  // The worker is ONE module for the whole file, so a test that deliberately
+  // ends with a share still running — see 'a share outlives the worker' —
+  // hands the next test a worker that still holds the claim. Resetting the
+  // browser fake cannot reach it: the claim is a module variable, and the
+  // fake's `offscreenOpen: false` then describes a browser that disagrees
+  // with the worker, which is a state neither ever occupies in Chrome.
+  await ask({ kind: 'popup:stopShare' }).catch(() => undefined);
   fake.desktopCalls.length = 0;
   fake.tabCaptureCalls.length = 0;
   fake.sent.length = 0;
@@ -401,6 +410,8 @@ interface PopupStatus {
   connected: boolean;
   roomName: string | null;
   sharing: boolean;
+  /** Why the ROOM ended the last share; '' when it ended some other way. */
+  shareEnded: string;
   telemetry: { positionMs: number } | null;
   /** The FULL registry entry, not the redacted summary the page gets: the
    *  popup's cast control is built out of `cast`. */
@@ -941,6 +952,40 @@ describe('sharing a room', () => {
     await expect(share('tab')).resolves.toMatchObject({ shared: true });
   });
 
+  /**
+   * A share the ROOM ended — refused outright, or stopped by a moderator —
+   * has nothing else on the screen to explain itself: the popup was told the
+   * share started, because locally it had, and the buttons simply come back.
+   * The offscreen document is the only thing that hears the room's answer, so
+   * its sentence has to survive the trip to the next status the popup asks
+   * for, and no further.
+   */
+  it('keeps the room’s reason for the popup, until the next attempt', async () => {
+    await share('tab');
+
+    await ask({ kind: 'shareEnded', reason: 'Someone is already sharing.' });
+
+    const after = await status();
+    expect(after.sharing).toBe(false);
+    expect(after.shareEnded).toBe('Someone is already sharing.');
+    // Reading it does not consume it: the popup polls, and the sentence has to
+    // still be there on the poll the person actually looks at.
+    expect((await status()).shareEnded).toBe('Someone is already sharing.');
+
+    await share('tab');
+
+    expect((await status()).shareEnded).toBe('');
+  });
+
+  it('says nothing about a share the person ended themselves', async () => {
+    await share('tab');
+
+    // Chrome's own stop bar and the shared tab closing both arrive like this.
+    await ask({ kind: 'shareEnded' });
+
+    expect((await status()).shareEnded).toBe('');
+  });
+
   it('clears the claim when the shared tab is closed', async () => {
     await share('tab');
     expect((await status()).sharing).toBe(true);
@@ -958,6 +1003,80 @@ describe('sharing a room', () => {
     await closeTab(7);
 
     expect((await status()).sharing).toBe(true);
+  });
+});
+
+/* ── one person, one share ── */
+
+/**
+ * A room's stage names ONE host, and the server lets that host replace their
+ * own share without a word. So a person already sharing — from this extension,
+ * or from their web tab — who presses Share here gets a SECOND capture on the
+ * same lane under the same user id, whose connectionId collides with the
+ * first: viewers answer whichever spoke first and drop the other as a glare
+ * loser, and the room sees one of the two at random while both machines pay to
+ * send it. Both refusals happen BEFORE the picker, because being refused after
+ * choosing a window is the rudest possible way to say no.
+ */
+describe('a second share from the same person is refused', () => {
+  const stage = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    active: true,
+    hostUserId: 'user_1',
+    startedAt: 1_000,
+    viewerCount: 0,
+    uplinkQuality: null,
+    ...over,
+  });
+
+  beforeEach(async () => {
+    await connectRoom();
+  });
+
+  afterEach(async () => {
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('refuses a second capture while this extension is already sharing', async () => {
+    await share('tab');
+    fake.desktopCalls.length = 0;
+    fake.tabCaptureCalls.length = 0;
+
+    const res = await share('screen');
+
+    expect(res).toMatchObject({ shared: false, cancelled: false });
+    expect(res.note).toMatch(/already sharing/i);
+    // No picker was opened, and the share that IS running was left alone.
+    expect(fake.desktopCalls).toEqual([]);
+    expect(fake.tabCaptureCalls).toEqual([]);
+    expect(fake.offscreenCreated).toBe(1);
+    expect((await status()).sharing).toBe(true);
+  });
+
+  /**
+   * The other person's share this worker cannot see at all: a capture running
+   * in their web tab, in another process. The room's stage is the only place
+   * it is visible from here — it names the host, and the host is us.
+   */
+  it('refuses when the room already shows this person’s share from elsewhere', async () => {
+    room.emit('restream.state', stage());
+
+    const res = await share('tab');
+
+    expect(res).toMatchObject({ shared: false, cancelled: false });
+    expect(res.note).toMatch(/somewhere else/i);
+    expect(fake.tabCaptureCalls).toEqual([]);
+    expect(fake.offscreenCreated).toBe(0);
+    expect((await status()).sharing).toBe(false);
+  });
+
+  it('shares as usual when the stage is somebody else’s, or nobody’s', async () => {
+    for (const held of [stage({ hostUserId: 'user_2' }), stage({ active: false, hostUserId: null })]) {
+      room.emit('restream.state', held);
+
+      await expect(share('tab')).resolves.toMatchObject({ shared: true });
+
+      await ask({ kind: 'popup:stopShare' });
+    }
   });
 });
 

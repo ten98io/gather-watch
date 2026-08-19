@@ -30,7 +30,7 @@ import type { MemberDoc, RoomDoc } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { Deps } from '../types';
-import { assertMediaRefWithinBounds } from '../queue/service';
+import { assertMediaRefWithinBounds, commitQueueWrite } from '../queue/service';
 import { sanitizeDurationMs } from '../metadata/resolver';
 import { recordPlayback } from '../rooms/history';
 import { getRoomsRuntime } from '../rooms/runtime';
@@ -327,18 +327,39 @@ export class SyncService {
     const value = sanitizeDurationMs(durationMs);
     if (value === null) return;
     const { room } = await this.loadContext(roomId, userId);
-    const current = room.queue.items.find((it) => it.id === itemId);
-    // Gone, or already answered by somebody's player — either way there is
-    // nothing to learn and nothing to say.
-    if (current === undefined || (current.durationMs !== null && current.durationMs > 0)) {
-      return;
-    }
-    const items = room.queue.items.map((it) =>
-      it.id === itemId ? { ...it, durationMs: value } : it,
+    // COMPARE-AND-SET on the queue that was read, with the fill re-decided
+    // against whatever the room moved to: an unconditional write here lost to
+    // any queue mutation that raced it, and losing THIS one is not cosmetic —
+    // the row goes back to having no duration, which drops
+    // `endingIsPlausible` to the twenty-second unknown floor for the rest of
+    // the item's life. (Filling a row is a queue mutation like any other, so
+    // it retries through the queue module's own bounded loop.)
+    await commitQueueWrite(
+      this.deps.store,
+      room,
+      (current) => {
+        const row = current.queue.items.find((it) => it.id === itemId);
+        // Gone, or already answered by somebody's player — either way there is
+        // nothing to learn and nothing to say.
+        if (row === undefined || (row.durationMs !== null && row.durationMs > 0)) {
+          return null;
+        }
+        const items = current.queue.items.map((it) =>
+          it.id === itemId ? { ...it, durationMs: value } : it,
+        );
+        return { items, version: current.queue.version + 1 };
+      },
+      async (current, next) => {
+        const queue = { items: [...next.items], version: next.version };
+        const written = await this.deps.store.rooms.updateOne(
+          { id: current.id, queue: current.queue },
+          { queue },
+        );
+        if (written === null) return false;
+        await this.deps.events.emit(current.id, 'queue.state', queue);
+        return true;
+      },
     );
-    const queue = { items, version: room.queue.version + 1 };
-    await this.deps.store.rooms.updateOne({ id: room.id }, { queue });
-    await this.deps.events.emit(room.id, 'queue.state', queue);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -386,7 +407,7 @@ export class SyncService {
    *  hand" are the same set of people by construction. */
   private async mayDrive(room: RoomDoc, member: MemberDoc): Promise<boolean> {
     if (policyAllows(room.policies.playbackControl, member.role)) return true;
-    return this.privilegedHolderAbsent(room);
+    return this.privilegedHolderAbsent(room, member.userId);
   }
 
   /**
@@ -394,15 +415,31 @@ export class SyncService {
    * room looks empty (no presence entries at all): that is a presence outage
    * or a cold read, not evidence the host left, and opening control on it
    * would hand the room away every time presence hiccuped.
+   *
+   * A ROOM OF ONLY THE CALLER IS THE SAME FACT, and reading it as an absent
+   * host is how this waived the clock check for anyone who could reach a cold
+   * instance. Presence subscribes a room's control channel on first local
+   * activity, so a member who connects to an instance that has not mirrored
+   * the room yet sees a presence set containing THEMSELVES and nobody else —
+   * size 1, host not in it, "no present member holds the policy" true, every
+   * advance waived, re-armable by reconnecting until they land on a cold
+   * instance again. The roster handshake below is the real repair (it ASKS the
+   * other instances instead of waiting for a heartbeat); this line is what
+   * holds when the at-most-once bus drops the request, and it costs nothing
+   * real — a member genuinely alone in a room is not being frozen out of
+   * anything, since a genuine ending still passes the clock check.
    */
-  private async privilegedHolderAbsent(room: RoomDoc): Promise<boolean> {
+  private async privilegedHolderAbsent(room: RoomDoc, callerId: UserId): Promise<boolean> {
+    const { presence } = getRoomsRuntime(this.deps);
+    await presence.ensureRoster(room.id);
     const present = new Set(
-      getRoomsRuntime(this.deps)
-        .presence.entries(room.id)
+      presence
+        .entries(room.id)
         .filter((entry) => entry.state !== 'offline')
         .map((entry) => entry.userId),
     );
     if (present.size === 0) return false;
+    if (present.size === 1 && present.has(callerId)) return false;
     const members = await this.deps.store.members.findMany({ roomId: room.id });
     return !members.some(
       (m) =>

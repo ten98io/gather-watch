@@ -39,12 +39,25 @@ export interface PresenceTimings {
   /** Socket-gone grace before the entry is dropped (host disconnect →
    *  election-eligibility broadcast). */
   disconnectGraceMs: number;
+  /**
+   * How long `ensureRoster` waits for another instance to answer the roster
+   * request before answering from what it has.
+   *
+   * A CEILING, not a delay: the first 'state' response resolves it, so on a
+   * live bus this costs one round trip. What it bounds is the case with no
+   * answer at all — a single-instance deploy, where nobody is there to reply,
+   * and a dropped request, where the reply never comes. Both must end in the
+   * caller being served rather than parked, and both are paid once per room
+   * per instance because the result is memoized.
+   */
+  rosterSyncMs: number;
 }
 
 export const DEFAULT_PRESENCE_TIMINGS: PresenceTimings = {
   ttlMs: 45_000,
   sweepMs: 5_000,
   disconnectGraceMs: 15_000,
+  rosterSyncMs: 150,
 };
 
 /**
@@ -123,6 +136,10 @@ export class PresenceTracker {
   private readonly originId = newId();
   private readonly rooms = new Map<RoomId, Map<UserId, Tracked>>();
   private readonly ctlSubs = new Map<RoomId, () => Promise<void>>();
+  /** roomId → the in-flight (then settled) roster handshake for that room. */
+  private readonly rosterSyncs = new Map<RoomId, Promise<void>>();
+  /** roomId → resolve() for the handshake above, while it is still waiting. */
+  private readonly rosterWaiters = new Map<RoomId, () => void>();
   private readonly departureListeners = new Set<DepartureListener>();
   private readonly arrivalListeners = new Set<ArrivalListener>();
   private sweepTimer: NodeJS.Timeout | null = null;
@@ -367,6 +384,11 @@ export class PresenceTracker {
     const unsubs = [...this.ctlSubs.values()];
     this.ctlSubs.clear();
     this.rooms.clear();
+    // Release anything parked on a roster window before the timers stop
+    // mattering, so shutdown never waits on an answer that cannot arrive.
+    for (const resolve of this.rosterWaiters.values()) resolve();
+    this.rosterWaiters.clear();
+    this.rosterSyncs.clear();
     await Promise.all(unsubs.map((unsub) => unsub()));
   }
 
@@ -423,7 +445,9 @@ export class PresenceTracker {
     this.sweepTimer.unref();
   }
 
-  /** Subscribe the room's ctl channel on first local activity for the room. */
+  /** Subscribe the room's ctl channel on first local activity for the room,
+   *  and ask the other instances for the half of the roster this one has never
+   *  seen (see requestRoster). */
   private async ensureCtl(roomId: RoomId): Promise<void> {
     if (this.ctlSubs.has(roomId)) {
       return;
@@ -437,7 +461,158 @@ export class PresenceTracker {
       const unsub = await subscribing;
       await unsub();
     });
+    // Stashed just as eagerly, and for the same reason: a second caller that
+    // finds the subscription already registered must be able to WAIT on the
+    // same handshake rather than conclude there isn't one.
+    this.rosterSyncs.set(roomId, this.requestRoster(roomId, subscribing));
     await subscribing;
+  }
+
+  /**
+   * Subscribed AND caught up: the room's control channel is live and either an
+   * instance has answered with its half of the roster or the window closed.
+   *
+   * Anything that reasons about the SIZE of the room has to go through here
+   * first. `entries` and `presentUserIds` answer from whatever this instance
+   * happens to know, and on an instance that has just picked the room up that
+   * is the caller and nobody else — which is not a small error, it is a
+   * different room. A skip quorum divided by it; `sync.advance` read it as
+   * "nobody who may drive is present" and waived its clock check.
+   *
+   * Memoized per room, so this is a bus round trip the first time and free
+   * afterwards, and it is deliberately best-effort: the bus is at-most-once,
+   * so a dropped request leaves the view incomplete and the callers stay
+   * responsible for not acting on a roster of one (see QueueService.voteSkip
+   * and SyncService.privilegedHolderAbsent).
+   */
+  async ensureRoster(roomId: RoomId): Promise<void> {
+    await this.ensureCtl(roomId);
+    await this.rosterSyncs.get(roomId);
+  }
+
+  /**
+   * Publish the roster request and settle on the first answer, or on the
+   * window. Never rejects: a bus that cannot carry the request leaves this
+   * instance with the view it already had, which is exactly what happened
+   * before the handshake existed.
+   */
+  private async requestRoster(roomId: RoomId, subscribing: Promise<unknown>): Promise<void> {
+    try {
+      await subscribing;
+      const answered = new Promise<void>((resolve) => {
+        this.rosterWaiters.set(roomId, resolve);
+      });
+      const message: RoomCtlMessage = { kind: 'sync', roomId, from: this.originId };
+      await this.deps.bus.publish(roomCtlChannel(roomId), message);
+      await Promise.race([answered, this.rosterWindow()]);
+    } catch (err) {
+      this.deps.log.warn({ err, roomId }, 'presence roster sync failed');
+    } finally {
+      this.rosterWaiters.delete(roomId);
+    }
+  }
+
+  /** The roster window as a promise. Unref'd — waiting for a roster must never
+   *  be the reason a process stays alive. */
+  private rosterWindow(): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, this.timings.rosterSyncMs);
+      timer.unref();
+    });
+  }
+
+  /** Answer another instance's roster request with the entries THIS instance
+   *  owns. Mirrors are left to the instance that owns them, so one answer per
+   *  entry reaches the asker rather than one per instance holding it. */
+  private async answerRoster(roomId: RoomId, to: string): Promise<void> {
+    const entries: PresenceEntry[] = [];
+    for (const tracked of this.rooms.get(roomId)?.values() ?? []) {
+      if (tracked.local) entries.push(tracked.entry);
+    }
+    if (entries.length === 0) {
+      return;
+    }
+    const message: RoomCtlMessage = { kind: 'state', roomId, entries, from: this.originId, to };
+    await this.deps.bus.publish(roomCtlChannel(roomId), message);
+  }
+
+  /**
+   * Merge a roster answer and tell this instance's clients about the people it
+   * did not know were there.
+   *
+   * THE ONE PLACE A MIRROR DIFFS, and it has to be: the rule everywhere else
+   * is that only the instance owning an entry broadcasts it, because otherwise
+   * every instance re-announces every change. But nobody CHANGED here — the
+   * asker was simply missing entries the room settled on before it arrived,
+   * and the owners have no reason to say them again. Without this the roster
+   * repairs in the tracker and never on the screen, which is the whole
+   * "sitting alone in a room full of people" symptom.
+   */
+  private applyRosterAnswer(roomId: RoomId, entries: readonly PresenceEntry[]): void {
+    const learned: PresenceEntry[] = [];
+    for (const entry of entries) {
+      if (this.mergeMirror(roomId, entry)) learned.push(entry);
+    }
+    this.rosterWaiters.get(roomId)?.();
+    if (learned.length > 0) {
+      this.deps.events.emitEphemeral(roomId, 'presence.diff', {
+        upserts: learned,
+        removed: [],
+      });
+    }
+  }
+
+  /**
+   * Merge one entry heard from another instance. Returns true when it was NEW
+   * to this instance (the caller decides whether that is worth saying).
+   *
+   * A local entry is normally not downgraded — this instance owns the socket
+   * and its own sweep is the authority on it. The exception is the whole of
+   * DEFECT 4: when the socket is gone from this instance but another instance
+   * is beating for that user, they did not leave, they RECONNECTED somewhere
+   * else. Keeping the entry local there means this instance's disconnect grace
+   * expires and calls `removeUser`, which broadcasts a room-wide removal and
+   * fires `onDeparture` — so a member who is perfectly well connected is
+   * evicted from everyone's roster and has their screen share force-stopped by
+   * the instance they LEFT. Handing ownership to the instance that now has the
+   * socket is the honest reading of a heartbeat from somewhere else.
+   */
+  private mergeMirror(roomId: RoomId, entry: PresenceEntry): boolean {
+    let roomMap = this.rooms.get(roomId);
+    if (roomMap === undefined) {
+      roomMap = new Map<UserId, Tracked>();
+      this.rooms.set(roomId, roomMap);
+    }
+    const userId = entry.userId;
+    const existing = roomMap.get(userId);
+    if (existing === undefined) {
+      roomMap.set(userId, {
+        entry,
+        expiresAt: Date.now() + this.timings.ttlMs,
+        local: false,
+        disconnectedAt: null,
+      });
+      return true;
+    }
+    const movedAway =
+      existing.local && !this.deps.hub.localUserIds(roomId).includes(userId);
+    if (movedAway) {
+      // This instance already told the room the member was unreachable, and
+      // that is now known to be wrong. It broadcast the claim, so it corrects
+      // it — no other instance can, and the owning one has nothing new to say.
+      const wasUnreachable = existing.disconnectedAt !== null || !isReachable(existing.entry);
+      existing.local = false;
+      existing.disconnectedAt = null;
+      if (wasUnreachable) {
+        this.deps.events.emitEphemeral(roomId, 'presence.diff', {
+          upserts: [entry],
+          removed: [],
+        });
+      }
+    }
+    existing.entry = entry;
+    existing.expiresAt = Date.now() + this.timings.ttlMs;
+    return false;
   }
 
   private onCtlMessage(raw: unknown): void {
@@ -449,26 +624,22 @@ export class PresenceTracker {
     const roomId = message.roomId as RoomId;
     switch (message.kind) {
       case 'hb': {
-        let roomMap = this.rooms.get(roomId);
-        if (roomMap === undefined) {
-          roomMap = new Map<UserId, Tracked>();
-          this.rooms.set(roomId, roomMap);
-        }
-        const userId = message.entry.userId;
-        const existing = roomMap.get(userId);
-        if (existing !== undefined) {
-          // Never downgrade a local entry to a mirror; just refresh fields.
-          existing.entry = message.entry;
-          existing.expiresAt = Date.now() + this.timings.ttlMs;
-        } else {
-          roomMap.set(userId, {
-            entry: message.entry,
-            expiresAt: Date.now() + this.timings.ttlMs,
-            local: false,
-            disconnectedAt: null,
-          });
-        }
         // No client diff — the origin instance already emitted it.
+        this.mergeMirror(roomId, message.entry);
+        break;
+      }
+      case 'sync': {
+        void this.answerRoster(roomId, message.from).catch((err: unknown) => {
+          this.deps.log.warn({ err, roomId }, 'presence roster answer failed');
+        });
+        break;
+      }
+      case 'state': {
+        // Addressed: every instance holding the room sees every answer, and
+        // merging one meant for somebody else would be harmless but would also
+        // resolve a handshake this instance never sent.
+        if (message.to !== this.originId) break;
+        this.applyRosterAnswer(roomId, message.entries);
         break;
       }
       case 'bye': {
@@ -498,9 +669,14 @@ export class PresenceTracker {
     }
   }
 
-  /** Unsubscribe the ctl channel and drop the room map. */
+  /** Unsubscribe the ctl channel and drop the room map. The roster handshake
+   *  goes with it: the next instance-local activity for this room subscribes
+   *  again, and asks again, because the view starts empty again. */
   private async dropRoom(roomId: RoomId): Promise<void> {
     this.rooms.delete(roomId);
+    this.rosterWaiters.get(roomId)?.();
+    this.rosterWaiters.delete(roomId);
+    this.rosterSyncs.delete(roomId);
     const unsub = this.ctlSubs.get(roomId);
     this.ctlSubs.delete(roomId);
     if (unsub !== undefined) {

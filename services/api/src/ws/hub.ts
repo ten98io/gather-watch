@@ -5,7 +5,8 @@
  * only ever talks to its own sockets.
  *
  * Close codes: 4401 auth failures, 4403 forbidden/banned/scope, 4404 no room,
- * 1013 the realtime bus never came up for this room (retryable).
+ * 1013 the realtime bus is not carrying this room — either it never came up
+ * for it, or it died under a socket that was already established (retryable).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { WebSocket } from 'ws';
@@ -63,6 +64,29 @@ const BUS_SUBSCRIBE_TIMEOUT_MS = 3_000;
 /** Shutdown must not wait on a bus that never answered in the first place. */
 const BUS_UNSUBSCRIBE_TIMEOUT_MS = 1_000;
 /**
+ * How often this instance asks the bus whether it is still there.
+ *
+ * The handshake ceiling above only covers the moment a socket ARRIVES. A bus
+ * that dies afterwards left every established socket open and cheerfully
+ * "connected" while carrying nothing: fanout runs entirely through the bus, so
+ * a room whose publishes are failing delivers nothing to its own sockets
+ * either — the member types, queues, seeks, and watches all of it vanish into
+ * an instance nobody hears, with the room still reading Live. /readyz knew
+ * (it pings the same bus); the room did not.
+ *
+ * Five seconds is the window of that lie, chosen against the alternative of
+ * folding this into the 30 s socket sweep. A Redis failover is seconds long
+ * and events ARE being lost throughout it, so there is nothing to wait out.
+ */
+const BUS_HEALTH_INTERVAL_MS = 5_000;
+/**
+ * Ceiling on one health probe, and its answer when it expires: a bus that will
+ * not say whether it is alive is not one to keep serving sockets against.
+ * BusPort.ping is required to always settle, but this hub takes an INJECTED
+ * bus and a watchdog that can itself hang is the same defect wearing a hat.
+ */
+const BUS_HEALTH_TIMEOUT_MS = 2_000;
+/**
  * Per-socket inbound frame ceiling: @fastify/rate-limit only guards REST, so
  * WS floods (webrtc.* signaling spam, sync churn) need their own gate — every
  * persisted event a flood triggers is a DB write. 300 frames / 10 s is ~30
@@ -116,6 +140,15 @@ export class RoomHub implements HubApi {
   private readonly handlers = new Map<string, WsHandler>();
   private readonly busSubs = new Map<string, BusSub>();
   private readonly heartbeat: NodeJS.Timeout;
+  private readonly busWatchdog: NodeJS.Timeout;
+  /**
+   * Last answer from the bus health probe. Starts true because a hub with no
+   * sockets has nothing to be wrong about, and the first arriving connection
+   * still has to get its channel subscribed before it is kept.
+   */
+  private busReachable = true;
+  /** One probe at a time: a slow bus must not stack pings behind itself. */
+  private busProbeInFlight = false;
 
   constructor(deps: Omit<Deps, 'hub'>) {
     this.baseDeps = deps;
@@ -150,6 +183,10 @@ export class RoomHub implements HubApi {
     }, HEARTBEAT_INTERVAL_MS);
     // Never keep the process alive just for the sweep.
     this.heartbeat.unref();
+    this.busWatchdog = setInterval(() => {
+      void this.probeBus();
+    }, BUS_HEALTH_INTERVAL_MS);
+    this.busWatchdog.unref();
   }
 
   /** Called once by app.ts with the full Deps (hub included) before any
@@ -322,9 +359,57 @@ export class RoomHub implements HubApi {
     }
   }
 
-  /** Clear the sweep, close every socket (1001), unsubscribe all channels. */
+  /**
+   * One bus-liveness pass; exposed for tests, and otherwise driven by the
+   * watchdog every BUS_HEALTH_INTERVAL_MS.
+   *
+   * An unreachable bus is closed over rather than papered over. Every socket
+   * this instance holds goes with 1013 "try again later" — the SAME answer the
+   * handshake already gives when the channel cannot be subscribed, so the
+   * client's status machine turns it into `reconnecting` and the room stops
+   * claiming to be live. The reconnect is then refused for as long as the
+   * condition lasts (see ensureBusSub), which is what makes the degraded state
+   * stick instead of flapping back to a green socket that hears nothing.
+   *
+   * Nothing here is lost work: events are persisted with their seq before they
+   * are published, so a client that reconnects after the bus returns backfills
+   * the outage through the replay endpoint.
+   */
+  async probeBus(): Promise<void> {
+    if (this.busProbeInFlight) return;
+    this.busProbeInFlight = true;
+    try {
+      const reachable = await this.pingBus();
+      if (reachable) {
+        if (!this.busReachable) {
+          this.busReachable = true;
+          this.baseDeps.log.warn('realtime bus reachable again; room sockets accepted');
+        }
+        return;
+      }
+      if (this.busReachable) {
+        this.busReachable = false;
+        this.baseDeps.log.error(
+          'realtime bus unreachable; closing room sockets rather than serving deaf ones',
+        );
+      }
+      // Every pass, not just the transition: a socket accepted in the window
+      // between the probe starting and the flag flipping is deaf too.
+      for (const conns of [...this.rooms.values()]) {
+        for (const conn of [...conns]) {
+          conn.socket.close(1013, 'realtime bus unavailable');
+        }
+      }
+    } finally {
+      this.busProbeInFlight = false;
+    }
+  }
+
+  /** Clear the sweep and the bus watchdog, close every socket (1001),
+   *  unsubscribe all channels. */
   async close(): Promise<void> {
     clearInterval(this.heartbeat);
+    clearInterval(this.busWatchdog);
     for (const conns of this.rooms.values()) {
       for (const conn of conns) {
         conn.socket.close(1001, 'server shutting down');
@@ -373,11 +458,44 @@ export class RoomHub implements HubApi {
   }
 
   /**
+   * `bus.ping()`, bounded and reduced to a boolean. A throw is "not
+   * reachable", exactly as /readyz reads it — the two must not disagree about
+   * the same bus.
+   */
+  private async pingBus(): Promise<boolean> {
+    let expire: (dead: false) => void = () => undefined;
+    const expiry = new Promise<false>((resolve) => {
+      expire = resolve;
+    });
+    const expiryTimer = setTimeout(() => expire(false), BUS_HEALTH_TIMEOUT_MS);
+    expiryTimer.unref();
+    const probe = async (): Promise<boolean> => {
+      try {
+        return await this.baseDeps.bus.ping();
+      } catch {
+        return false;
+      }
+    };
+    try {
+      return await Promise.race([probe(), expiry]);
+    } finally {
+      clearTimeout(expiryTimer);
+    }
+  }
+
+  /**
    * Subscribe the room's bus channel on first local connection, and wait for
    * it — bounded by BUS_SUBSCRIBE_TIMEOUT_MS. Returns false when the channel
    * is not live in time; the caller must not keep the socket.
    */
   private async ensureBusSub(roomId: string): Promise<boolean> {
+    // A KNOWN-DEAD bus is refused here rather than at the subscribe, because
+    // the subscription usually still LOOKS fine: this instance subscribed the
+    // channel while the bus was up, `sub.ready` is long resolved, and the
+    // reconnect the watchdog just caused would sail straight back through to
+    // a socket that hears nothing. The channel comes back with the bus, on the
+    // next connection after a probe says so.
+    if (!this.busReachable) return false;
     let sub = this.busSubs.get(roomId);
     if (sub === undefined) {
       const subscribing = this.baseDeps.bus.subscribe(roomChannel(roomId), (raw) => {

@@ -53,7 +53,7 @@ interface World {
   net: MockNetwork;
   router: SignalRouter;
   errors: Array<{ tag: string; peer: UserId; context: string }>;
-  add: (tag: string, rawUserId: string, lane?: MeshLane) => Endpoint;
+  add: (tag: string, rawUserId: string, lane?: MeshLane, endpointId?: string) => Endpoint;
 }
 
 function makeWorld(): World {
@@ -66,7 +66,7 @@ function makeWorld(): World {
     net,
     router,
     errors,
-    add: (tag, rawUserId, lane) => {
+    add: (tag, rawUserId, lane, endpointId) => {
       const userId = uid(rawUserId);
       const received: Endpoint['received'] = [];
       const states: Endpoint['states'] = [];
@@ -84,6 +84,7 @@ function makeWorld(): World {
         setTimeoutFn: clock.setTimeoutFn,
         clearTimeoutFn: clock.clearTimeoutFn,
         ...(lane === undefined ? {} : { lane }),
+        ...(endpointId === undefined ? {} : { endpointId }),
         onError: (peer, context) => {
           errors.push({ tag, peer, context });
         },
@@ -289,25 +290,23 @@ describe('mesh lanes — the shapes that must not change', () => {
     expect(world.errors).toEqual([]);
   });
 
-  it('leaves two web tabs of one person exactly as they were', async () => {
+  it('leaves a person who announces no endpoint on exactly the id they always had', async () => {
     const world = makeWorld();
+    // Neither side carries an endpoint token: an older build, the extension,
+    // anything that has not been taught to announce. The id must be the one
+    // both of them have always derived, or they never meet at all.
     const tabA = world.add('alice-tab-a', 'alice');
-    const tabB = world.add('alice-tab-b', 'alice');
     const bob = world.add('bob', 'bob');
 
     tabA.mesh.syncPeers([uid('bob')]);
-    tabB.mesh.syncPeers([uid('bob')]);
     bob.mesh.syncPeers([uid('alice')]);
     await world.clock.advance(500);
 
-    // Two primary meshes still derive one id, so bob still holds one
-    // connection to alice and one of the tabs still wins it. This is the old
-    // behaviour, unchanged — a lane is what makes a SECOND mesh addressable,
-    // and a second web tab does not ask for one.
     const ids = new Set(world.router.sentEvents.map((ev) => ev.payload.connectionId));
     expect([...ids]).toEqual([`mesh:${ROOM}:alice~bob`]);
     expect(livePcs(world.net, 'bob')).toHaveLength(1);
     expect(bob.mesh.connectionStates().get(uid('alice'))).toBe('connected');
+    expect(world.errors).toEqual([]);
   });
 
   it('still works for the popup guest who shares with no web tab at all', async () => {
@@ -384,5 +383,217 @@ describe('mesh lanes — the shapes that must not change', () => {
     });
     expect(share.mesh.peers()).toEqual([]);
     expect(world.net.pcCount).toBe(0);
+  });
+});
+
+/**
+ * ONE IDENTITY, TWO DEVICES.
+ *
+ * A lane fixes the case where one identity runs two meshes on PURPOSE. This is
+ * the case where it does not mean to: the same account open on a laptop and a
+ * phone, or in two tabs — which needs no "join call" at all, because the room
+ * shell starts the mesh and the fabric DataChannels make it negotiate with no
+ * media on it.
+ *
+ * Both derived the same connectionId, so the viewer held ONE peer connection
+ * for the pair. Each device's offer landed on it, re-pointing its single ICE
+ * agent — new ufrag/pwd, new DTLS fingerprint — at the other device, and the
+ * abandoned one failed consent about 30s later and restarted ICE, which
+ * re-pointed it back. The call flipped between the two for as long as both
+ * stayed open.
+ *
+ * An endpoint token is the fix: it names the DEVICE inside the id, so the two
+ * are addressable apart. It is announced over the signalling channel because
+ * presence has one entry per person, not per socket.
+ */
+describe('mesh endpoints — one identity, two devices', () => {
+  it('gives each of one person’s two tabs its own link, and neither takes the other’s', async () => {
+    const world = makeWorld();
+    const tabA = world.add('alice-tab-a', 'alice', undefined, 'tabA');
+    const tabB = world.add('alice-tab-b', 'alice', undefined, 'tabB');
+    const bob = world.add('bob', 'bob', undefined, 'bob1');
+
+    tabA.mesh.syncPeers([uid('bob')]);
+    tabB.mesh.syncPeers([uid('bob')]);
+    bob.mesh.syncPeers([uid('alice')]);
+    await world.clock.advance(500);
+
+    expect(tabA.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(tabB.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(livePcs(world.net, 'bob')).toHaveLength(2);
+    expect(livePcs(world.net, 'alice-tab-a')).toHaveLength(1);
+    expect(livePcs(world.net, 'alice-tab-b')).toHaveLength(1);
+
+    // The flip needed a consent timeout to become visible, so a settled mesh
+    // has to be re-read well past one before it can be called settled.
+    await world.clock.advance(90_000);
+    expect(tabA.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(tabB.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(bob.mesh.connectionStates().get(uid('alice'))).toBe('connected');
+    expect(world.errors).toEqual([]);
+  });
+
+  it('carries each device’s media on its own link, both under the one person', async () => {
+    const world = makeWorld();
+    const laptop = world.add('alice-laptop', 'alice', undefined, 'laptop');
+    const phone = world.add('alice-phone', 'alice', undefined, 'phone');
+    const bob = world.add('bob', 'bob', undefined, 'bob1');
+
+    laptop.mesh.setLocalTrack('mic', track('laptop-mic', 'audio'));
+    phone.mesh.setLocalTrack('cam', track('phone-cam', 'video'));
+    laptop.mesh.syncPeers([uid('bob')]);
+    phone.mesh.syncPeers([uid('bob')]);
+    bob.mesh.syncPeers([uid('alice')]);
+    await world.clock.advance(500);
+
+    expect(bob.received.every((r) => r.from === uid('alice'))).toBe(true);
+    expect([...new Set(bob.received.map((r) => r.trackId))].sort()).toEqual([
+      'laptop-mic',
+      'phone-cam',
+    ]);
+    expect(bob.mesh.peers()).toEqual([uid('alice')]);
+    expect(world.errors).toEqual([]);
+  });
+
+  it('refuses the person-level id once it addresses that identity per endpoint', async () => {
+    const world = makeWorld();
+    const tabA = world.add('alice-tab-a', 'alice', undefined, 'tabA');
+    const tabB = world.add('alice-tab-b', 'alice', undefined, 'tabB');
+    const bob = world.add('bob', 'bob', undefined, 'bob1');
+
+    tabA.mesh.syncPeers([uid('bob')]);
+    tabB.mesh.syncPeers([uid('bob')]);
+    bob.mesh.syncPeers([uid('alice')]);
+    await world.clock.advance(500);
+    // One link per tab, and the person-level link they were dialled on is gone.
+    expect(livePcs(world.net, 'bob')).toHaveLength(2);
+
+    // A third tab on the old build — or a forged frame — offering under the id
+    // both devices would derive. Taking it would put alice back on one shared
+    // connection, which is the whole defect.
+    bob.mesh.handleSignal({
+      type: 'webrtc.offer',
+      roomId: ROOM,
+      seq: 99,
+      ts: Math.floor(world.clock.now()),
+      payload: {
+        targetUserId: uid('bob'),
+        connectionId: `mesh:${ROOM}:alice~bob`,
+        sdp: 'offer:99:1',
+        fromUserId: uid('alice'),
+      },
+    });
+    await world.clock.advance(200);
+
+    // Nothing was built for it, and neither tab's link was disturbed.
+    expect(livePcs(world.net, 'bob')).toHaveLength(2);
+    expect(tabA.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(tabB.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(bob.mesh.connectionStates().get(uid('alice'))).toBe('connected');
+  });
+
+  it('still answers an auxiliary share while it addresses that identity per endpoint', async () => {
+    const world = makeWorld();
+    const tabA = world.add('alice-tab-a', 'alice', undefined, 'tabA');
+    const tabB = world.add('alice-tab-b', 'alice', undefined, 'tabB');
+    // The extension's offscreen document announces nothing — it is never
+    // dialled, so its lane is how it is recognised, exactly as before.
+    const share = world.add('alice-share', 'alice', 'share');
+    const bob = world.add('bob', 'bob', undefined, 'bob1');
+
+    share.mesh.setLocalTrack('share', track('alice-screen', 'video'));
+    tabA.mesh.syncPeers([uid('bob')]);
+    tabB.mesh.syncPeers([uid('bob')]);
+    share.mesh.syncPeers([uid('bob')]);
+    bob.mesh.syncPeers([uid('alice')]);
+    await world.clock.advance(500);
+
+    expect(bob.received.map((r) => r.trackId)).toEqual(['alice-screen']);
+    expect(bob.mesh.connectionStates().get(uid('alice'))).toBe('connected');
+    expect(world.errors).toEqual([]);
+  });
+
+  it('meets a client that announces nothing on the id that client derives', async () => {
+    const world = makeWorld();
+    // Mid-rollout: one side has endpoint tokens, the other does not. They still
+    // have to find each other, or an update strands everyone who has not taken
+    // it yet.
+    const modern = world.add('alice', 'alice', undefined, 'alice1');
+    const legacy = world.add('bob', 'bob');
+
+    modern.mesh.syncPeers([uid('bob')]);
+    legacy.mesh.syncPeers([uid('alice')]);
+    await world.clock.advance(500);
+
+    const pairIds = world.router.sentEvents
+      .map((ev) => ev.payload.connectionId)
+      .filter((id) => !id.includes(':hello:'));
+    expect([...new Set(pairIds)]).toEqual([`mesh:${ROOM}:alice~bob`]);
+    expect(modern.mesh.connectionStates().get(uid('bob'))).toBe('connected');
+    expect(legacy.mesh.connectionStates().get(uid('alice'))).toBe('connected');
+    expect(world.errors).toEqual([]);
+  });
+
+  it('bounds how many connections one identity can make it build', async () => {
+    const world = makeWorld();
+    const bob = world.add('bob', 'bob', undefined, 'bob1');
+    bob.mesh.syncPeers([uid('alice')]);
+    await world.clock.advance(100);
+
+    // A peer announcing endpoint after endpoint — a bug or a flood — must not
+    // cost one peer connection each.
+    for (let i = 0; i < 40; i += 1) {
+      bob.mesh.handleSignal({
+        type: 'webrtc.offer',
+        roomId: ROOM,
+        seq: 100 + i,
+        ts: Math.floor(world.clock.now()),
+        payload: {
+          targetUserId: uid('bob'),
+          connectionId: `mesh:${ROOM}:hello::flood${i}`,
+          sdp: '',
+          fromUserId: uid('alice'),
+        },
+      });
+    }
+    await world.clock.advance(500);
+
+    expect(livePcs(world.net, 'bob').length).toBeLessThanOrEqual(4);
+  });
+
+  it('takes a token it cannot have derived as no token at all', () => {
+    const world = makeWorld();
+    const bob = world.add('bob', 'bob', undefined, 'bob1');
+    bob.mesh.syncPeers([uid('alice')]);
+
+    // A token carrying the id's own separators could otherwise name a pair it
+    // has no business naming.
+    bob.mesh.handleSignal({
+      type: 'webrtc.offer',
+      roomId: ROOM,
+      seq: 1,
+      ts: 1,
+      payload: {
+        targetUserId: uid('bob'),
+        connectionId: `mesh:${ROOM}:hello::carol~bob1`,
+        sdp: '',
+        fromUserId: uid('alice'),
+      },
+    });
+
+    // Nothing was learned, so alice is still addressed as a person.
+    bob.mesh.handleSignal({
+      type: 'webrtc.offer',
+      roomId: ROOM,
+      seq: 2,
+      ts: 1,
+      payload: {
+        targetUserId: uid('bob'),
+        connectionId: `mesh:${ROOM}:alice~bob`,
+        sdp: 'offer:99:1',
+        fromUserId: uid('alice'),
+      },
+    });
+    expect(bob.mesh.peers()).toEqual([uid('alice')]);
   });
 });

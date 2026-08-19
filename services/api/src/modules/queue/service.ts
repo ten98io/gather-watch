@@ -31,7 +31,7 @@ import type {
 import { expectedPositionMs, queueReducer } from '@gather/sync-core';
 import type { QueueState } from '@gather/sync-core';
 import { memberDocId } from '../../adapters/ports';
-import type { MemberDoc, RoomDoc } from '../../adapters/ports';
+import type { MemberDoc, RoomDoc, StorePort } from '../../adapters/ports';
 import { AppError } from '../../lib/errors';
 import { newId } from '../../lib/tokens';
 import type { Deps } from '../types';
@@ -93,6 +93,73 @@ export const QUEUE_ARTWORK_URL_MAX_CHARS = 2048;
  */
 export const QUEUE_MAX_ITEMS = 500;
 
+/**
+ * How many times a queue write re-reads and re-applies after losing its
+ * compare-and-set.
+ *
+ * Every mutation here is a read-modify-write over an array embedded on the
+ * room document, and one store round trip is long enough for a second person
+ * to press Add. Written unconditionally that is last-writer-wins: both callers
+ * read version 5, both compute version 6 carrying only their OWN row, and the
+ * second erases the first — silently, because both broadcasts claim the same
+ * version and the client's `version < next` guard admits them both. So the
+ * write is conditional on the queue it was computed against and a loser
+ * RECOMPUTES against the winner's queue rather than replaying its own answer.
+ *
+ * BOUNDED because a retry loop with no bound is a request that never returns.
+ * Each retry means somebody else's write LANDED, so the loop only spins while
+ * the room is making progress; five is far past what humans pressing buttons
+ * on one room's queue can produce, and the caller is told plainly rather than
+ * left holding a socket.
+ */
+const QUEUE_WRITE_ATTEMPTS = 5;
+
+/** The queue is full. Checked against the read AND again against whatever the
+ *  write lands on, so it is a function rather than a line. */
+function assertQueueHasRoom(items: readonly QueueItem[]): void {
+  if (items.length >= QUEUE_MAX_ITEMS) {
+    throw new AppError(
+      'QUOTA_EXCEEDED',
+      `the queue is full (${QUEUE_MAX_ITEMS} items) — remove something to add more`,
+    );
+  }
+}
+
+/**
+ * Land a queue write on the queue it was computed against, re-reading and
+ * re-applying `reduce` for as long as somebody else keeps getting there first.
+ *
+ * `reduce` is handed the room AS IT IS NOW and returns the queue it wants, or
+ * null when there is nothing left to do against that state (the item it was
+ * about is already gone, the change it wanted is already there). It must be
+ * re-runnable: it is called once per attempt, and anything it mints that must
+ * not change between attempts — an item's id — belongs to the caller, above
+ * the loop.
+ *
+ * `write` performs one conditional attempt and answers whether it landed.
+ */
+export async function commitQueueWrite(
+  store: StorePort,
+  room: RoomDoc,
+  reduce: (current: RoomDoc) => QueueState | null,
+  write: (current: RoomDoc, next: QueueState) => Promise<boolean>,
+): Promise<void> {
+  let current = room;
+  for (let attempt = 1; ; attempt += 1) {
+    const next = reduce(current);
+    if (next === null) return;
+    if (await write(current, next)) return;
+    if (attempt >= QUEUE_WRITE_ATTEMPTS) {
+      throw new AppError('CONFLICT', 'the queue is changing too fast — try that again');
+    }
+    const fresh = await store.rooms.findById(current.id);
+    if (fresh === null) {
+      throw new AppError('NOT_FOUND', 'room not found');
+    }
+    current = fresh;
+  }
+}
+
 export class QueueService {
   /** In-flight background enrichments; awaited by tests via settleEnrichment. */
   private readonly enriching = new Set<Promise<void>>();
@@ -104,13 +171,10 @@ export class QueueService {
   async add(roomId: RoomId, userId: UserId, input: QueueItemInput): Promise<void> {
     const { room, member } = await this.loadContext(roomId, userId);
     this.assertQueueControl(room, member);
-    if (room.queue.items.length >= QUEUE_MAX_ITEMS) {
-      throw new AppError(
-        'QUOTA_EXCEEDED',
-        `the queue is full (${QUEUE_MAX_ITEMS} items) — remove something to add more`,
-      );
-    }
+    assertQueueHasRoom(room.queue.items);
     assertQueueItemWithinBounds(input);
+    // Minted ONCE, above the retry loop: an id that changed per attempt would
+    // let a retried add append a second copy of the same track.
     const item: QueueItem = {
       id: newId() as QueueItemId,
       mediaRef: input.mediaRef,
@@ -123,8 +187,13 @@ export class QueueService {
       addedBy: userId,
       votesToSkip: [],
     };
-    const next = queueReducer(this.stateOf(room), { type: 'add', item });
-    await this.persist(room, next);
+    await this.commit(room, (current) => {
+      // Re-checked against the state the write will actually land on: the
+      // ceiling protects the DOCUMENT, so a queue that filled up while this
+      // add was in flight has to refuse here too.
+      assertQueueHasRoom(current.queue.items);
+      return queueReducer(this.stateOf(current), { type: 'add', item });
+    });
     this.enrichInBackground(roomId, item);
   }
 
@@ -163,26 +232,24 @@ export class QueueService {
     if (room === null) {
       return;
     }
-    const current = room.queue.items.find((it) => it.id === item.id);
-    if (current === undefined) {
-      return;
-    }
-    // Resolved values win over the client's hint; anything the lookup could
-    // not determine leaves the stored value alone.
-    const title = resolved.title ?? current.title;
-    const artworkUrl = resolved.artworkUrl ?? current.artworkUrl;
-    const durationMs = resolved.durationMs ?? current.durationMs;
-    if (
-      current.title === title &&
-      current.artworkUrl === artworkUrl &&
-      current.durationMs === durationMs
-    ) {
-      return; // nothing better to say — no bump, no broadcast
-    }
-    const items = room.queue.items.map((it) =>
-      it.id === item.id ? { ...it, title, artworkUrl, durationMs } : it,
-    );
-    await this.persist(room, { items, version: room.queue.version + 1 });
+    await this.commit(room, (current) => {
+      const row = current.queue.items.find((it) => it.id === item.id);
+      if (row === undefined) {
+        return null;
+      }
+      // Resolved values win over the client's hint; anything the lookup could
+      // not determine leaves the stored value alone.
+      const title = resolved.title ?? row.title;
+      const artworkUrl = resolved.artworkUrl ?? row.artworkUrl;
+      const durationMs = resolved.durationMs ?? row.durationMs;
+      if (row.title === title && row.artworkUrl === artworkUrl && row.durationMs === durationMs) {
+        return null; // nothing better to say — no bump, no broadcast
+      }
+      const items = current.queue.items.map((it) =>
+        it.id === item.id ? { ...it, title, artworkUrl, durationMs } : it,
+      );
+      return { items, version: current.queue.version + 1 };
+    });
   }
 
   /** Remove by id: policy holders may remove anything; anyone may retract
@@ -196,8 +263,14 @@ export class QueueService {
     if (!policyAllows(room.policies.queueControl, member.role) && item.addedBy !== userId) {
       throw new AppError('ROOM_POLICY', 'queue control not allowed');
     }
-    const next = queueReducer(this.stateOf(room), { type: 'remove', itemId });
-    await this.persist(room, next);
+    // A removal that finds the row already gone on a retry is DONE, not
+    // failed — somebody else removed it, which is the outcome that was asked
+    // for. The reducer says exactly that by returning its input unchanged.
+    await this.commit(room, (current) => {
+      const state = this.stateOf(current);
+      const next = queueReducer(state, { type: 'remove', itemId });
+      return next === state ? null : next;
+    });
   }
 
   /** Replace the order wholesale (policy-gated). orderedIds must be an exact
@@ -210,18 +283,22 @@ export class QueueService {
   ): Promise<void> {
     const { room, member } = await this.loadContext(roomId, userId);
     this.assertQueueControl(room, member);
-    const state = this.stateOf(room);
-    const next = queueReducer(state, { type: 'reorder', orderedIds });
-    if (next === state) {
+    // Re-run on a lost compare-and-set, and the refusal below is then the
+    // honest answer to a queue that MOVED under the drag: an order naming rows
+    // that are no longer all there is not a permutation of the queue it would
+    // be written onto, and applying it anyway would resurrect or drop rows.
+    await this.commit(room, (current) => {
+      const state = this.stateOf(current);
+      const next = queueReducer(state, { type: 'reorder', orderedIds });
+      if (next !== state) return next;
       // The reducer returns the SAME reference for an identical order and for
       // a non-permutation alike — disambiguate here.
       const identical =
-        orderedIds.length === room.queue.items.length &&
-        orderedIds.every((id, i) => room.queue.items[i]?.id === id);
-      if (identical) return;
+        orderedIds.length === current.queue.items.length &&
+        orderedIds.every((id, i) => current.queue.items[i]?.id === id);
+      if (identical) return null;
       throw new AppError('VALIDATION', 'orderedIds must be a permutation of the queue');
-    }
-    await this.persist(room, next);
+    });
   }
 
   /** Democratic skip: any non-banned member may vote (no policy gate). Votes
@@ -231,12 +308,9 @@ export class QueueService {
    *  entirely — votes are still recorded. */
   async voteSkip(roomId: RoomId, userId: UserId, itemId: QueueItemId): Promise<void> {
     const { room } = await this.loadContext(roomId, userId);
-    const item = room.queue.items.find((it) => it.id === itemId);
-    if (item === undefined) {
+    if (!room.queue.items.some((it) => it.id === itemId)) {
       throw new AppError('NOT_FOUND', 'queue item not found');
     }
-
-    const fraction = room.policies.skipVoteThreshold;
     // ROOM-WIDE, never this process's sockets. The quorum is a fraction of the
     // room, so the denominator has to be the room: `hub.localUserIds` counts
     // only the sockets on THIS instance, and a rolling deploy overlaps two
@@ -244,49 +318,82 @@ export class QueueService {
     // length of every deploy and let one member skip everybody's track.
     // Presence is mirrored across instances over the bus and answers the
     // question the doc comment above always claimed to be asking.
-    const active = new Set<string>(getRoomsRuntime(this.deps).presence.presentUserIds(roomId));
-    // The voter counts even before their first heartbeat lands.
-    active.add(userId);
-
-    const hadVoted = item.votesToSkip.includes(userId);
-    const votes = item.votesToSkip.filter((v) => active.has(v));
-    if (!votes.includes(userId)) {
-      votes.push(userId);
-    }
-
-    // With no playback snapshot the head of the queue counts as current.
     //
-    // NOT the same question SyncService.advance asks, and do not unify them:
-    // a vote is about a ROW ("skip this one"), so a queue nobody has started
-    // still has a row to skip. An advance is about a row that was PLAYING, so
-    // a room that has never played anything has nothing that can have ENDED —
-    // and treating the head as current there would let a member walk an
-    // unstarted queue forward. Same words, different questions.
-    const qi = room.playback?.queueIndex;
-    const currentItemId =
-      (qi !== null && qi !== undefined
-        ? room.queue.items[qi]?.id
-        : room.queue.items[0]?.id) ?? null;
+    // AWAITED, because a mirror set that has not been asked for is not the
+    // room either: presence subscribes a room's control channel on first local
+    // activity, so an instance that has just picked this room up knows only
+    // the voter until somebody else's heartbeat happens to arrive — a
+    // denominator of ONE, and one vote carrying everybody's track. This asks
+    // for the roster instead of waiting for it (see requestRoster).
+    const { presence } = getRoomsRuntime(this.deps);
+    await presence.ensureRoster(roomId);
+    // Membership, not presence: the only count that cannot be shrunk by a
+    // presence outage, and the thing that decides whether "I am the only one
+    // here" is a fact about the room or a fact about this process.
+    const soloRoom = (await this.deps.store.members.count({ roomId, banned: false })) <= 1;
 
-    const required = Math.max(1, Math.ceil(fraction * active.size));
-    const skips = fraction > 0 && item.id === currentItemId && votes.length >= required;
+    await this.commit(room, (current) => {
+      const item = current.queue.items.find((it) => it.id === itemId);
+      // Carried off by somebody else's vote while this one was in flight —
+      // the outcome this vote was asking for, so there is nothing to write.
+      if (item === undefined) return null;
 
-    // Repeat vote with nothing pruned away and no skip due: silent no-op (no
-    // bump, no emit). The skip check runs FIRST so a vote-set that meets the
-    // threshold only after voters disconnected (shrinking `active`) still
-    // fires on the next (even repeat) vote instead of sticking forever.
-    if (
-      !skips &&
-      hadVoted &&
-      votes.length === item.votesToSkip.length &&
-      votes.every((v, i) => item.votesToSkip[i] === v)
-    ) {
-      return;
-    }
-    const items = skips
-      ? room.queue.items.filter((it) => it.id !== itemId)
-      : room.queue.items.map((it) => (it.id === itemId ? { ...it, votesToSkip: votes } : it));
-    await this.persist(room, { items, version: room.queue.version + 1 });
+      const fraction = current.policies.skipVoteThreshold;
+      const active = new Set<string>(presence.presentUserIds(roomId));
+      // The voter counts even before their first heartbeat lands.
+      active.add(userId);
+
+      const hadVoted = item.votesToSkip.includes(userId);
+      const votes = item.votesToSkip.filter((v) => active.has(v));
+      if (!votes.includes(userId)) {
+        votes.push(userId);
+      }
+
+      // With no playback snapshot the head of the queue counts as current.
+      //
+      // NOT the same question SyncService.advance asks, and do not unify them:
+      // a vote is about a ROW ("skip this one"), so a queue nobody has started
+      // still has a row to skip. An advance is about a row that was PLAYING, so
+      // a room that has never played anything has nothing that can have ENDED —
+      // and treating the head as current there would let a member walk an
+      // unstarted queue forward. Same words, different questions.
+      const qi = current.playback?.queueIndex;
+      const currentItemId =
+        (qi !== null && qi !== undefined
+          ? current.queue.items[qi]?.id
+          : current.queue.items[0]?.id) ?? null;
+
+      const required = Math.max(1, Math.ceil(fraction * active.size));
+      const skips =
+        fraction > 0 &&
+        item.id === currentItemId &&
+        votes.length >= required &&
+        // A QUORUM OF ONE IS NOT A QUORUM unless the room really is one
+        // person. `active` is this instance's view, and a view that has just
+        // been created — or whose roster sync the at-most-once bus dropped —
+        // holds only the voter while the room is full of people. Recording the
+        // vote is still right; carrying somebody else's track off on it is not.
+        (active.size > 1 || soloRoom);
+
+      // Repeat vote with nothing pruned away and no skip due: silent no-op (no
+      // bump, no emit). The skip check runs FIRST so a vote-set that meets the
+      // threshold only after voters disconnected (shrinking `active`) still
+      // fires on the next (even repeat) vote instead of sticking forever.
+      if (
+        !skips &&
+        hadVoted &&
+        votes.length === item.votesToSkip.length &&
+        votes.every((v, i) => item.votesToSkip[i] === v)
+      ) {
+        return null;
+      }
+      const items = skips
+        ? current.queue.items.filter((it) => it.id !== itemId)
+        : current.queue.items.map((it) =>
+            it.id === itemId ? { ...it, votesToSkip: votes } : it,
+          );
+      return { items, version: current.queue.version + 1 };
+    });
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -321,19 +428,48 @@ export class QueueService {
     return { items: room.queue.items, version: room.queue.version };
   }
 
-  /** Persist the next queue snapshot on the room doc, then broadcast it. */
-  private async persist(room: RoomDoc, next: QueueState): Promise<void> {
+  /** Re-runnable queue mutation, landed by compare-and-set. See
+   *  commitQueueWrite — this is the QueueService's binding of it. */
+  private async commit(
+    room: RoomDoc,
+    reduce: (current: RoomDoc) => QueueState | null,
+  ): Promise<void> {
+    await commitQueueWrite(this.deps.store, room, reduce, (current, next) =>
+      this.persist(current, next),
+    );
+  }
+
+  /**
+   * Persist the next queue snapshot on the room doc, then broadcast it.
+   *
+   * COMPARE-AND-SET on the queue that was READ, and it returns false having
+   * written NOTHING — no document, no event — when the room has moved on since
+   * (see QUEUE_WRITE_ATTEMPTS for why an unconditional write silently ate one
+   * of two simultaneous adds). The branches that also write `playback` compare
+   * on that too, so a realignment computed against a stale snapshot cannot
+   * overwrite a newer one.
+   *
+   * The match is structural on the whole embedded value, exactly like
+   * SyncService's playback CAS, and carries the same constraint: Mongo
+   * compares embedded documents including KEY ORDER, so this is only sound
+   * because the value passed back is the one `findById` returned, untouched.
+   * Never rebuild it.
+   */
+  private async persist(room: RoomDoc, next: QueueState): Promise<boolean> {
     const queue = { items: [...next.items], version: next.version };
     const prevPlayback = room.playback ?? null;
     const target = realignedQueueIndex(prevPlayback, room.queue.items, queue.items);
     if (target === undefined || prevPlayback === null) {
-      await this.deps.store.rooms.updateOne({ id: room.id }, { queue });
+      const written = await this.deps.store.rooms.updateOne(
+        { id: room.id, queue: room.queue },
+        { queue },
+      );
+      if (written === null) return false;
       await this.deps.events.emit(room.id, 'queue.state', queue);
-      return;
+      return true;
     }
     if (target === null) {
-      await this.leaveRemovedItem(room, queue, prevPlayback);
-      return;
+      return this.leaveRemovedItem(room, queue, prevPlayback);
     }
     // A playback snapshot only reaches clients when its seq ADVANCES —
     // applyServerState keeps `prev` unless `next.seq > prev.seq` — so the
@@ -357,9 +493,14 @@ export class QueueService {
       seq,
       serverTs: now,
     };
-    await this.deps.store.rooms.updateOne({ id: room.id }, { queue, playback });
+    const written = await this.deps.store.rooms.updateOne(
+      { id: room.id, queue: room.queue, playback: prevPlayback },
+      { queue, playback },
+    );
+    if (written === null) return false;
     await this.deps.events.emit(room.id, 'queue.state', queue);
     await this.deps.events.emit(room.id, 'sync.state', playback);
+    return true;
   }
 
   /**
@@ -393,7 +534,7 @@ export class QueueService {
     room: RoomDoc,
     queue: { items: QueueItem[]; version: number },
     prevPlayback: PlaybackState,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const at = prevPlayback.queueIndex;
     const successor = at === null ? undefined : queue.items[at];
     const seq = await this.deps.store.nextSeq(`playback:${room.id}`);
@@ -416,7 +557,11 @@ export class QueueService {
             seq,
             serverTs: now,
           };
-    await this.deps.store.rooms.updateOne({ id: room.id }, { queue, playback });
+    const written = await this.deps.store.rooms.updateOne(
+      { id: room.id, queue: room.queue, playback: prevPlayback },
+      { queue, playback },
+    );
+    if (written === null) return false;
     await this.deps.events.emit(room.id, 'queue.state', queue);
     await this.deps.events.emit(room.id, 'sync.state', playback);
     if (successor !== undefined) {
@@ -433,6 +578,7 @@ export class QueueService {
         startedBy: successor.addedBy,
       });
     }
+    return true;
   }
 }
 

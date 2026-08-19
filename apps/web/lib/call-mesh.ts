@@ -33,6 +33,7 @@ import { MeshManager, TurnCredentialManager } from '@gather/p2p';
 import type {
   IceServerLike,
   MeshConnectionState,
+  MeshLinkState,
   RtcPeerConnectionLike,
   TrackRole,
 } from '@gather/p2p';
@@ -48,6 +49,35 @@ const browserRtcFactory = (config: { iceServers: IceServerLike[] }): RtcPeerConn
 /** Link classification happens only inside MeshManager.pollStats(), and the
  *  app layer owns the interval — connection diagnostics read the result. */
 const LINK_POLL_MS = 5_000;
+
+/**
+ * This TAB's endpoint token, generated once per page load.
+ *
+ * A UserId names a person, and one person is routinely in a room from two
+ * places at once — laptop and phone, or two tabs of the same browser. Both used
+ * to derive the same mesh connectionId, so the far side held ONE peer
+ * connection for the pair: each device's offer re-pointed its single ICE agent
+ * at the other, and the call flipped between them for as long as both stayed
+ * open. It needed no "join call" to happen — the room shell starts the mesh,
+ * and the fabric DataChannels make it negotiate with no media on it at all.
+ *
+ * Per PAGE rather than per CallMesh on purpose: a mesh that is closed and
+ * re-acquired (StrictMode's double effect, a room remount) is the same tab, and
+ * re-using the token keeps the connectionId it derives stable — which is what
+ * lets the far side re-establish over the peer it already holds instead of
+ * building another one and leaving the old to time out.
+ */
+const ENDPOINT_TOKEN = makeEndpointToken();
+
+/** A token the mesh will accept: `[A-Za-z0-9_-]{1,64}`, so it survives being
+ *  concatenated into a connectionId and compared whole. randomUUID is the
+ *  cheap source of one; the fallback covers insecure origins, where
+ *  `crypto.randomUUID` is not exposed at all. */
+function makeEndpointToken(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid !== undefined) return uuid;
+  return `e${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
 
 /**
  * How long peer construction waits for the first TURN credential answer.
@@ -68,10 +98,36 @@ export const CREDENTIAL_WAIT_MS = 4_000;
 export const CALL_SETUP_NOTE =
   'Trouble setting up the call — people on other networks may not be able to hear or see you.';
 
-/** A link that carried media died. MeshManager restarts ICE on 'failed', so
- *  "trying to get it back" is a description of what is happening, not hope. */
+/** A link that carried media died. MeshManager restarts ICE on it — on 'failed'
+ *  at once, on 'disconnected' after a grace window — so "trying to get it back"
+ *  is a description of what is happening, not hope. */
 export const CALL_PEER_NOTE =
   'Lost the connection to someone in the call — trying to get it back.';
+
+/**
+ * The recovery budget ran out.
+ *
+ * The mesh restarts ICE a bounded number of times and then stops, because
+ * restarting forever at a path that is genuinely gone is indistinguishable
+ * from a working recovery: the tile says "trying to get it back" at a link
+ * that never comes back. Once it stops, the honest thing to say is that it
+ * stopped, and the only remaining move is the user's.
+ */
+export const CALL_PEER_LOST_NOTE =
+  'Could not get the connection back to someone in the call — reloading the page usually fixes it.';
+
+/**
+ * How long someone keeps receiving our camera and microphone after presence
+ * stops calling them 'in-call'.
+ *
+ * Presence blips: a client that re-announces 'watching' or 'listening' for its
+ * own reasons overwrites its own call state for about a round trip. Pulling the
+ * camera on that would cost two renegotiations and a black tile every time
+ * somebody's queue moved between music and video. Short enough that a person
+ * who genuinely left the call stops receiving a camera within seconds — which
+ * is the entire point of publishing by membership.
+ */
+export const PUBLISH_BRIDGE_MS = 6_000;
 
 /** A remote track and the peer publishing it. */
 export interface RemoteTrackEntry {
@@ -80,12 +136,13 @@ export interface RemoteTrackEntry {
 }
 
 /** What kind of failure a note describes; one note per kind, per mesh. */
-type FailureKind = 'setup' | 'peer';
+type FailureKind = 'setup' | 'peer' | 'peer-lost';
 
 type RemoteTrackListener = (source: UserId, track: MediaStreamTrack) => void;
 type LocalTrackListener = (role: TrackRole, track: MediaStreamTrack | null) => void;
 type FailureListener = (note: string) => void;
 type ConnectionStateListener = (peerId: UserId, state: MeshConnectionState) => void;
+type LinkStateListener = (peerId: UserId, state: MeshLinkState) => void;
 
 export class CallMesh {
   private readonly mesh: MeshManager;
@@ -96,6 +153,7 @@ export class CallMesh {
   private readonly remoteTrackRemovedSubs = new Set<RemoteTrackListener>();
   private readonly failureSubs = new Set<FailureListener>();
   private readonly connectionStateSubs = new Set<ConnectionStateListener>();
+  private readonly linkStateSubs = new Set<LinkStateListener>();
   /** Live remote tracks, per peer, keyed by track id (replayed to new subs). */
   private readonly remoteTracks = new Map<UserId, Map<string, MediaStreamTrack>>();
   /** Live local tracks by role (replayed to new subs). */
@@ -110,12 +168,22 @@ export class CallMesh {
   /** True once the first credential attempt settled; peers wait for it. */
   private credentialsSettled = false;
   private credentialWaitHandle: ReturnType<typeof setTimeout> | null = null;
+  /** Who is currently receiving our call media (see {@link reconcileAudience}). */
+  private readonly publishing = new Set<UserId>();
+  /** When presence stopped calling a peer 'in-call', for the bridge. */
+  private readonly leftCallAt = new Map<UserId, number>();
+  /** False until the first audience reaches the mesh — an EMPTY audience is a
+   *  real answer ("nobody is on the call"), not the absence of one. */
+  private audienceApplied = false;
+  private audienceHandle: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly conn: RoomConnection,
     private readonly localUserId: UserId,
     /** Operator lever: caps relayed share video to protect TURN bill. */
     private readonly capRelayedVideoKbps?: number,
+    /** Operator lever: total camera uplink ceiling, divided among receivers. */
+    private readonly capCamKbps?: number,
   ) {
     this.turn = new TurnCredentialManager({
       getTurnCredentials: () => api.rtc.turnCredentials(),
@@ -138,6 +206,9 @@ export class CallMesh {
     this.mesh = new MeshManager({
       roomId: conn.roomId,
       localUserId,
+      // Names this TAB, not this account: without it, two tabs of one person
+      // derive one connectionId and take turns resetting each other's link.
+      endpointId: ENDPOINT_TOKEN,
       rtcFactory: browserRtcFactory,
       send: (event) => {
         conn.rawSocket.send(event.type, event.payload);
@@ -146,13 +217,18 @@ export class CallMesh {
       now: () => Date.now(),
       setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
       clearTimeoutFn: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
-      onError: () => {
+      onError: (_peerId, context) => {
         // Per-link failures also reach the UI through connectionStates(); the
         // room stays usable when one peer can't be reached, but "nothing works
         // and I don't know why" is not an acceptable way to find that out.
+        if (context === 'iceRecoveryExhausted') {
+          this.reportFailure('peer-lost', CALL_PEER_LOST_NOTE);
+          return;
+        }
         this.reportFailure('peer', CALL_PEER_NOTE);
       },
       ...(capRelayedVideoKbps === undefined ? {} : { capRelayedVideoKbps }),
+      ...(capCamKbps === undefined ? {} : { capCamKbps }),
     });
 
     // Retention starts at construction, BEFORE any pane subscribes — a track
@@ -170,6 +246,11 @@ export class CallMesh {
         if (state === 'closed') this.dropPeer(peerId);
         if (state === 'failed') this.reportFailure('peer', CALL_PEER_NOTE);
         for (const fn of [...this.connectionStateSubs]) fn(peerId, state);
+      }),
+    );
+    this.unsubscribers.push(
+      this.mesh.onLinkState((peerId, state) => {
+        for (const fn of [...this.linkStateSubs]) fn(peerId, state);
       }),
     );
   }
@@ -232,7 +313,74 @@ export class CallMesh {
   /** Reconcile the mesh toward whoever is present (non-offline). */
   private reconcilePeers(): void {
     if (this.closedFlag || !this.credentialsSettled) return;
+    // Audience first: a peer built by applyPresence reads it as it is armed, so
+    // somebody who joins the call and the mesh in one presence update gets our
+    // camera on their first offer instead of on a second renegotiation.
+    this.reconcileAudience();
     this.mesh.applyPresence(Object.values(this.conn.useRoomState.getState().presence));
+  }
+
+  /**
+   * Point the camera and the microphone at the people who are on the CALL.
+   *
+   * The mesh connects the whole room — it carries the DataChannel fabric, and a
+   * lurker's connection is as real as a caller's — so "we have a connection to
+   * them" was never a reason to send them a camera. It used to be the only
+   * reason: in a room of twelve where four were calling, each of those four
+   * uploaded eleven copies of their camera, eight to people who never pressed
+   * Join. Presence is what says who is in the call, and the bridge covers the
+   * round trip where a client re-announcing its own state blips out of it.
+   */
+  private reconcileAudience(): void {
+    if (this.closedFlag) return;
+    const now = Date.now();
+    const declared = new Set<UserId>();
+    for (const entry of Object.values(this.conn.useRoomState.getState().presence)) {
+      if (entry.userId === this.localUserId) continue;
+      if (entry.state === 'in-call') declared.add(entry.userId);
+    }
+    // Someone who WAS receiving and is no longer declared starts their bridge.
+    for (const userId of this.publishing) {
+      if (!declared.has(userId) && !this.leftCallAt.has(userId)) this.leftCallAt.set(userId, now);
+    }
+
+    const audience = new Set(declared);
+    let soonestMs: number | null = null;
+    for (const [userId, at] of [...this.leftCallAt]) {
+      const remaining = at + PUBLISH_BRIDGE_MS - now;
+      if (declared.has(userId) || remaining <= 0) {
+        this.leftCallAt.delete(userId);
+        continue;
+      }
+      audience.add(userId);
+      soonestMs = soonestMs === null ? remaining : Math.min(soonestMs, remaining);
+    }
+
+    // Presence churns for its own reasons — every queue move rewrites it — and
+    // re-applying an unchanged audience would call replaceTrack on every live
+    // sender each time. Apply only real changes.
+    const changed =
+      !this.audienceApplied ||
+      audience.size !== this.publishing.size ||
+      [...audience].some((userId) => !this.publishing.has(userId));
+    if (changed) {
+      this.audienceApplied = true;
+      this.publishing.clear();
+      for (const userId of audience) this.publishing.add(userId);
+      this.mesh.setPublishAudience([...audience]);
+    }
+
+    // The bridge has to expire on its own clock: nothing guarantees another
+    // presence event will ever arrive to close it.
+    if (this.audienceHandle !== null) {
+      clearTimeout(this.audienceHandle);
+      this.audienceHandle = null;
+    }
+    if (soonestMs === null) return;
+    this.audienceHandle = setTimeout(() => {
+      this.audienceHandle = null;
+      this.reconcileAudience();
+    }, soonestMs);
   }
 
   /**
@@ -355,6 +503,37 @@ export class CallMesh {
     return this.mesh.connectionStates();
   }
 
+  /**
+   * Which PATH each peer's media is taking: 'direct' peer-to-peer, 'relayed'
+   * through a TURN server, or 'unknown' before the first stats poll classifies
+   * it.
+   *
+   * This is the difference between "nobody but us can see this" and "every byte
+   * of it is passing through a server we rent", and the app had no way to ask —
+   * so the badge said 'Private' whatever was true, which is the one answer that
+   * must never be a guess. A person is 'relayed' if ANY of their links is: a
+   * call that is direct to one device and relayed to that person's phone is not
+   * a private call.
+   */
+  linkStates(): Map<UserId, MeshLinkState> {
+    return this.mesh.linkStates();
+  }
+
+  /** The path to one peer; 'unknown' for someone we hold no link to. */
+  linkState(peerId: UserId): MeshLinkState {
+    return this.mesh.linkState(peerId);
+  }
+
+  /** Link-path changes as they are classified. Current paths are replayed to a
+   *  new subscriber, like tracks and connection states. */
+  onLinkState(fn: LinkStateListener): () => void {
+    this.linkStateSubs.add(fn);
+    for (const [peerId, state] of this.mesh.linkStates()) fn(peerId, state);
+    return () => {
+      this.linkStateSubs.delete(fn);
+    };
+  }
+
   close(): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
@@ -365,6 +544,10 @@ export class CallMesh {
     if (this.credentialWaitHandle !== null) {
       clearTimeout(this.credentialWaitHandle);
       this.credentialWaitHandle = null;
+    }
+    if (this.audienceHandle !== null) {
+      clearTimeout(this.audienceHandle);
+      this.audienceHandle = null;
     }
     for (const off of this.unsubscribers.splice(0)) off();
     this.mesh.close();
@@ -377,7 +560,10 @@ export class CallMesh {
     this.localTrackSubs.clear();
     this.failureSubs.clear();
     this.connectionStateSubs.clear();
+    this.linkStateSubs.clear();
     this.pendingNotes.clear();
+    this.publishing.clear();
+    this.leftCallAt.clear();
   }
 
   // ---------- internals ----------
@@ -557,16 +743,29 @@ export function onCallMeshClosed(fn: MeshClosedListener): () => void {
  *  of the 300–500 band; the governor adapts down from here based on link RTT. */
 export const DEFAULT_CAP_RELAYED_VIDEO_KBPS = 400;
 
+/**
+ * Default TOTAL camera uplink (kbps), divided among the people receiving it.
+ *
+ * A mesh sends one encode per receiver, so the camera is the one role whose
+ * cost multiplies with the call: uncapped 720p is ~2.5 Mbps, and four
+ * receivers is 10 Mbps of uplink from a laptop on hotel wifi — where the
+ * failure is not a softer picture but a call that stops working. 1200 gives a
+ * one-to-one call a good image and holds the total roughly flat as people
+ * join, down to the floor the mesh refuses to divide past.
+ */
+export const DEFAULT_CAP_CAM_KBPS = 1200;
+
 export function getCallMesh(
   conn: RoomConnection,
   localUserId: UserId,
   capRelayedVideoKbps = DEFAULT_CAP_RELAYED_VIDEO_KBPS,
+  capCamKbps = DEFAULT_CAP_CAM_KBPS,
 ): CallMesh {
   const existing = meshes.get(conn);
   // A closed mesh is inert (StrictMode double-effects close then re-acquire),
   // so replace it rather than hand back a dead one.
   if (existing !== undefined && !existing.closed) return existing;
-  const mesh = new CallMesh(conn, localUserId, capRelayedVideoKbps);
+  const mesh = new CallMesh(conn, localUserId, capRelayedVideoKbps, capCamKbps);
   meshes.set(conn, mesh);
   return mesh;
 }

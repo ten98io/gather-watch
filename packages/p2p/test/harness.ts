@@ -528,14 +528,30 @@ export class MockNetwork {
   /** Total peer connections created through rtcFactory. */
   pcCount = 0;
 
+  /**
+   * How long an ABANDONED path keeps failing consent checks before ICE gives
+   * up on it. The real number is ~30s and the real mechanism is the one that
+   * matters here: a pc has ONE ICE agent, so pointing it at another peer's
+   * credentials does not add a path, it replaces one.
+   */
+  consentTimeoutMs = 30_000;
+
   private readonly clock: VirtualClock;
   private nextOwnerTag = 'anon';
   private nextPcId = 1;
   private readonly pcs = new Map<number, MockPeerConnection>();
   /** Directed "P heard Q" facts, keyed `${p}->${q}`. */
   private readonly heard = new Set<string>();
-  /** Established links, keyed by sorted pcId pair `${a}~${b}`. */
-  private readonly links = new Set<string>();
+  /**
+   * Who each pc's ICE agent currently points at — at most ONE counterpart, the
+   * way a real RTCPeerConnection works.
+   *
+   * Modelling links as a free-for-all set hid the whole two-devices-one-account
+   * failure: both tabs' offers landed on the viewer's single pc, the mock
+   * happily called both of them linked, and every assertion passed while the
+   * real thing flapped between them forever.
+   */
+  private readonly linkedTo = new Map<number, number>();
   private defaultFaults: ResolvedFaults = DEFAULT_FAULTS;
   private readonly pairFaults = new Map<string, ResolvedFaults>();
 
@@ -582,10 +598,14 @@ export class MockNetwork {
 
   // ---------- link bookkeeping (called by MockPeerConnection) ----------
 
-  /** pc applied a remote description embedding `remotePcId`. */
+  /** pc applied a remote description embedding `remotePcId`. Applying one from
+   *  a pc OTHER than its current counterpart re-points its single ICE agent —
+   *  new ufrag/pwd, new DTLS fingerprint — and abandons the path it had. */
   noteHeard(pc: MockPeerConnection, remotePcId: number | null): void {
     if (remotePcId === null) return;
     this.heard.add(`${pc.pcId}->${remotePcId}`);
+    const current = this.linkedTo.get(pc.pcId);
+    if (current !== undefined && current !== remotePcId) this.breakLink(pc.pcId);
   }
 
   /** pc transitioned back to stable — check whether its pair is negotiated. */
@@ -606,12 +626,14 @@ export class MockNetwork {
 
   noteClosed(pc: MockPeerConnection): void {
     const counterpart = this.linkedCounterpart(pc);
-    if (counterpart !== undefined && counterpart.connectionState !== 'closed') {
-      this.clock.setTimeoutFn(() => {
-        if (counterpart.connectionState === 'closed') return;
-        counterpart.setConnectionState('disconnected');
-      }, 10);
-    }
+    this.linkedTo.delete(pc.pcId);
+    if (counterpart === undefined) return;
+    this.linkedTo.delete(counterpart.pcId);
+    if (counterpart.connectionState === 'closed') return;
+    this.clock.setTimeoutFn(() => {
+      if (counterpart.connectionState === 'closed') return;
+      counterpart.setConnectionState('disconnected');
+    }, 10);
   }
 
   /** Deliver pending local tracks to the linked counterpart's ontrack. */
@@ -636,19 +658,27 @@ export class MockNetwork {
 
   // ---------- internals ----------
 
-  private linkKey(a: MockPeerConnection, b: MockPeerConnection): string {
-    return `${Math.min(a.pcId, b.pcId)}~${Math.max(a.pcId, b.pcId)}`;
+  private linkedCounterpart(pc: MockPeerConnection): MockPeerConnection | undefined {
+    const counterpart = this.linkedTo.get(pc.pcId);
+    return counterpart === undefined ? undefined : this.pcs.get(counterpart);
   }
 
-  private linkedCounterpart(pc: MockPeerConnection): MockPeerConnection | undefined {
-    for (const key of this.links) {
-      const [aStr, bStr] = key.split('~') as [string, string];
-      const a = Number(aStr);
-      const b = Number(bStr);
-      if (a === pc.pcId) return this.pcs.get(b);
-      if (b === pc.pcId) return this.pcs.get(a);
-    }
-    return undefined;
+  /** Drop this pc's path. The end that did NOT move keeps an agent pointed at
+   *  credentials nobody answers: media stops now, and consent freshness fails
+   *  it a while later — which is the ~30s flip the field report described. */
+  private breakLink(pcId: number): void {
+    const otherId = this.linkedTo.get(pcId);
+    if (otherId === undefined) return;
+    this.linkedTo.delete(pcId);
+    this.linkedTo.delete(otherId);
+    const other = this.pcs.get(otherId);
+    if (other === undefined || other.connectionState === 'closed') return;
+    other.setConnectionState('disconnected');
+    this.clock.setTimeoutFn(() => {
+      if (other.connectionState === 'closed') return;
+      if (this.linkedTo.has(other.pcId)) return; // it found a path again
+      other.setConnectionState('failed');
+    }, this.consentTimeoutMs);
   }
 
   private faultsFor(a: MockPeerConnection, b: MockPeerConnection): ResolvedFaults {
@@ -658,15 +688,18 @@ export class MockNetwork {
   }
 
   private establishLink(a: MockPeerConnection, b: MockPeerConnection): void {
-    const key = this.linkKey(a, b);
-    if (this.links.has(key)) {
+    if (this.linkedTo.get(a.pcId) === b.pcId) {
       // Renegotiation over an existing link: no state churn, but any tracks
       // added since the last exchange flow now.
       this.deliverPendingTracks(a);
       this.deliverPendingTracks(b);
       return;
     }
-    this.links.add(key);
+    // Each end has one agent, so taking this path gives up whatever it held.
+    this.breakLink(a.pcId);
+    this.breakLink(b.pcId);
+    this.linkedTo.set(a.pcId, b.pcId);
+    this.linkedTo.set(b.pcId, a.pcId);
     this.clock.setTimeoutFn(() => {
       a.setConnectionState('connecting');
       b.setConnectionState('connecting');

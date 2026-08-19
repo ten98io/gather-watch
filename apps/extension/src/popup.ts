@@ -45,6 +45,13 @@ interface Status {
   provider: TabProvider | null;
   /** Optional: older backgrounds do not report it, so it is never required. */
   sharing?: boolean;
+  /**
+   * Why the last share stopped, when the ROOM stopped it — refused it, or a
+   * moderator ended it. Nothing else on this page would say: the share was
+   * reported as started, because locally it had, and the buttons simply come
+   * back. '' whenever there is nothing to explain.
+   */
+  shareEnded?: string;
 }
 
 /** Surface whose request is in flight; nothing else may be started meanwhile. */
@@ -55,6 +62,18 @@ let sharedSurface: ShareSurface | null = null;
 /** The background's sentence about the live share. It has to outlive the
  *  re-render on every poll, and a popup opened mid-share never has one. */
 let shareNote = '';
+/**
+ * What the last cast press came back with.
+ *
+ * A site Gather CAN cast from has no standing reason of its own, so the poll
+ * two seconds later re-rendered this slot as empty — and the one sentence that
+ * matters, "couldn't find the cast control on this page", is produced by
+ * exactly those sites, when they have been reskinned since the selectors in
+ * providers.ts were written. It was on screen for under two seconds and then
+ * vanished, which reads as a button that does nothing at all. Remembered here
+ * so every re-render puts it back.
+ */
+let castNote = '';
 
 async function send<T>(msg: Record<string, unknown>): Promise<T> {
   const res = (await chrome.runtime.sendMessage(msg)) as
@@ -158,14 +177,26 @@ async function refresh(): Promise<void> {
 
   renderShare(liveShare(status));
 
+  // Written, never cleared, from here: the request's own outcome owns this
+  // slot (see applyShare), and a poll two seconds later must not wipe the
+  // sentence a refused click just put in it.
+  const ended = typeof status.shareEnded === 'string' ? status.shareEnded : '';
+  if (ended.length > 0) {
+    $('share-error').textContent = ended;
+    $('share-error').hidden = false;
+  }
+
   // The cast control is always visible: when Gather cannot act it says why,
   // instead of disappearing (docs/EXTENSION_FIRST.md, Part 3).
   const affordance = castAffordanceFor(status.provider);
   const castBtn = $<HTMLButtonElement>('cast');
   castBtn.textContent = affordance.label;
   castBtn.disabled = !affordance.enabled;
-  $('cast-reason').textContent = affordance.reason;
-  $('cast-reason').hidden = affordance.reason.length === 0;
+  // The site's own standing reason wins: it describes the tab in front of the
+  // user, while the remembered one is about a press that already happened.
+  const reason = affordance.reason.length > 0 ? affordance.reason : castNote;
+  $('cast-reason').textContent = reason;
+  $('cast-reason').hidden = reason.length === 0;
 }
 
 /* ── Actions ── */
@@ -258,17 +289,18 @@ function mount(): void {
   $('cast').addEventListener('click', () => {
     const btn = $<HTMLButtonElement>('cast');
     btn.disabled = true;
+    castNote = '';
     send<{ clicked: boolean; reason: string }>({ kind: 'popup:cast' })
       .then((res) => {
-        $('cast-reason').textContent = res.reason;
-        $('cast-reason').hidden = res.reason.length === 0;
+        castNote = res.reason;
       })
       .catch((err: unknown) => {
-        $('cast-reason').textContent = err instanceof Error ? err.message : 'Cast failed';
-        $('cast-reason').hidden = false;
+        castNote = err instanceof Error ? err.message : 'Cast failed';
       })
       .finally(() => {
         btn.disabled = false;
+        $('cast-reason').textContent = castNote;
+        $('cast-reason').hidden = castNote.length === 0;
       });
   });
 

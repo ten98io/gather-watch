@@ -179,6 +179,16 @@ let sharingTabId: number | null = null;
  * receiving pixels while the user is somewhere else).
  */
 let sharingRoomId: string | null = null;
+/**
+ * Why the last share ended, when the person did not end it themselves.
+ *
+ * A share the ROOM ended — refused outright, or stopped by a moderator — has
+ * nothing else on the screen to explain itself: the popup was told the share
+ * started (it had, locally) and the buttons simply come back a moment later.
+ * The offscreen document sends the sentence with `shareEnded`; this holds it
+ * until the popup next asks, and the next share attempt clears it.
+ */
+let shareEndedNote = '';
 /** Cleared on disconnect — a stacked interval per reconnect was a real leak. */
 let driveTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1801,10 +1811,13 @@ async function ensureOffscreen(): Promise<void> {
  * began — because a screen that goes on streaming after the user left the room
  * is the one outcome that is never acceptable. Nothing here throws.
  */
-async function stopSharing(): Promise<void> {
+async function stopSharing(endedNote = ''): Promise<void> {
   sharingSource = null;
   sharingTabId = null;
   sharingRoomId = null;
+  // Only the room's own reasons survive here; every other way a share ends is
+  // one the person performed and already knows about.
+  shareEndedNote = endedNote;
   await persistSharingRoom();
   if (!(await hasOffscreen())) return;
   // The document owns the tracks, the mesh and the share socket. It stops
@@ -1944,6 +1957,21 @@ const SHARE_REFUSED_NOTE = 'Chrome did not allow that — try again and pick wha
  */
 const SHARE_NO_IDENTITY_NOTE =
   'Still getting you settled in this room — give it a moment and try sharing again.';
+/**
+ * One person, one share.
+ *
+ * A room's stage names ONE host, and the server lets that host replace their
+ * own share without a word — so a person already sharing from their web tab
+ * who pressed Share here got a second capture on the same lane, under the same
+ * user id, whose connectionId collides with the first: viewers answer whichever
+ * spoke first and drop the other as a glare loser, and the room ends up seeing
+ * one of the two at random while both machines pay to send. The honest answer
+ * is to refuse, and to say which share is in the way.
+ */
+const SHARE_ALREADY_HERE_NOTE =
+  'You are already sharing with this room — stop that share before starting another.';
+const SHARE_ALREADY_ELSEWHERE_NOTE =
+  'You are already sharing with this room from somewhere else — stop that share first, then share from here.';
 
 /** Capture failures arrive as browser error text; a person gets a sentence. */
 export function shareFailureNote(error: string): string {
@@ -1984,6 +2012,15 @@ export function readShareReply(
  */
 async function startShare(surface: ShareSurface = 'tab'): Promise<ShareResult> {
   if (session === null) throw new Error('connect to a room first');
+  // A new attempt answers for itself; whatever ended the last share is old
+  // news the moment this one is asked for.
+  shareEndedNote = '';
+  // Before the picker, because being refused after choosing a window is the
+  // rudest possible way to say no. This worker's own capture is measured from
+  // the BROWSER (see isSharingLive), so a recycled worker cannot forget it.
+  if (await isSharingLive()) {
+    return { shared: false, cancelled: false, note: SHARE_ALREADY_HERE_NOTE };
+  }
   // Who we are decides whether this share reaches anybody at all (see
   // OffscreenShareMessage.userId), so it is settled BEFORE the picker opens —
   // a person should not choose a window for a share that will then be refused.
@@ -1994,6 +2031,15 @@ async function startShare(surface: ShareSurface = 'tab'): Promise<ShareResult> {
     return { shared: false, cancelled: false, note: 'That room ended before the share started.' };
   }
   if (userId === null) return { shared: false, cancelled: false, note: SHARE_NO_IDENTITY_NOTE };
+  // …and the same person's OTHER share, which this worker cannot see at all:
+  // the room's stage names its host, so a web tab's share is visible here as a
+  // stage we already hold. Compared only against a known id, since a null host
+  // and an unknown member would otherwise match. See
+  // SHARE_ALREADY_ELSEWHERE_NOTE.
+  const stage = session.restream;
+  if (stage !== null && stage.active && stage.hostUserId === userId) {
+    return { shared: false, cancelled: false, note: SHARE_ALREADY_ELSEWHERE_NOTE };
+  }
   // Read the room BEFORE awaiting the picker: the user may disconnect while it
   // is open, and a share must never be started against a room that ended.
   const room: ShareRoom = {
@@ -2265,13 +2311,17 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
     case 'popup:stopShare':
       return respond(stopSharing());
     /**
-     * The capture ended without us — Chrome's own "Stop sharing" bar, or the
-     * shared tab closing. The offscreen document has already told the room and
-     * stopped the tracks; this clears the claim and closes the document, so
-     * the next share starts from nothing.
+     * The capture ended without us — Chrome's own "Stop sharing" bar, the
+     * shared tab closing, or the ROOM refusing or stopping the share. The
+     * offscreen document has already told the room and stopped the tracks;
+     * this clears the claim and closes the document, so the next share starts
+     * from nothing.
+     *
+     * `reason` is a sentence only the room's endings carry: the other two are
+     * things the person did, and telling them what they just did is noise.
      */
     case 'shareEnded':
-      return respond(stopSharing());
+      return respond(stopSharing(typeof msg['reason'] === 'string' ? msg['reason'] : ''));
     case 'popup:cast':
       return respond(castActiveTab());
     /**
@@ -2338,6 +2388,9 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
             // revived while the capture ran — is still a share, and the
             // document still being open is the browser's own proof of it.
             sharing: await isSharingLive(),
+            // Why the last one stopped, when the room stopped it. '' whenever
+            // there is nothing to explain, which is almost always.
+            shareEnded: shareEndedNote,
           };
         })(),
       );

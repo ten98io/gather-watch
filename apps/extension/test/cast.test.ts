@@ -77,6 +77,45 @@ describe('performNativeCast', () => {
     expect(res.reason).toContain("Couldn't find YouTube's cast control");
   });
 
+  /**
+   * The selectors are data, and a site is under no obligation to keep the
+   * class names they were written against. A reskin that moves the cast button
+   * but leaves the overflow menu where it was lands exactly here: the menu
+   * opens, the button is not in it, and the user is left looking at the site's
+   * own menu hanging open over the video, with nothing said.
+   */
+  it('closes the menu it opened when the button is not in there after all', async () => {
+    const dom = fakeDom({ '.ytp-overflow-button': {} });
+
+    const res = await performNativeCast(youtube.cast, dom, youtube.name);
+
+    expect(res.clicked).toBe(false);
+    expect(res.reason).toContain("Couldn't find YouTube's cast control");
+    // Opened, looked, and put back: the same toggle, pressed twice.
+    expect(dom.clicks).toEqual(['.ytp-overflow-button', '.ytp-overflow-button']);
+  });
+
+  it('leaves the menu open when the button WAS in there', async () => {
+    const dom = fakeDom({
+      '.ytp-remote-button': { visible: false },
+      '.ytp-overflow-button': {},
+    });
+    const deps: CastDeps = {
+      query: (selector) => {
+        if (selector === '.ytp-remote-button' && dom.clicks.includes('.ytp-overflow-button')) {
+          return { visible: true, click: () => dom.clicks.push(selector) };
+        }
+        return dom.query(selector);
+      },
+      wait: dom.wait,
+    };
+
+    await performNativeCast(youtube.cast, deps, youtube.name);
+
+    // Closing it would take the site's own cast picker down with it.
+    expect(dom.clicks).toEqual(['.ytp-overflow-button', '.ytp-remote-button']);
+  });
+
   it('refuses protected sites with the site\'s own reason — never a capture fallback', async () => {
     const dom = fakeDom({ '[data-uia="control-cast"]': {} });
     const res = await performNativeCast(netflix.cast, dom, netflix.name);

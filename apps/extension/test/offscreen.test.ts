@@ -4,11 +4,13 @@ import {
   MAX_FRAME_RATE,
   MAX_HEIGHT,
   MAX_WIDTH,
+  SHARE_AUDIO_MAX_BITRATE,
   SHARE_RELAYED_VIDEO_CAP_KBPS,
   browserRuntime,
   captureShare,
   handleShareCommand,
   parseStartShare,
+  preferStereoOpus,
   startShare,
   stopShare,
 } from '../src/offscreen';
@@ -29,6 +31,7 @@ import type {
   MeshLane,
   MeshLinkState,
   RtcPeerConnectionLike,
+  SignalSend,
   TrackRole,
 } from '@gather/p2p';
 import type { RoomId, UserId } from '@gather/contracts';
@@ -74,9 +77,19 @@ function fakeStream(kinds: Array<'video' | 'audio'>): ShareStream & { tracks: Fa
 interface FakeSocket {
   socket: ShareSocket;
   sent: Array<{ type: string; payload: unknown }>;
-  handlers: Map<string, (ev: unknown) => void>;
+  handlers: Map<string, Array<(ev: unknown) => void>>;
   connected: { roomId: string; token: string } | null;
   closed: boolean;
+  /** Deliver one server event to whoever subscribed to it. */
+  emit(type: string, payload: unknown): void;
+  /**
+   * The socket reaching 'open'. A real RoomSocket connects asynchronously and
+   * fires this on every reconnect too, so nothing a share does before it can
+   * be assumed to have reached the room.
+   */
+  open(): void;
+  /** Everything the room was told, in order, of one type. */
+  sentOf(type: string): unknown[];
 }
 
 /**
@@ -84,12 +97,20 @@ interface FakeSocket {
  * loosely and cast once here rather than restating those signatures.
  */
 function fakeSocket(): FakeSocket {
+  const statusHandlers: Array<(status: string) => void> = [];
   const state: FakeSocket = {
     socket: null as unknown as ShareSocket,
     sent: [],
     handlers: new Map(),
     connected: null,
     closed: false,
+    emit: (type, payload) => {
+      for (const handler of [...(state.handlers.get(type) ?? [])]) handler({ type, payload });
+    },
+    open: () => {
+      for (const handler of [...statusHandlers]) handler('open');
+    },
+    sentOf: (type) => state.sent.filter((m) => m.type === type).map((m) => m.payload),
   };
   state.socket = {
     connect: (roomId: string, token: string) => {
@@ -99,7 +120,13 @@ function fakeSocket(): FakeSocket {
       state.sent.push({ type, payload });
     },
     on: (type: string, handler: (ev: unknown) => void) => {
-      state.handlers.set(type, handler);
+      const list = state.handlers.get(type) ?? [];
+      list.push(handler);
+      state.handlers.set(type, list);
+      return () => undefined;
+    },
+    onStatus: (handler: (status: string) => void) => {
+      statusHandlers.push(handler);
       return () => undefined;
     },
     close: () => {
@@ -178,9 +205,14 @@ interface Harness {
     lane?: MeshLane | undefined;
     getIceServers?: (() => IceServerLike[]) | undefined;
     capRelayedVideoKbps?: number;
+    /** The mesh's own outbound signalling path — everything the share puts on
+     *  the wire goes through this, so a test can put one frame in and read
+     *  what the room was really told. */
+    send: SignalSend;
   }>;
-  /** How many times the runtime was told the capture ended on its own. */
-  notices: { ended: number };
+  /** Every time the runtime was told the capture ended without a stop, and
+   *  the sentence it was given for the person watching. */
+  notices: { ended: number; reasons: string[] };
 }
 
 /** `media` is consulted per getUserMedia attempt: throw to reject that attempt.
@@ -194,7 +226,7 @@ function harness(
   const meshes: FakeMesh[] = [];
   const turns: FakeTurn[] = [];
   const meshOptions: Harness['meshOptions'] = [];
-  const notices = { ended: 0 };
+  const notices: Harness['notices'] = { ended: 0, reasons: [] };
   return {
     requests,
     sockets,
@@ -240,6 +272,7 @@ function harness(
           localUserId: opts.localUserId,
           lane: opts.lane,
           getIceServers: opts.getIceServers,
+          send: opts.send,
           ...(opts.capRelayedVideoKbps === undefined
             ? {}
             : { capRelayedVideoKbps: opts.capRelayedVideoKbps }),
@@ -248,8 +281,9 @@ function harness(
         meshes.push(m);
         return m;
       },
-      notifyEnded: () => {
+      notifyEnded: (reason) => {
         notices.ended += 1;
+        notices.reasons.push(reason);
       },
     },
   };
@@ -484,10 +518,10 @@ describe('startShare', () => {
     // it on 'mic' replaced the sharer's live voice for the whole room, and
     // withdrawing it on stop left them silent with the mic button still on.
     expect(h.meshes[0]?.tracks.has('mic')).toBe(false);
-    expect(h.sockets[0]?.sent).toEqual([
-      { type: 'restream.start', payload: {} },
-      { type: 'presence.update', payload: { sharing: true, state: 'watching' } },
-    ]);
+    // The room is ASKED, and nothing is claimed: presence's `sharing` flag is
+    // what the room's publisher ceiling counts, so it waits for the answer
+    // (see 'the room's answer' below).
+    expect(h.sockets[0]?.sent).toEqual([{ type: 'restream.start', payload: {} }]);
     expect(started).toEqual({ audio: true, note: '' });
   });
 
@@ -499,10 +533,7 @@ describe('startShare', () => {
     expect(h.meshes[0]?.tracks.get('share')).toBe(stream.getVideoTracks()[0]);
     expect(h.meshes[0]?.tracks.has('share-audio')).toBe(false);
     expect(h.meshes[0]?.tracks.has('mic')).toBe(false);
-    expect(h.sockets[0]?.sent).toEqual([
-      { type: 'restream.start', payload: {} },
-      { type: 'presence.update', payload: { sharing: true, state: 'watching' } },
-    ]);
+    expect(h.sockets[0]?.sent).toEqual([{ type: 'restream.start', payload: {} }]);
     expect(started.audio).toBe(false);
     expect(started.note.length).toBeGreaterThan(0);
   });
@@ -524,12 +555,14 @@ describe('startShare', () => {
   it('feeds presence into the mesh so late joiners get linked', async () => {
     const h = harness([() => fakeStream(['video', 'audio'])]);
     await startShare(request(), h.runtime);
+    // The roster only arrives because the open frame asked for it; see 'the
+    // room's answer' below for why an unasked-for one never comes.
+    h.sockets[0]?.open();
 
-    h.sockets[0]?.handlers.get('presence.state')?.({
-      payload: { entries: [{ userId: 'u1', state: 'watching' }] },
-    });
-    h.sockets[0]?.handlers.get('presence.diff')?.({
-      payload: { upserts: [{ userId: 'u2', state: 'watching' }], removed: ['u1'] },
+    h.sockets[0]?.emit('presence.state', { entries: [{ userId: 'u1', state: 'watching' }] });
+    h.sockets[0]?.emit('presence.diff', {
+      upserts: [{ userId: 'u2', state: 'watching' }],
+      removed: ['u1'],
     });
 
     expect(h.meshes[0]?.peers).toEqual([['u1'], ['u2']]);
@@ -544,11 +577,318 @@ describe('startShare', () => {
 
     expect(first.sockets[0]?.closed).toBe(true);
     expect(first.meshes[0]?.closed).toBe(true);
-    expect(first.sockets[0]?.sent.slice(2)).toEqual([
+    expect(first.sockets[0]?.sent.slice(1)).toEqual([
       { type: 'restream.stop', payload: {} },
       { type: 'presence.update', payload: { sharing: false } },
     ]);
     expect(second.sockets[0]?.closed).toBe(false);
+  });
+});
+
+/* ── the room's answer ────────────────────────────────────────────────── */
+
+/**
+ * The share is a CONVERSATION with the room, and for a long time this document
+ * only spoke.
+ *
+ * It opened its own socket and sent `presence.update { sharing, state }` with
+ * no `wantSnapshot`. Server-side the roster is volunteered only to a member
+ * whose presence entry was CREATED by that frame (services/api/src/modules/
+ * rooms/ws.ts) — and this person's entry always exists already: their web tab
+ * made it, or the worker's 15s beat did. So no roster came back, the presence
+ * map stayed empty, `syncPeers` ran on an empty set, the mesh offered to
+ * nobody, and viewers only ever ANSWER a share offer — they never dial one.
+ * Every extension share was therefore a permanent black stage for the whole
+ * room, while `restream.start` succeeded and the popup said "Sharing this tab
+ * with the room".
+ *
+ * The other half of the conversation is the room's answer to the share
+ * itself: a refusal, or a stage that later moves off this capture.
+ */
+describe('the room’s answer', () => {
+  const stage = (over: Record<string, unknown> = {}) => ({
+    active: true,
+    hostUserId: 'user_9',
+    startedAt: 1_000,
+    viewerCount: 0,
+    uplinkQuality: null,
+    ...over,
+  });
+
+  it('asks for the roster on every open — an unasked-for one never comes', async () => {
+    const h = harness([() => fakeStream(['video'])]);
+    await startShare(request(), h.runtime);
+    const socket = h.sockets[0];
+
+    // Nothing is asked before the socket is open; a real one queues sends and
+    // opens later, so the ask belongs to the open and not to startShare.
+    expect(socket?.sentOf('presence.update')).toEqual([]);
+
+    socket?.open();
+    expect(socket?.sentOf('presence.update')).toEqual([
+      { state: 'watching', wantSnapshot: true },
+    ]);
+
+    // A reconnect is a fresh socket with no roster behind it: the peers it has
+    // to rebuild are the ones in that reply, so it asks again.
+    socket?.open();
+    expect(socket?.sentOf('presence.update')).toEqual([
+      { state: 'watching', wantSnapshot: true },
+      { state: 'watching', wantSnapshot: true },
+    ]);
+  });
+
+  it('claims `sharing` only once the room says the stage is ours', async () => {
+    const h = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9' }), h.runtime);
+    const socket = h.sockets[0];
+    socket?.open();
+
+    // The room's publisher ceiling counts presence's `sharing` flag, and a
+    // member already flagged takes their own slot — so claiming it before
+    // restream.start was answered made this document its own exemption.
+    expect(socket?.sentOf('presence.update')).toEqual([
+      { state: 'watching', wantSnapshot: true },
+    ]);
+
+    socket?.emit('restream.state', stage());
+
+    expect(socket?.sentOf('presence.update')).toEqual([
+      { state: 'watching', wantSnapshot: true },
+      { sharing: true, state: 'watching' },
+    ]);
+  });
+
+  it('re-asserts the claim on the reconnect that follows, without re-taking the stage', async () => {
+    const h = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9' }), h.runtime);
+    const socket = h.sockets[0];
+    socket?.open();
+    socket?.emit('restream.state', stage());
+
+    socket?.open();
+
+    expect(socket?.sentOf('presence.update')).toEqual([
+      { state: 'watching', wantSnapshot: true },
+      { sharing: true, state: 'watching' },
+      { sharing: true, state: 'watching', wantSnapshot: true },
+    ]);
+    // The stage is asked for ONCE. Re-taking it on every reconnect would put
+    // this capture back on a room that had released it, which is a decision
+    // for the person, not for a socket that came back.
+    expect(socket?.sentOf('restream.start')).toHaveLength(1);
+  });
+
+  it('tears the capture down when the room refuses the share', async () => {
+    const stream = fakeStream(['video', 'audio']);
+    const h = harness([() => stream]);
+    await startShare(request(), h.runtime);
+    h.sockets[0]?.open();
+
+    // What a second sharer, a banned member, or a room at its publisher
+    // ceiling gets back: an ephemeral error on this socket and nothing else.
+    h.sockets[0]?.emit('error', { code: 'CONFLICT', message: 'someone is already sharing' });
+
+    expect(stream.tracks.every((t) => t.stopped)).toBe(true);
+    expect(h.meshes[0]?.closed).toBe(true);
+    expect(h.sockets[0]?.closed).toBe(true);
+    expect(h.notices.ended).toBe(1);
+    // The room's own words, made into a sentence — the sharer is the only one
+    // who can act on the difference between "someone else is sharing" and
+    // "this room is full".
+    expect(h.notices.reasons).toEqual(['Someone is already sharing.']);
+  });
+
+  it('never stops the share it was refused in favour of', async () => {
+    // `restream.stop` is NOT scoped to the caller's own share server-side: a
+    // host or moderator may stop anybody's. So a refused sharer who sends it
+    // on the way out takes the LIVE share off the room's stage — and the
+    // ordinary case is the worst one, because the host pressing Share while a
+    // member is already sharing is exactly who has the role to do it.
+    const stream = fakeStream(['video', 'audio']);
+    const h = harness([() => stream]);
+    await startShare(request(), h.runtime);
+    h.sockets[0]?.open();
+
+    h.sockets[0]?.emit('error', { code: 'CONFLICT', message: 'someone is already sharing' });
+
+    const sent = h.sockets[0]?.sent.map((f) => f.type) ?? [];
+    expect(sent).not.toContain('restream.stop');
+    // Our own presence still has to be corrected — that statement is about
+    // this member and is true either way, and the ceiling counts it.
+    expect(sent).toContain('presence.update');
+  });
+
+  it('still stops the room share on every teardown that is not a refusal', async () => {
+    // The suppression above is narrow ON PURPOSE. A teardown that stays quiet
+    // leaves the room's stage showing a share that no longer exists, which is
+    // the silent failure this document exists to prevent — so the default has
+    // to stay "tell the room", and only the two not-ours paths opt out.
+    const stream = fakeStream(['video', 'audio']);
+    const h = harness([() => stream]);
+    await startShare(request(), h.runtime);
+    h.sockets[0]?.open();
+
+    await stopShare();
+
+    expect(h.sockets[0]?.sent.map((f) => f.type)).toContain('restream.stop');
+  });
+
+  it('stays quiet when the stage is taken over by somebody else', async () => {
+    const stream = fakeStream(['video', 'audio']);
+    const h = harness([() => stream]);
+    await startShare(request(), h.runtime);
+    h.sockets[0]?.open();
+    h.sockets[0]?.emit('restream.state', { active: true, hostUserId: 'user_9', viewerCount: 0 });
+    const before = h.sockets[0]?.sent.length ?? 0;
+
+    // Our presence lapsed and the room let somebody else take the stage. The
+    // share now on it is theirs; stopping it is not ours to do.
+    h.sockets[0]?.emit('restream.state', { active: true, hostUserId: 'user_other', viewerCount: 0 });
+
+    const after = (h.sockets[0]?.sent ?? []).slice(before).map((f) => f.type);
+    expect(after).not.toContain('restream.stop');
+  });
+
+  it('says something a person can act on for every refusal the room can send', async () => {
+    for (const [code, message, sentence] of [
+      ['QUOTA_EXCEEDED', 'this room allows 4 people to publish at once', 'This room allows 4 people to publish at once.'],
+      ['ROOM_POLICY', 'sharing is not allowed for your role in this room', 'Sharing is not allowed for your role in this room.'],
+      ['FORBIDDEN', '', 'The room did not accept that share — nothing is being sent to it.'],
+    ] as const) {
+      const h = harness([() => fakeStream(['video'])]);
+      await startShare(request(), h.runtime);
+      h.sockets[0]?.open();
+
+      h.sockets[0]?.emit('error', { code, message });
+
+      expect(h.notices.reasons).toEqual([sentence]);
+      expect(h.notices.reasons[0]).not.toContain(code);
+    }
+  });
+
+  it('keeps sharing through an error that is not an answer about the share', async () => {
+    const stream = fakeStream(['video']);
+    const h = harness([() => stream]);
+    await startShare(request(), h.runtime);
+    h.sockets[0]?.open();
+
+    // The hub's answer to a burst of ICE on a share that is working. Ending a
+    // live share over a moment of chatter is the cure being worse.
+    h.sockets[0]?.emit('error', { code: 'RATE_LIMITED', message: 'too many messages' });
+
+    expect(stream.tracks.some((t) => t.stopped)).toBe(false);
+    expect(h.notices.ended).toBe(0);
+  });
+
+  it('ignores a stage the room has not applied its start to yet', async () => {
+    const stream = fakeStream(['video']);
+    const h = harness([() => stream]);
+    await startShare(request({ userId: 'user_9' }), h.runtime);
+    h.sockets[0]?.open();
+
+    // The snapshot reply to the opening ask, in ANY room where somebody has
+    // ever shared: an inactive stage, describing the room a moment before
+    // restream.start reached it. Tearing down here would kill every share a
+    // second after it started.
+    h.sockets[0]?.emit('restream.state', stage({ active: false, hostUserId: null }));
+
+    expect(stream.tracks.some((t) => t.stopped)).toBe(false);
+    expect(h.notices.ended).toBe(0);
+
+    // …and the share still starts when the room does answer.
+    h.sockets[0]?.emit('restream.state', stage());
+    expect(h.sockets[0]?.sentOf('presence.update')).toContainEqual({
+      sharing: true,
+      state: 'watching',
+    });
+  });
+
+  it('stops capturing when a moderator stops the share', async () => {
+    const stream = fakeStream(['video', 'audio']);
+    const h = harness([() => stream]);
+    await startShare(request({ userId: 'user_9' }), h.runtime);
+    h.sockets[0]?.open();
+    h.sockets[0]?.emit('restream.state', stage());
+
+    // restream.stop by a host or moderator: the room broadcasts an inactive
+    // stage, and this document is the only thing that can act on it — nothing
+    // else can see the capture, let alone end it.
+    h.sockets[0]?.emit('restream.state', stage({ active: false, hostUserId: null }));
+
+    expect(stream.tracks.every((t) => t.stopped)).toBe(true);
+    expect(h.meshes[0]?.closed).toBe(true);
+    expect(h.sockets[0]?.closed).toBe(true);
+    expect(h.notices.reasons).toEqual(['That share stopped — the room is no longer showing it.']);
+  });
+
+  it('stops capturing when somebody else takes the stage', async () => {
+    const stream = fakeStream(['video']);
+    const h = harness([() => stream]);
+    await startShare(request({ userId: 'user_9' }), h.runtime);
+    h.sockets[0]?.open();
+    h.sockets[0]?.emit('restream.state', stage());
+
+    h.sockets[0]?.emit('restream.state', stage({ hostUserId: 'user_web' }));
+
+    expect(stream.tracks.every((t) => t.stopped)).toBe(true);
+    expect(h.notices.ended).toBe(1);
+  });
+
+  it('claims the stage once, however often the room restates it', async () => {
+    const h = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9' }), h.runtime);
+    const socket = h.sockets[0];
+    socket?.open();
+
+    socket?.emit('restream.state', stage());
+    // The room restates the stage on every viewer who joins or leaves it, and
+    // a presence frame per viewer is a frame per viewer for nothing.
+    socket?.emit('restream.state', stage({ viewerCount: 1 }));
+    socket?.emit('restream.state', stage({ viewerCount: 2 }));
+
+    expect(socket?.sentOf('presence.update')).toEqual([
+      { state: 'watching', wantSnapshot: true },
+      { sharing: true, state: 'watching' },
+    ]);
+  });
+
+  /** The twin of the case below, on the path that has no guard of its own:
+   *  a refusal is read while the stage is still unagreed, which is exactly
+   *  the state a share that was replaced before the room ever answered is
+   *  left in. */
+  it('cannot be refused out of existence by the share it replaced', async () => {
+    const first = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9' }), first.runtime);
+    first.sockets[0]?.open();
+
+    const second = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9', source: 'desktop' }), second.runtime);
+    second.sockets[0]?.open();
+
+    first.sockets[0]?.emit('error', { code: 'CONFLICT', message: 'someone is already sharing' });
+
+    expect(second.sockets[0]?.closed).toBe(false);
+    expect(second.meshes[0]?.closed).toBe(false);
+    expect(first.notices.ended).toBe(0);
+  });
+
+  it('cannot be ended by the room that its replacement is in', async () => {
+    const first = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9' }), first.runtime);
+    first.sockets[0]?.open();
+    first.sockets[0]?.emit('restream.state', stage());
+
+    const second = harness([() => fakeStream(['video'])]);
+    await startShare(request({ userId: 'user_9', source: 'desktop' }), second.runtime);
+
+    // The old socket is closed but its handlers are still callable, and a
+    // frame already in flight arrives after the swap.
+    first.sockets[0]?.emit('restream.state', stage({ active: false, hostUserId: null }));
+
+    expect(second.sockets[0]?.closed).toBe(false);
+    expect(second.meshes[0]?.closed).toBe(false);
+    expect(first.notices.ended).toBe(0);
   });
 });
 
@@ -854,9 +1194,7 @@ async function shareOfferTo(
     const runtime: ShareRuntime = { ...h.runtime, createMesh: browserRuntime.createMesh };
     await startShare(request({ userId }), runtime);
 
-    h.sockets[0]?.handlers.get('presence.state')?.({
-      payload: { entries: [{ userId: viewerId, state: 'watching' }] },
-    });
+    h.sockets[0]?.emit('presence.state', { entries: [{ userId: viewerId, state: 'watching' }] });
     await settle();
 
     const offer = h.sockets[0]?.sent.find((s) => s.type === 'webrtc.offer');
@@ -1006,6 +1344,171 @@ describe('TURN credentials', () => {
   });
 });
 
+/* ── the soundtrack: stereo, at a bitrate a film can live in ───────────── */
+
+/**
+ * Opus with no fmtp of ours is negotiated at its speech default: one channel,
+ * around 32 kbps. That is enough to hear THAT a film is playing and not to
+ * hear the film. The parameters below are the entire difference, and they
+ * belong to the audio m-line alone — the video beside it, and the mic that
+ * lives on the person's call mesh in another context entirely, are not this
+ * document's to re-negotiate.
+ */
+const AUDIO_SDP = [
+  'v=0',
+  'o=- 1 2 IN IP4 127.0.0.1',
+  's=-',
+  't=0 0',
+  'm=audio 9 UDP/TLS/RTP/SAVPF 111 63',
+  'c=IN IP4 0.0.0.0',
+  'a=mid:0',
+  'a=rtpmap:111 opus/48000/2',
+  'a=fmtp:111 minptime=10;useinbandfec=1',
+  'a=rtpmap:63 red/48000/2',
+  'a=fmtp:63 111/111',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96',
+  'a=mid:1',
+  'a=rtpmap:96 VP8/90000',
+  'a=fmtp:96 x-google-max-bitrate=2000',
+  '',
+].join('\r\n');
+
+/** The fmtp line for one payload type, or '' when the SDP has none. */
+function fmtpOf(sdp: string, pt: string): string {
+  return sdp.split(/\r?\n/).find((line) => line.startsWith(`a=fmtp:${pt} `)) ?? '';
+}
+
+describe('preferStereoOpus', () => {
+  it('asks Opus for two channels and a film’s bitrate, keeping what was there', () => {
+    const fmtp = fmtpOf(preferStereoOpus(AUDIO_SDP), '111');
+
+    expect(fmtp).toBe(
+      `a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=${String(SHARE_AUDIO_MAX_BITRATE)}`,
+    );
+  });
+
+  it('leaves every other m-line byte for byte — including the video beside it', () => {
+    const before = AUDIO_SDP.split('m=video')[1] ?? '';
+    const after = preferStereoOpus(AUDIO_SDP).split('m=video')[1] ?? '';
+
+    expect(after).toBe(before);
+    expect(before.length).toBeGreaterThan(0);
+  });
+
+  it('leaves other codecs in the same section alone', () => {
+    // red/48000/2 is not Opus, and 111/111 is its redundancy list — writing
+    // Opus parameters onto it would be nonsense the far end has to parse.
+    expect(fmtpOf(preferStereoOpus(AUDIO_SDP), '63')).toBe('a=fmtp:63 111/111');
+  });
+
+  it('writes the line when Opus was offered without one — that IS the mono default', () => {
+    const noFmtp = AUDIO_SDP.replace('a=fmtp:111 minptime=10;useinbandfec=1\r\n', '');
+
+    expect(fmtpOf(preferStereoOpus(noFmtp), '111')).toBe(
+      `a=fmtp:111 stereo=1;sprop-stereo=1;maxaveragebitrate=${String(SHARE_AUDIO_MAX_BITRATE)}`,
+    );
+  });
+
+  it('replaces a narrower answer rather than appending a second value', () => {
+    const mono = AUDIO_SDP.replace(
+      'a=fmtp:111 minptime=10;useinbandfec=1',
+      'a=fmtp:111 stereo=0;maxaveragebitrate=24000;useinbandfec=1',
+    );
+
+    const fmtp = fmtpOf(preferStereoOpus(mono), '111');
+    expect(fmtp).toBe(
+      `a=fmtp:111 useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=${String(SHARE_AUDIO_MAX_BITRATE)}`,
+    );
+    expect(fmtp).not.toContain('stereo=0');
+    expect(fmtp).not.toContain('24000');
+  });
+
+  it('does not disturb an SDP with no audio in it at all', () => {
+    const videoOnly = ['v=0', 'm=video 9 UDP/TLS/RTP/SAVPF 96', 'a=rtpmap:96 VP8/90000', ''].join(
+      '\r\n',
+    );
+
+    expect(preferStereoOpus(videoOnly)).toBe(videoOnly);
+  });
+});
+
+describe('the share’s own negotiation carries those parameters', () => {
+  it('tunes the offer it puts on the wire', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])]);
+    await startShare(request(), h.runtime);
+
+    // Straight through the mesh's own outbound path, which is the only way a
+    // description leaves this document.
+    h.meshOptions[0]?.send({
+      type: 'webrtc.offer',
+      roomId: 'room_1' as RoomId,
+      seq: 0,
+      ts: 1_000,
+      payload: {
+        targetUserId: 'user_web' as UserId,
+        connectionId: 'mesh:room_1:user_9/share~user_web',
+        sdp: AUDIO_SDP,
+      },
+    });
+
+    const [offer] = h.sockets[0]?.sentOf('webrtc.offer') as Array<{ sdp: string }>;
+    expect(fmtpOf(offer?.sdp ?? '', '111')).toContain('stereo=1');
+    expect(fmtpOf(offer?.sdp ?? '', '111')).toContain(
+      `maxaveragebitrate=${String(SHARE_AUDIO_MAX_BITRATE)}`,
+    );
+  });
+
+  it('tunes the answer it applies — the one that configures the local encoder', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])]);
+    await startShare(request(), h.runtime);
+
+    // A viewer's answer says what IT will accept, and that is what Chrome
+    // reads to configure this document's encoder: an answer that never
+    // mentions stereo leaves the share in mono however the offer read.
+    h.sockets[0]?.emit('webrtc.answer', {
+      fromUserId: 'user_web',
+      targetUserId: 'user_9',
+      connectionId: 'mesh:room_1:user_9/share~user_web',
+      sdp: AUDIO_SDP,
+    });
+
+    const applied = h.meshes[0]?.signals[0];
+    const sdp = applied?.type === 'webrtc.answer' ? applied.payload.sdp : '';
+    expect(fmtpOf(sdp, '111')).toContain('stereo=1');
+    expect(fmtpOf(sdp, '111')).toContain(`maxaveragebitrate=${String(SHARE_AUDIO_MAX_BITRATE)}`);
+  });
+
+  it('passes an ICE candidate through untouched — there is no description in one', async () => {
+    const h = harness([() => fakeStream(['video', 'audio'])]);
+    await startShare(request(), h.runtime);
+    const candidate = {
+      candidate: 'candidate:1 1 udp 2 1.2.3.4 5 typ host',
+      sdpMid: '0',
+      sdpMLineIndex: 0,
+    };
+
+    h.meshOptions[0]?.send({
+      type: 'webrtc.ice',
+      roomId: 'room_1' as RoomId,
+      seq: 0,
+      ts: 1_000,
+      payload: {
+        targetUserId: 'user_web' as UserId,
+        connectionId: 'mesh:room_1:user_9/share~user_web',
+        candidate,
+      },
+    });
+
+    expect(h.sockets[0]?.sentOf('webrtc.ice')).toEqual([
+      {
+        targetUserId: 'user_web',
+        connectionId: 'mesh:room_1:user_9/share~user_web',
+        candidate,
+      },
+    ]);
+  });
+});
+
 /* ── share quality: capped only where relaying bills us ─────────────────
  * The old 400 kbps free-tier cap went out with billing — a DIRECT link is
  * never capped. What remains is the relayed ceiling: a share that falls back
@@ -1088,7 +1591,7 @@ describe('a capture that ends on its own', () => {
     // Chrome's own "Stop sharing" bar — and a closed shared tab — arrive here.
     stream.tracks[0]?.end();
 
-    expect(h.sockets[0]?.sent.slice(2)).toEqual([
+    expect(h.sockets[0]?.sent.slice(1)).toEqual([
       { type: 'restream.stop', payload: {} },
       { type: 'presence.update', payload: { sharing: false } },
     ]);
@@ -1131,7 +1634,7 @@ describe('stopShare', () => {
 
     await stopShare();
 
-    expect(h.sockets[0]?.sent.slice(2)).toEqual([
+    expect(h.sockets[0]?.sent.slice(1)).toEqual([
       { type: 'restream.stop', payload: {} },
       { type: 'presence.update', payload: { sharing: false } },
     ]);
@@ -1176,7 +1679,7 @@ describe('handleShareCommand', () => {
     expect(stream.tracks.every((t) => t.stopped)).toBe(true);
     expect(h.sockets[0]?.closed).toBe(true);
     expect(h.meshes[0]?.closed).toBe(true);
-    expect(h.sockets[0]?.sent.slice(2)).toEqual([
+    expect(h.sockets[0]?.sent.slice(1)).toEqual([
       { type: 'restream.stop', payload: {} },
       { type: 'presence.update', payload: { sharing: false } },
     ]);

@@ -34,6 +34,28 @@ class StallingSubscribeBus extends MemoryBus {
   }
 }
 
+/**
+ * A working bus until `alive` is set false, and a dead one after — the case
+ * the handshake ceiling cannot see, because the room was genuinely healthy
+ * when its sockets were accepted and the bus went away underneath them.
+ */
+class KillableBus extends MemoryBus {
+  alive = true;
+  /** Channel subscribes attempted, ever. A reconnect that got as far as
+   *  subscribing is a reconnect that was ACCEPTED — which is the difference
+   *  between refusing a deaf socket and merely reaping it later. */
+  subscribeCount = 0;
+
+  override async subscribe(channel: string, handler: BusHandler): Promise<() => Promise<void>> {
+    this.subscribeCount += 1;
+    return super.subscribe(channel, handler);
+  }
+
+  override async ping(): Promise<boolean> {
+    return this.alive;
+  }
+}
+
 /** ping() THROWS rather than answering false — the shape a real adapter takes
  *  when the client blows up instead of reporting a dead connection. */
 class ThrowingPingBus extends MemoryBus {
@@ -284,6 +306,106 @@ describe('ws handshake with a stalled bus', () => {
       // shutdown only returns when its 1s ceiling expires — and every teardown
       // that took that path left a pending promise chain behind it.
       expect(Date.now() - startedAt).toBeLessThan(400);
+      sock.close();
+    } finally {
+      await rig.app.close();
+    }
+  }, 20_000);
+});
+
+// ── the bus dying under sockets that are already established ─────────────────
+
+describe('a bus that dies under an established socket', () => {
+  /** Seed a room, a member, and the URL their socket connects on. */
+  async function seedSocketUrl(rig: Rig, port: number, email: string): Promise<string> {
+    const { roomId } = await seedRoom(rig.store);
+    const account = await signupUser(rig.app, email);
+    await addMember(rig.store, roomId, account.user.id, 'member');
+    return `ws://127.0.0.1:${port}/ws?roomId=${roomId}&token=${account.accessToken}`;
+  }
+
+  it('closes the socket with 1013 instead of leaving the room reading Live', async () => {
+    const bus = new KillableBus();
+    const rig = await makeRigApp(bus, { redisUrl: 'redis://configured:6379' });
+    const port = await listen(rig.app);
+    try {
+      const url = await seedSocketUrl(rig, port, 'bus-dies@example.com');
+      const sock = await openSocket(url);
+      await sleep(100);
+      expect(rig.hub.stats().connections).toBe(1);
+
+      bus.alive = false;
+      // /readyz has always known this. The ROOM is what was lying: fanout runs
+      // through the bus, so this socket now receives nothing at all — its own
+      // chat messages included — while reporting itself connected.
+      const ready = await rig.app.inject({ method: 'GET', url: '/readyz' });
+      expect(ready.statusCode).toBe(503);
+
+      await rig.hub.probeBus();
+      // -1 stands for "never closed" — the pre-fix behaviour.
+      const code = await orAfter(closeCode(sock), 5_000, -1);
+      expect(code).toBe(1013);
+      // The client sees its close before the server has run its own 'close'
+      // listener; the registry empties a tick later.
+      await sleep(100);
+      expect(rig.hub.stats().connections).toBe(0);
+    } finally {
+      await rig.app.close();
+    }
+  }, 20_000);
+
+  it('refuses the reconnect while the bus is still down', async () => {
+    const bus = new KillableBus();
+    const rig = await makeRigApp(bus, { redisUrl: 'redis://configured:6379' });
+    const port = await listen(rig.app);
+    try {
+      const url = await seedSocketUrl(rig, port, 'bus-dies-retry@example.com');
+      const sock = await openSocket(url);
+      await sleep(100);
+
+      bus.alive = false;
+      await rig.hub.probeBus();
+      expect(await orAfter(closeCode(sock), 5_000, -1)).toBe(1013);
+
+      // The client comes straight back, as clients do. The channel this
+      // instance subscribed while the bus was UP is still sitting in busSubs
+      // with a resolved `ready`, so nothing about the reconnect looks wrong —
+      // and accepting it would hand back the same deaf socket under a green
+      // "Live", which is the whole defect wearing a fresh connection.
+      const again = await openSocket(url);
+      expect(await orAfter(closeCode(again), 5_000, -1)).toBe(1013);
+      await sleep(100);
+      expect(rig.hub.stats().connections).toBe(0);
+      // REFUSED, not reaped: the socket that closed above already released the
+      // channel, so an accepted reconnect would have subscribed it a second
+      // time and then lived until the next watchdog pass — a green "Live" for
+      // as long as that window, every time the client retries.
+      expect(bus.subscribeCount).toBe(1);
+    } finally {
+      await rig.app.close();
+    }
+  }, 20_000);
+
+  it('serves sockets again once the bus answers', async () => {
+    const bus = new KillableBus();
+    const rig = await makeRigApp(bus, { redisUrl: 'redis://configured:6379' });
+    const port = await listen(rig.app);
+    try {
+      const url = await seedSocketUrl(rig, port, 'bus-returns@example.com');
+      const doomed = await openSocket(url);
+      await sleep(100);
+      bus.alive = false;
+      await rig.hub.probeBus();
+      expect(await orAfter(closeCode(doomed), 5_000, -1)).toBe(1013);
+
+      // Degraded is a STATE, not a verdict: the room has to come back on its
+      // own when Redis does, without an operator restarting the instance.
+      bus.alive = true;
+      await rig.hub.probeBus();
+      const sock = await openSocket(url);
+      await sleep(100);
+      expect(await orAfter(closeCode(sock), 300, -1)).toBe(-1);
+      expect(rig.hub.stats().connections).toBe(1);
       sock.close();
     } finally {
       await rig.app.close();

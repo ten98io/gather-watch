@@ -78,6 +78,14 @@ export async function performNativeCast(
       revealed.el.click();
       return { clicked: true, selector: revealed.selector, reason: `Opened ${siteName}'s cast picker.` };
     }
+    // Put the page back the way we found it. A `reveal` entry is a TOGGLE —
+    // that is what revealing means here — so the press that opened this menu
+    // closes it again. The case that lands here is a site reskinned since
+    // these selectors were written (they are data in providers.ts, and the
+    // site is under no obligation to keep them), and leaving the site's own
+    // menu hanging open over the player is a second failure stacked on the one
+    // we already have to admit to.
+    opener.click();
   }
 
   return {
