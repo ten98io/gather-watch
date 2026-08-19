@@ -23,6 +23,7 @@ import { requireAccount } from '../../plugins/auth';
 import { snapshotMetrics } from '../../plugins/metrics';
 import { parseWith } from '../../plugins/error-mapper';
 import { executeTakedown, listOpenReports } from '../../cli/takedown';
+import { reportTargetAssetIds, revokeAssets } from '../chat/attachments';
 import { serializeRoom } from '../rooms/serialize';
 import type { Deps } from '../types';
 
@@ -104,7 +105,19 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       await requireAdmin(deps, request);
       const body = parseWith(AdminResolveReportBody, request.body);
       try {
+        // Attachments are read BEFORE the takedown (it tombstones the message
+        // that names them) and revoked only for a real resolve — a dismissal
+        // leaves the target alone, files included.
+        const report = await store.reports.findById(body.reportId);
+        const assetIds =
+          report === null || body.dismiss === true
+            ? []
+            : await reportTargetAssetIds(deps, report.target);
         const result = await executeTakedown(store, body.reportId, { dismiss: body.dismiss });
+        // A takedown that leaves the capability URL serving is not a takedown.
+        // executeTakedown works over the bare StorePort (it is a CLI first),
+        // so revocation — which also has to reach object storage — lands here.
+        await revokeAssets(deps, assetIds);
         return { ok: true, action: result.action };
       } catch (err) {
         if (err instanceof Error && err.message.includes('not found')) {

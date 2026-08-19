@@ -10,12 +10,13 @@ import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { FastifyInstance } from 'fastify';
-import type { QueueItem, QueueItemId, UserId } from '@gather/contracts';
+import type { QueueItem, QueueItemId, RoomId, UserId } from '@gather/contracts';
 import type { StorePort } from '../src/adapters/ports';
 import { memberDocId } from '../src/adapters/ports';
 import { newId } from '../src/lib/tokens';
 import type { Deps } from '../src/modules/types';
 import { registerMetadataResolver } from '../src/modules/metadata/resolver';
+import { getRoomsRuntime } from '../src/modules/rooms/runtime';
 import { addMember, makeApp, seedRoom, signupUser } from './helpers';
 import type { SignedUpUser } from './helpers';
 
@@ -178,17 +179,36 @@ describe('queue module', () => {
     return `ws://127.0.0.1:${port}/ws?roomId=${roomId}&token=${token}`;
   }
 
+  /** The room's presence set — the vote-skip denominator. */
+  function presentIds(roomId: string): string[] {
+    return getRoomsRuntime(deps).presence.presentUserIds(roomId as RoomId);
+  }
+
   interface Joined {
     account: SignedUpUser;
     sock: WebSocket;
   }
 
-  /** Sign up a full account, add it to the room with the given role, and open
-   *  its room socket. */
+  /**
+   * Sign up a full account, add it to the room with the given role, open its
+   * room socket, and BEAT PRESENCE.
+   *
+   * The beat is not decoration. A socket is a connection to one process;
+   * membership of the room's skip quorum is a presence entry, which is what
+   * survives being spread over two instances mid-deploy. Every real client
+   * beats on connect, so a fixture that only opened a socket was modelling a
+   * client that does not exist — and pinning the wrong denominator.
+   *
+   * The snapshot reply is drained here (queue.state is the last of it in a
+   * room with no share) so no test mistakes it for a broadcast.
+   */
   async function join(email: string, roomId: string, role: 'host' | 'moderator' | 'member'): Promise<Joined> {
     const account = await signupUser(app, email);
     await addMember(store, roomId, account.user.id, role);
     const sock = await connect(wsUrl(roomId, account.accessToken));
+    const snapshot = nextOfType(sock, 'queue.state');
+    sock.send(clientFrame(roomId, 'presence.update', { state: 'watching', wantSnapshot: true }));
+    await snapshot;
     return { account, sock };
   }
 
@@ -439,15 +459,18 @@ describe('queue module', () => {
     a.sock.send(clientFrame(roomId, 'queue.voteSkip', { itemId: item.id }));
     expect((await pV1).payload.items[0].votesToSkip).toEqual([a.account.user.id]);
 
-    // A leaves; wait until the hub forgets their socket.
+    // A leaves. LEAVING IS A PRESENCE DEPARTURE, not a closed socket: a
+    // socket that drops is a member reconnecting until the grace says
+    // otherwise, and the quorum must not shrink under everyone mid-refresh.
+    // `presence.update { state: 'offline' }` is the explicit leave every
+    // client sends on its way out.
+    const pGone = nextOfType(host.sock, 'presence.diff');
+    a.sock.send(clientFrame(roomId, 'presence.update', { state: 'offline' }));
+    expect((await pGone).payload.removed).toContain(a.account.user.id);
     a.sock.close();
-    for (let i = 0; i < 100; i += 1) {
-      if (!deps.hub.localUserIds(roomId).includes(a.account.user.id)) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    expect(deps.hub.localUserIds(roomId)).not.toContain(a.account.user.id);
+    expect(presentIds(roomId)).not.toContain(a.account.user.id);
 
-    // B votes: A's stale vote is pruned — 3 active → required 2, only B counts.
+    // B votes: A's stale vote is pruned — 3 present → required 2, only B counts.
     const pV2 = nextOfType(host.sock, 'queue.state');
     b.sock.send(clientFrame(roomId, 'queue.voteSkip', { itemId: item.id }));
     const v2 = await pV2;

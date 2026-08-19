@@ -43,6 +43,7 @@ import {
 } from '../metadata/resolver';
 import { policyAllows } from '../sync/policy';
 import { recordPlayback } from '../rooms/history';
+import { getRoomsRuntime } from '../rooms/runtime';
 
 /**
  * The largest a `mediaRef` may serialize to. Bounding the item COUNT alone
@@ -236,8 +237,16 @@ export class QueueService {
     }
 
     const fraction = room.policies.skipVoteThreshold;
-    const active = new Set<string>(this.deps.hub.localUserIds(roomId));
-    active.add(userId); // the voter is connected by construction — defensive
+    // ROOM-WIDE, never this process's sockets. The quorum is a fraction of the
+    // room, so the denominator has to be the room: `hub.localUserIds` counts
+    // only the sockets on THIS instance, and a rolling deploy overlaps two
+    // instances on every push — which silently HALVED the threshold for the
+    // length of every deploy and let one member skip everybody's track.
+    // Presence is mirrored across instances over the bus and answers the
+    // question the doc comment above always claimed to be asking.
+    const active = new Set<string>(getRoomsRuntime(this.deps).presence.presentUserIds(roomId));
+    // The voter counts even before their first heartbeat lands.
+    active.add(userId);
 
     const hadVoted = item.votesToSkip.includes(userId);
     const votes = item.votesToSkip.filter((v) => active.has(v));

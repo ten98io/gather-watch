@@ -3,7 +3,7 @@
  *
  *  • voteSkip — threshold math (AT the fraction, not beyond), threshold 0 =
  *    record-only, threshold 1 = unanimous, and the leaver-tips-threshold
- *    regression: when disconnects shrink the active set enough that
+ *    regression: when departures shrink the present set enough that
  *    already-cast votes now meet the fraction, the next vote (even a repeat
  *    vote) MUST fire the skip instead of short-circuiting as a no-op forever.
  *  • add — the client's metadata is a sanitized HINT stored immediately, and
@@ -14,6 +14,7 @@ import type { MediaRef, QueueItemId, ResolvedMedia, RoomId, UserId } from '@gath
 import { memberDocId } from '../../adapters/ports';
 import type { Deps } from '../types';
 import { registerMetadataResolver } from '../metadata/resolver';
+import { getRoomsRuntime } from '../rooms/runtime';
 import { QueueService } from './service';
 
 interface FakeRoom {
@@ -53,16 +54,29 @@ function makeRoom(items: FakeItem[], policies: Record<string, unknown> = {}): Fa
   };
 }
 
-/** Deps stub: room store + presence hub + captured emits. */
-function makeDeps(room: FakeRoom, connected: string[]) {
+/**
+ * Deps stub: room store + captured emits, with the room's PRESENCE seeded.
+ *
+ * Presence and not sockets, deliberately. voteSkip's denominator is the room,
+ * not this process's connections — a stub that only answered
+ * `hub.localUserIds` would go on passing while the real threshold halved
+ * across a two-instance deploy. The tracker here is the real one, driven
+ * through heartbeat() exactly as a client's presence.update drives it.
+ */
+async function makeDeps(room: FakeRoom, present: string[]) {
   const emitted: Array<{ type: string; payload: unknown }> = [];
   const deps = {
     log: { warn() {}, info() {}, debug() {}, error() {} },
-    hub: { localUserIds: () => connected },
+    hub: { localUserIds: () => present },
+    bus: {
+      publish: async () => undefined,
+      subscribe: async () => async () => undefined,
+    },
     events: {
       emit: async (_roomId: string, type: string, payload: unknown) => {
         emitted.push({ type, payload });
       },
+      emitEphemeral: () => undefined,
     },
     store: {
       rooms: {
@@ -88,6 +102,10 @@ function makeDeps(room: FakeRoom, connected: string[]) {
       },
     },
   } as unknown as Deps;
+  const { presence } = getRoomsRuntime(deps);
+  for (const userId of present) {
+    await presence.heartbeat(room.id as RoomId, userId as UserId, {}, 'watching');
+  }
   return { deps, emitted };
 }
 
@@ -100,7 +118,7 @@ const has = (room: FakeRoom, id: string): boolean =>
 describe('QueueService.voteSkip', () => {
   it('skips AT the threshold, not beyond (0.5 of 4 -> 2 votes)', async () => {
     const room = makeRoom([makeItem('a'), makeItem('b')]);
-    const { deps } = makeDeps(room, ['A', 'B', 'C', 'D']);
+    const { deps } = await makeDeps(room, ['A', 'B', 'C', 'D']);
     const service = new QueueService(deps);
 
     await service.voteSkip(rid, uid('A'), iid('a'));
@@ -112,7 +130,7 @@ describe('QueueService.voteSkip', () => {
 
   it('threshold 0 disables removal but still records the vote', async () => {
     const room = makeRoom([makeItem('a')], { skipVoteThreshold: 0 });
-    const { deps } = makeDeps(room, ['A', 'B']);
+    const { deps } = await makeDeps(room, ['A', 'B']);
     const service = new QueueService(deps);
 
     await service.voteSkip(rid, uid('A'), iid('a'));
@@ -123,7 +141,7 @@ describe('QueueService.voteSkip', () => {
 
   it('threshold 1 requires every active member', async () => {
     const room = makeRoom([makeItem('a')], { skipVoteThreshold: 1 });
-    const { deps } = makeDeps(room, ['A', 'B', 'C']);
+    const { deps } = await makeDeps(room, ['A', 'B', 'C']);
     const service = new QueueService(deps);
 
     await service.voteSkip(rid, uid('A'), iid('a'));
@@ -136,7 +154,7 @@ describe('QueueService.voteSkip', () => {
 
   it('repeat vote with nothing changed and no skip due is a silent no-op', async () => {
     const room = makeRoom([makeItem('a')]);
-    const { deps, emitted } = makeDeps(room, ['A', 'B', 'C', 'D']);
+    const { deps, emitted } = await makeDeps(room, ['A', 'B', 'C', 'D']);
     const service = new QueueService(deps);
 
     await service.voteSkip(rid, uid('A'), iid('a'));
@@ -153,7 +171,7 @@ describe('QueueService.voteSkip', () => {
     // C leaves: 0.67 of the remaining 2 needs ceil(1.34) = 2 — already met.
     // A repeat vote by A must now fire the skip rather than no-op forever.
     const room = makeRoom([makeItem('a', ['A', 'B'])], { skipVoteThreshold: 0.67 });
-    const { deps } = makeDeps(room, ['A', 'B']);
+    const { deps } = await makeDeps(room, ['A', 'B']);
     const service = new QueueService(deps);
 
     await service.voteSkip(rid, uid('A'), iid('a'));
@@ -183,7 +201,7 @@ function resolved(patch: Partial<ResolvedMedia> = {}): ResolvedMedia {
 describe('QueueService.add metadata', () => {
   it('enqueues the hint immediately, then patches in resolved metadata and re-broadcasts', async () => {
     const room = makeRoom([]);
-    const { deps, emitted } = makeDeps(room, ['A']);
+    const { deps, emitted } = await makeDeps(room, ['A']);
     registerMetadataResolver(deps, { resolve: async () => resolved() });
     const service = new QueueService(deps);
 
@@ -214,7 +232,7 @@ describe('QueueService.add metadata', () => {
 
   it('sanitizes the client hint before it is ever stored', async () => {
     const room = makeRoom([]);
-    const { deps } = makeDeps(room, ['A']);
+    const { deps } = await makeDeps(room, ['A']);
     registerMetadataResolver(deps, { resolve: async () => null });
     const service = new QueueService(deps);
 
@@ -232,7 +250,7 @@ describe('QueueService.add metadata', () => {
 
   it('leaves the item untouched when nothing could be fetched', async () => {
     const room = makeRoom([]);
-    const { deps, emitted } = makeDeps(room, ['A']);
+    const { deps, emitted } = await makeDeps(room, ['A']);
     registerMetadataResolver(deps, {
       resolve: async () => resolved({ source: 'link', title: 'derived from the link' }),
     });
@@ -253,7 +271,7 @@ describe('QueueService.add metadata', () => {
 
   it('never resurrects an item removed while the lookup was in flight', async () => {
     const room = makeRoom([]);
-    const { deps, emitted } = makeDeps(room, ['A']);
+    const { deps, emitted } = await makeDeps(room, ['A']);
     let release = (): void => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -286,7 +304,7 @@ describe('QueueService.add metadata', () => {
 
   it('swallows a resolver failure — a provider outage never breaks an add', async () => {
     const room = makeRoom([]);
-    const { deps, emitted } = makeDeps(room, ['A']);
+    const { deps, emitted } = await makeDeps(room, ['A']);
     registerMetadataResolver(deps, {
       resolve: async () => {
         throw new Error('provider exploded');

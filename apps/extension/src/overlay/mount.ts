@@ -1,10 +1,20 @@
 /**
  * The injected room overlay: Gather's room UI, put onto the site the user is
- * actually watching (docs/EXTENSION_FIRST.md, Part 2, Model C).
+ * actually watching.
  *
  * The content cannot come to us — Netflix and most large sites refuse to be
  * framed, and DRM playback is bound to its own origin — so the room goes to the
  * content instead.
+ *
+ * ── What of Model C this is, and what it is not ────────────────────────────
+ * docs/EXTENSION_FIRST.md Part 2 defines Model C as injecting Gather's
+ * **chat/call/queue** UI into the content site's page. Three of those four
+ * words are delivered here: the room's conversation, who is in it, what is
+ * playing and what is next, and — for a member the room's playbackControl
+ * policy admits — a skip. **The call is not.** No mic, no camera, no tile:
+ * voice would need `getUserMedia` in the offscreen document and none of it is
+ * built, which is what apps/extension/README.md says under "Honest limits"
+ * and what this header used to paper over by citing the model whole.
  *
  * Owns: the host element, the closed shadow root, everything drawn inside it,
  * dragging, collapsing, per-site memory, and the keyboard boundary between us
@@ -73,6 +83,7 @@ export interface OverlayHandle {
 
 const HANDLE_NAME = 'Gather';
 const SEND_FAILED = 'That message did not send. Try again.';
+const SKIP_FAILED = 'The room did not move on. Try again.';
 const CHAT_PLACEHOLDER = 'Message the room';
 const OFFLINE_PLACEHOLDER = 'You can chat once you are back in the room';
 /** Distance from the end of the chat that still counts as "reading the latest". */
@@ -116,6 +127,9 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   let collapsed = false;
   let unread = 0;
   let sending = false;
+  /** A skip is in flight. One press, one `sync.advance` — the room's own
+   *  compare-and-set would drop the second, but the button should not send it. */
+  let skipping = false;
   /** The overlay has been told the room's real state at least once. */
   let stateSeen = false;
   /** The host is in the page's top layer, above whatever went fullscreen. */
@@ -199,6 +213,29 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   head.appendChild(headText);
   head.appendChild(hideBtn);
 
+  // What is playing, directly under the status line that says how this viewer
+  // is doing against it. Hidden whole when the room is on nothing the queue
+  // names — an empty "Playing" heading is worse than no heading.
+  const nowBlock = make('div', 'now');
+  nowBlock.hidden = true;
+  const nowText = make('div', 'now-text');
+  const nowTitle = make('h2', 'section-title');
+  nowTitle.textContent = 'Playing';
+  const nowEl = make('p', 'now-title');
+  const nextEl = make('p', 'now-next');
+  nextEl.hidden = true;
+  nowText.appendChild(nowTitle);
+  nowText.appendChild(nowEl);
+  nowText.appendChild(nextEl);
+  const skipBtn = doc.createElement('button');
+  skipBtn.className = 'skip';
+  skipBtn.setAttribute('type', 'button');
+  skipBtn.setAttribute('aria-label', 'Skip to the next item in the queue');
+  skipBtn.textContent = 'Skip';
+  skipBtn.hidden = true;
+  nowBlock.appendChild(nowText);
+  nowBlock.appendChild(skipBtn);
+
   const people = make('div', 'people');
   const peopleTitle = make('h2', 'section-title');
   peopleTitle.textContent = 'Who is here';
@@ -247,6 +284,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   foot.appendChild(leaveBtn);
 
   panel.appendChild(head);
+  panel.appendChild(nowBlock);
   panel.appendChild(people);
   panel.appendChild(messagesEl);
   panel.appendChild(aheadEl);
@@ -338,6 +376,16 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     input.setAttribute('placeholder', current.canSend ? CHAT_PLACEHOLDER : OFFLINE_PLACEHOLDER);
   };
 
+  const syncNow = (next: RoomView): void => {
+    // No title means the room is not on a row of its queue — there is nothing
+    // to name, nothing to say is next, and nothing to skip.
+    nowBlock.hidden = next.nowPlaying.length === 0;
+    setText(nowEl, next.nowPlaying);
+    setLine(nextEl, next.upNextLine);
+    skipBtn.hidden = !next.canSkip;
+    skipBtn.disabled = skipping;
+  };
+
   const renderPeople = (next: RoomView): void => {
     const signature = next.people
       .map((p) => `${p.id}|${p.name}|${p.you ? 1 : 0}${p.micOn ? 1 : 0}${p.away ? 1 : 0}`)
@@ -390,6 +438,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     current = next;
     setText(roomEl, next.roomTitle);
     setText(statusEl, next.statusLine);
+    syncNow(next);
     renderPeople(next);
     renderMessages(next, backlog);
     setLine(aheadEl, next.aheadLine);
@@ -443,6 +492,30 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
       .finally(() => {
         sending = false;
         if (!destroyed) syncComposer();
+      });
+  };
+
+  /* ── skipping ── */
+
+  /**
+   * Move the room off what it is playing. The worker re-checks the room's
+   * policy behind this — the control being drawn is a courtesy, not the gate
+   * — so a refusal is a real outcome and is said in words rather than
+   * swallowed.
+   */
+  const skip = (): void => {
+    if (destroyed || skipping) return;
+    skipping = true;
+    setNotice('');
+    syncNow(current);
+    void opts
+      .send({ kind: 'overlay:skip' })
+      .catch(() => {
+        if (!destroyed) setNotice(SKIP_FAILED);
+      })
+      .finally(() => {
+        skipping = false;
+        if (!destroyed) syncNow(current);
       });
   };
 
@@ -517,6 +590,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   });
 
   boundary.on(sendBtn, 'click', () => submit());
+  boundary.on(skipBtn, 'click', () => skip());
   boundary.on(hideBtn, 'click', () => {
     userToggled = true;
     setCollapsed(true, { moveFocus: true, save: true });

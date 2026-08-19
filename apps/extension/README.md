@@ -10,9 +10,14 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
 - **Mode A (follow)**: connect the active tab to a room. The room's
   server-authoritative sync state is translated to the tab's main media
   element: play/pause, seek, rate — through the elastic controller in
-  `src/driver.ts`, which implements the `PlaybackDriver` interface and applies
-  the same learned-anchor bands as `@gather/sync-core` rather than
-  frame-locking. Works on any page with a `<video>/<audio>`; known providers
+  `src/driver.ts` (`ElasticDriver`), which applies the same learned-anchor
+  bands as `@gather/sync-core` rather than frame-locking. That controller is
+  **not** an implementation of the `PlaybackDriver` interface declared beside
+  it: `ElasticDriver` exposes `tick`/`reset`/`state`/`setProfile`, nothing in
+  this repo says `implements PlaybackDriver`, and four of the interface's
+  members (`load`, `setMuted`, `isMuted`, `setVolume`) exist nowhere in the
+  extension at all. Read it as a target, as `docs/EXTENSION_FIRST.md` Part 2
+  already does. Works on any page with a `<video>/<audio>`; known providers
   are badged, and the **generic** driver handles everything else, which is what
   makes a `{ kind: 'page' }` queue item playable at all.
   The content script runs in **every frame** (players usually live in an
@@ -36,11 +41,14 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
   merely fail, it would skip an item nobody skipped. It is a hand-kept mirror
   of `apps/web/lib/player/advance.ts` and `apps/mobile/src/sync/advance.ts`;
   keep the three in step.
-- **In-page overlay** (`src/overlay/`): the room's chat and people list
-  injected into the content site's page, in a shadow root with the design
-  tokens emitted from `@gather/design`. This is the "Model C" of
-  `docs/EXTENSION_FIRST.md` — the only shape in which "watch Netflix together
-  with chat" is a single-window experience.
+- **In-page overlay** (`src/overlay/`): the room's chat, its people list, what
+  is playing and what is up next — plus a **Skip** for a member the room's
+  `playbackControl` policy admits, which sends the same `sync.advance` the
+  worker sends when an item runs out. Injected into the content site's page in
+  a closed shadow root, with the design tokens emitted from `@gather/design`.
+  `docs/EXTENSION_FIRST.md` calls this "Model C" and defines it as injecting
+  Gather's **chat/call/queue** UI: three of those four are here, **the call is
+  not** (see *Honest limits* — there is no voice in the extension yet).
 - **Cast**: on sites with their own cast control (YouTube, YouTube Music,
   Spotify Connect) the extension presses **that** button for you, so casting
   happens inside the site's own licensed session. Where a site has no such
@@ -168,12 +176,23 @@ extension never reads one.
 - Frames in **closed** shadow roots are unreachable by design (no extension
   can pierce them), and a site that renders its player into a cross-origin
   frame we are not allowed to script stays undrivable.
+- **What a tab is comes from the tab's URL, not from what a page told us.**
+  `providerForUrl` is a pure classifier and `chrome.tabs.get` answers at any
+  time, so the worker re-derives a tab's provider whenever it does not have
+  one. The alternative shipped: the map was written only by a content script's
+  report, MV3 recycled the worker every ~30s of quiet, and every already-open
+  tab then read as *unclassified* — which is not "generic", because the DRM
+  capture refusal is `if (provider is known && protected) refuse` and absent
+  skipped it. "Share this tab" on Netflix started a capture and the room got a
+  black rectangle with no explanation.
 - Pressing a site's cast button happens without user activation in the page,
   so a site that demands a real gesture for its cast prompt may ignore it.
   That surfaces as "nothing happened" — never as a capture fallback.
-- **No voice yet.** The extension carries the room's chat and playback, not
-  the call. Mic in the overlay (offscreen `getUserMedia`, reusing the
-  screen-share plumbing) is backlog.
+- **No voice yet.** The extension carries the room's chat, its queue and its
+  playback — not the call. Mic in the overlay (offscreen `getUserMedia`,
+  reusing the screen-share plumbing) is backlog. Nothing in the overlay, the
+  README or `src/overlay/mount.ts`'s header may describe Model C as delivered
+  whole until it is.
 
 ## Security boundary
 

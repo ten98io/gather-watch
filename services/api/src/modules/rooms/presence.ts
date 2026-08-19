@@ -92,6 +92,21 @@ function isReachable(entry: PresenceEntry): boolean {
  */
 export type DepartureListener = (roomId: RoomId, userId: UserId) => void | Promise<void>;
 
+/**
+ * Notified AFTER a member has been ADDED to a room by this instance's own
+ * socket — the mirror of DepartureListener, and it exists for the same reason:
+ * some room-wide state is a function of who is here, so it has to be recomputed
+ * at BOTH edges or it only ever ratchets one way (today, the share's viewer
+ * count, which would count down on leaves and never back up).
+ *
+ * Mirrors do not fire it. The instance that owns the socket is the one that
+ * created the entry, exactly as it is the one that emits the presence.diff.
+ *
+ * Same failure contract as DepartureListener: rejections are logged and
+ * swallowed, because bookkeeping in one module must never fail a heartbeat.
+ */
+export type ArrivalListener = (roomId: RoomId, userId: UserId) => void | Promise<void>;
+
 /** One tracked entry: the client-visible record plus bookkeeping. */
 interface Tracked {
   entry: PresenceEntry;
@@ -109,6 +124,7 @@ export class PresenceTracker {
   private readonly rooms = new Map<RoomId, Map<UserId, Tracked>>();
   private readonly ctlSubs = new Map<RoomId, () => Promise<void>>();
   private readonly departureListeners = new Set<DepartureListener>();
+  private readonly arrivalListeners = new Set<ArrivalListener>();
   private sweepTimer: NodeJS.Timeout | null = null;
 
   constructor(deps: Deps, timings?: Partial<PresenceTimings>) {
@@ -131,6 +147,14 @@ export class PresenceTracker {
     this.departureListeners.add(listener);
     return () => {
       this.departureListeners.delete(listener);
+    };
+  }
+
+  /** Register an arrival listener; returns an idempotent unregister. */
+  onArrival(listener: ArrivalListener): () => void {
+    this.arrivalListeners.add(listener);
+    return () => {
+      this.arrivalListeners.delete(listener);
     };
   }
 
@@ -212,6 +236,9 @@ export class PresenceTracker {
     if (visibleChanged) {
       this.deps.events.emitEphemeral(roomId, 'presence.diff', { upserts: [entry], removed: [] });
     }
+    if (created) {
+      await this.announceArrival(roomId, userId);
+    }
     return { entry, created };
   }
 
@@ -222,6 +249,36 @@ export class PresenceTracker {
       return [];
     }
     return [...roomMap.values()].map((tracked) => tracked.entry);
+  }
+
+  /**
+   * ROOM-WIDE user ids: this instance's own members AND the ones mirrored from
+   * every other instance. The denominator for anything that reasons about "who
+   * is in this room" — a skip quorum, a wait-for-all roster, a viewer count.
+   *
+   * It exists because `hub.localUserIds` answers a DIFFERENT question — whose
+   * socket is open on THIS process — and the API runs several processes, with
+   * a rolling deploy overlapping two of them on every push. Counting sockets
+   * therefore counts a fraction of the room for the length of every deploy,
+   * and each fraction disagrees with the others: quorums halve, and a roster
+   * broadcast from one instance overwrites the room's view with a partial one.
+   *
+   * A member inside the disconnect grace still counts. They have not left —
+   * the sweep past the grace is what removes them — so a refresh must not
+   * momentarily shrink every quorum in the app.
+   */
+  presentUserIds(roomId: RoomId): UserId[] {
+    const roomMap = this.rooms.get(roomId);
+    if (roomMap === undefined) {
+      return [];
+    }
+    const present: UserId[] = [];
+    for (const tracked of roomMap.values()) {
+      if (tracked.entry.state !== 'offline') {
+        present.push(tracked.entry.userId);
+      }
+    }
+    return present;
   }
 
   /** Drop a user now (explicit offline / leave): diff + 'bye' broadcast. */
@@ -322,6 +379,17 @@ export class PresenceTracker {
         await listener(roomId, userId);
       } catch (err) {
         this.deps.log.warn({ err, roomId, userId }, 'presence departure listener failed');
+      }
+    }
+  }
+
+  /** Run the arrival listeners. Never throws — see ArrivalListener. */
+  private async announceArrival(roomId: RoomId, userId: UserId): Promise<void> {
+    for (const listener of this.arrivalListeners) {
+      try {
+        await listener(roomId, userId);
+      } catch (err) {
+        this.deps.log.warn({ err, roomId, userId }, 'presence arrival listener failed');
       }
     }
   }

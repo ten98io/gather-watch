@@ -203,14 +203,13 @@ beforeEach(() => {
  * rather than left implied, because it is the promise a queued page makes.
  */
 describe('an unregistered site is found and driven like any other', () => {
-  it('reports itself as the generic provider, named by its host', () => {
+  it('tells the worker its page changed, and classifies nothing itself', () => {
     const reported = toWorker.filter((m) => m['kind'] === 'provider');
     expect(reported).not.toHaveLength(0);
-    const provider = reported[0]?.['provider'] as Record<string, unknown>;
-    expect(provider['id']).toBe('generic');
-    expect(provider['name']).toBe('example.com');
-    // Not protected: nothing about an unknown page refuses to be driven.
-    expect(provider['drm']).toBe(false);
+    // No payload, deliberately: what this tab is showing is the tab's own URL,
+    // which the worker reads from the browser and which — unlike anything the
+    // page once told it — is still there after MV3 recycles the worker.
+    expect(Object.keys(reported[0] ?? {})).toEqual(['kind']);
   });
 
   /** The scan runs at startup and its result is claimed once — a claim is

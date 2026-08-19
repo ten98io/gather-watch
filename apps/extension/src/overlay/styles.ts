@@ -233,6 +233,68 @@ input:focus-visible {
   color: var(--text-hi);
 }
 
+/*
+ * What is playing, under the status line that describes how this viewer is
+ * doing against it. Same solid rung as the rest of the panel (--surface-1, the
+ * ladder in DESIGN.md §4) — the block is a row of the panel, not a thing
+ * floating on it, so it gets no surface of its own and no shadow.
+ */
+.now {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.now[hidden] {
+  display: none;
+}
+.now-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.now-title {
+  margin: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-next {
+  margin: 2px 0 0;
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-next[hidden] {
+  display: none;
+}
+/* The same chip geometry as .hide: 28px beside a mouse, 44px under a finger. */
+.skip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h-sm);
+  padding: 0 var(--control-px-sm);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-mid);
+  font-size: var(--text-label-size);
+}
+.skip:hover {
+  background: var(--surface-3);
+  color: var(--text-hi);
+}
+.skip[hidden] {
+  display: none;
+}
+.skip[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .people {
   padding: 10px 12px;
   border-bottom: 1px solid var(--hairline);
@@ -390,7 +452,8 @@ input:focus-visible {
   .handle,
   .hide,
   .link,
-  .send {
+  .send,
+  .skip {
     transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
   }
 }

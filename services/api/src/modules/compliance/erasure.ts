@@ -22,6 +22,7 @@
  */
 import type { UserId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
+import { revokeAssets, userAssetIds } from '../chat/attachments';
 import { RoomsService } from '../rooms/service';
 import type { Deps } from '../types';
 
@@ -91,14 +92,21 @@ export async function eraseAccount(deps: Deps, userId: UserId): Promise<{ purgeA
     }
   }
 
-  // 4. Rows that are the account's alone: push subscriptions, sessions, and
-  //    playlists. Media assets are NOT touched — their object-storage
-  //    lifecycle belongs to the media module (they end up orphaned-but-inert;
-  //    follow-up noted in the module report).
+  // 4. Rows that are the account's alone: media assets, push subscriptions,
+  //    sessions, and playlists.
+  //
+  //    Assets are REVOKED, not orphaned. They used to be left alone on the
+  //    theory that object-storage lifecycle belonged to the media service —
+  //    but that service is deleted, and "orphaned-but-inert" was never true:
+  //    `/assets/:id/content` is an unauthenticated capability URL, so every
+  //    link the account ever pasted kept serving their file after the erasure
+  //    said their data was gone. Revocation deletes the row and the object
+  //    (see chat/attachments.ts).
   //
   //    Gather is free for everyone and never had a payment processor, so
   //    there is no plan or subscription state to erase: that collection no
   //    longer exists.
+  await revokeAssets(deps, await userAssetIds(deps, userId));
   await store.pushSubs.deleteMany({ userId });
   await store.sessions.deleteMany({ userId });
   await store.playlists.deleteMany({ ownerId: userId });

@@ -46,7 +46,12 @@ const ext = vi.hoisted(() => ({
   state: { phase: 'unavailable' } as Record<string, unknown>,
   driving: false,
 }));
-vi.mock('@/lib/player/extension-driver', () => ({
+// Spread over the real module, not a replacement: the bar also reads the
+// driven tab's telemetry store (`useExtensionPlayback` and its projection
+// helpers), and a total replacement fails every case here on a missing export
+// that has nothing to do with casting.
+vi.mock('@/lib/player/extension-driver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/player/extension-driver')>()),
   useExtensionDriver: () => ({
     state: ext.state,
     checking: false,

@@ -415,11 +415,13 @@ describe('compliance', () => {
       }
       expect((await store.messages.findById(msgB.id))?.body).toBe('keep me');
 
-      // Account-owned rows gone; media assets deliberately untouched (their
-      // storage lifecycle belongs to the media module); usage awaits purgeAt.
+      // Account-owned rows gone; usage awaits purgeAt. Assets go with them:
+      // `/assets/:id/content` is an unauthenticated capability URL, so an
+      // asset left behind is the erased account's file still being served to
+      // anyone holding a link it ever appeared in.
       expect(await store.pushSubs.findMany({ userId: account.user.id })).toEqual([]);
       expect(await store.playlists.findMany({ ownerId: account.user.id })).toEqual([]);
-      expect(await store.assets.count({ ownerId: account.user.id })).toBe(1);
+      expect(await store.assets.count({ ownerId: account.user.id })).toBe(0);
       expect(await store.usage.count({ userId: account.user.id })).toBe(1);
     });
 

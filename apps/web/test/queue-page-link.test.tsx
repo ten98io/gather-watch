@@ -176,11 +176,22 @@ describe('QueuePane accepts the long tail', () => {
     expect(host.textContent).toContain('just see the link');
   });
 
-  it('still stops at DRM services, which no extension-less page path can play', () => {
+  // Was 'still stops at DRM services'. It stopped at the eight services the
+  // extension exists for, having just told the user to install it — the
+  // behaviour and its assertion are both gone. queue-drm-queueable.test.tsx
+  // owns the replacement in full.
+  it('queues a DRM service as a page row rather than refusing it', () => {
     paste('https://www.netflix.com/watch/80123456');
 
-    expect(added).toEqual([]);
-    expect(host.textContent).toContain('protects its video');
+    expect(added).toEqual([
+      {
+        mediaRef: { kind: 'page', url: 'https://www.netflix.com/watch/80123456' },
+        title: 'Netflix',
+        durationMs: null,
+        artworkUrl: null,
+      },
+    ]);
+    expect(host.textContent).not.toContain('protects its video');
   });
 
   it('keeps a known provider on its better path', () => {

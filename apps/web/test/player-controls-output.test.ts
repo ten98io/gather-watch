@@ -34,7 +34,10 @@ vi.mock('@/lib/cast', () => ({
 vi.mock('@/components/ui/toast', () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() }),
 }));
-vi.mock('@/lib/player/extension-driver', () => ({
+// Spread, not replaced: the bar reads the driven tab's telemetry store from
+// this module too, and a bare replacement fails on the missing export.
+vi.mock('@/lib/player/extension-driver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/player/extension-driver')>()),
   useExtensionDriver: () => ({
     state: { phase: 'unavailable' },
     checking: false,

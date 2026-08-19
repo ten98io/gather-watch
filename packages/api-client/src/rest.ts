@@ -40,6 +40,8 @@ import {
   PushUnsubscribeResponse,
   RefreshResponse,
   ReplayEventsResponse,
+  ReportBody,
+  ReportResponse,
   RequestMagicLinkBody,
   RequestMagicLinkResponse,
   ResolveMediaBody,
@@ -49,6 +51,8 @@ import {
   RoomHistoryResponse,
   SearchGifsResponse,
   SearchMessagesResponse,
+  SetMemberRoleBody,
+  SetMemberRoleResponse,
   SetRoomMuteBody,
   SetRoomMuteResponse,
   SetRoomPasswordBody,
@@ -130,6 +134,9 @@ export class RestClient {
     listMembers(roomId: RoomId): Promise<ListMembersResponse>;
     updatePolicies(roomId: RoomId, body: UpdatePoliciesBody): Promise<UpdatePoliciesResponse>;
     transferHost(roomId: RoomId, body: TransferHostBody): Promise<TransferHostResponse>;
+    /** Promote/demote between moderator and member; host only, and the host
+     *  seat itself moves via {@link transferHost}, never through here. */
+    setMemberRole(roomId: RoomId, body: SetMemberRoleBody): Promise<SetMemberRoleResponse>;
     kickMember(roomId: RoomId, body: KickMemberBody): Promise<KickMemberResponse>;
     banMember(roomId: RoomId, body: BanMemberBody): Promise<BanMemberResponse>;
     createInvite(roomId: RoomId, body: CreateInviteBody): Promise<CreateInviteResponse>;
@@ -199,6 +206,11 @@ export class RestClient {
   /** GIF search endpoint. */
   readonly gifs: {
     search(query: { q: string; limit?: number }): Promise<SearchGifsResponse>;
+  };
+  /** Content reports — the operator's takedown mailbox. Any verified identity
+   *  may file one, guests included; there is no room or role gate. */
+  readonly reports: {
+    create(body: ReportBody): Promise<ReportResponse>;
   };
 
   private readonly baseUrl: string;
@@ -358,6 +370,14 @@ export class RestClient {
           method: 'POST',
           path: `/rooms/${encodeURIComponent(roomId)}/transfer-host`,
           schema: TransferHostResponse,
+          body,
+        }),
+      setMemberRole: (roomId, body) =>
+        this.request({
+          label: 'rooms.setMemberRole',
+          method: 'POST',
+          path: `/rooms/${encodeURIComponent(roomId)}/members/role`,
+          schema: SetMemberRoleResponse,
           body,
         }),
       kickMember: (roomId, body) =>
@@ -583,6 +603,19 @@ export class RestClient {
           path: '/gifs/search',
           schema: SearchGifsResponse,
           query: { q: query.q, limit: query.limit },
+        }),
+    };
+
+    this.reports = {
+      create: (body) =>
+        this.request({
+          label: 'reports.create',
+          method: 'POST',
+          // No room prefix on purpose: the compliance module is mounted at the
+          // root, and a report can name a user or an asset with no room at all.
+          path: '/report',
+          schema: ReportResponse,
+          body,
         }),
     };
   }

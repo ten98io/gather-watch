@@ -136,6 +136,12 @@ describe('the queue leaves an item it removed out from under playback', () => {
       `ws://127.0.0.1:${port}/ws?roomId=${roomId}&token=${account.accessToken}`,
     );
     sockets.push(sock);
+    // Beat presence and drain the snapshot reply: the vote-skip quorum counts
+    // presence entries (room-wide, mirrored across instances), not this
+    // process's sockets, and every real client beats on connect.
+    const snapshot = nextOfType(sock, 'queue.state');
+    sock.send(clientFrame(roomId, 'presence.update', { state: 'watching', wantSnapshot: true }));
+    await snapshot;
     return { account, sock };
   }
 

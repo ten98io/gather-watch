@@ -45,7 +45,9 @@ describe('parseProviderUrl', () => {
     expect(dz?.ref).toMatchObject({ provider: 'deezer', embedUrl: 'https://widget.deezer.com/widget/dark/track/987654' });
   });
 
-  it('recognizes DRM services without producing a MediaRef', () => {
+  // The exhaustive eight-host pin lives in queue-drm-queueable.test.tsx; this
+  // keeps the registry file's own suite honest about the shape.
+  it('recognizes DRM services and still hands back a page ref', () => {
     for (const [url, id] of [
       ['https://www.netflix.com/watch/80123456', 'netflix'],
       ['https://www.primevideo.com/detail/XYZ', 'primevideo'],
@@ -56,7 +58,7 @@ describe('parseProviderUrl', () => {
       const parsed = parseProviderUrl(url);
       expect(parsed?.provider.id).toBe(id);
       expect(parsed?.provider.capability).toBe('extension');
-      expect(parsed?.ref).toBeNull();
+      expect(parsed?.ref, url).toEqual({ kind: 'page', url });
     }
   });
 
@@ -98,6 +100,9 @@ describe('parseProviderUrl', () => {
     expect(parseProviderUrl('data:text/html,<script>x</script>')).toBeNull();
     expect(parseProviderUrl('file:///etc/passwd')).toBeNull();
     expect(parseProviderUrl('http://blog.example.com/the-film')).toBeNull();
+    // A named DRM host reaches the same `page` ref, so it answers to the same
+    // rule — it does not get waved through on the strength of being known.
+    expect(parseProviderUrl('http://www.netflix.com/watch/80123456')).toBeNull();
   });
 
   it('keeps every known provider winning over the generic page path', () => {

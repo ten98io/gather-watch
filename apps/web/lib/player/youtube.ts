@@ -136,7 +136,16 @@ export class YouTubeAdapter implements PlayerAdapter {
             disablekb: 1, // room keyboard map owns the keys (DESIGN.md §9)
             modestbranding: 1,
             iv_load_policy: 3, // no in-video annotations
-            fs: 0, // no fullscreen button — the room's own chrome handles it
+            // KEPT at 0, and now for a true reason. This said "the room's own
+            // chrome handles it" while nothing in the web app called
+            // requestFullscreen at all; the transport bar's fullscreen control
+            // and the F shortcut (components/stage/StagePane.tsx) are what make
+            // the sentence true. Restoring YouTube's own button would fullscreen
+            // the IFRAME — dropping the transport, the shield, the badges and
+            // the emote overlay out of the picture — and would need
+            // `hardenIframe` undone, which is what keeps its centre play overlay
+            // from being a second play affordance.
+            fs: 0,
           },
           events: {
             onReady: () => {

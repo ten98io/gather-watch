@@ -10,7 +10,11 @@
  *              Paramount+, Peacock, Crunchyroll) → no embed exists and capture
  *              renders black by OS design. These ride the browser-extension
  *              content-script path (everyone's own player, everyone's own
- *              account). In the web app they queue as informational rows.
+ *              account), so they queue as `page` refs like any other link the
+ *              extension drives — the tier is a NOTE, never a refusal. Until
+ *              2026-08-19 they parsed to a null ref and the queue declined
+ *              them, which told the user to install the extension and then
+ *              refused the only eight sites it exists for.
  *  generic     ANY other https page. Nobody can finish enumerating the web,
  *              so the named entries below are BETTER paths for the sites they
  *              know rather than gates on the ones they don't: an unrecognised
@@ -33,6 +37,10 @@ export interface Provider {
   note: string;
 }
 
+/** Shared by all eight DRM services — see the `extension` tier above. */
+const EXTENSION_NOTE =
+  'Plays through the Gather browser extension — everyone signs in with their own account';
+
 export const PROVIDERS: readonly Provider[] = [
   { id: 'youtube', name: 'YouTube', icon: '▶', capability: 'full-sync', note: 'Plays in sync for everyone' },
   { id: 'youtubemusic', name: 'YouTube Music', icon: '♫', capability: 'full-sync', note: 'Plays in sync for everyone' },
@@ -42,14 +50,18 @@ export const PROVIDERS: readonly Provider[] = [
   { id: 'applemusic', name: 'Apple Music', icon: '◆', capability: 'approximate', note: 'Starts together — may drift slightly' },
   { id: 'tidal', name: 'Tidal', icon: '≈', capability: 'approximate', note: 'Starts together — may drift slightly' },
   { id: 'deezer', name: 'Deezer', icon: '▤', capability: 'approximate', note: 'Starts together — may drift slightly' },
-  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: 'Needs the Gather browser extension — everyone uses their own account' },
-  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: 'Needs the Gather browser extension' },
-  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: 'Needs the Gather browser extension' },
-  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: 'Needs the Gather browser extension' },
-  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: 'Needs the Gather browser extension' },
-  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: 'Needs the Gather browser extension' },
-  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: 'Needs the Gather browser extension' },
-  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: 'Needs the Gather browser extension' },
+  // One sentence for all eight, because the two facts a person needs before
+  // pasting are the same on every one of them: it plays through the extension,
+  // and nobody is sharing a login. Netflix used to be the only entry that said
+  // the second half.
+  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: EXTENSION_NOTE },
+  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: EXTENSION_NOTE },
   { id: 'direct', name: 'Direct link or upload', icon: '🔗', capability: 'full-sync', note: 'Plays in sync for everyone' },
   // The fallback every unrecognised host lands on. `name` is a placeholder:
   // parseProviderUrl swaps in the actual host, the way the extension's
@@ -63,12 +75,15 @@ export function providerById(id: string): Provider | undefined {
 
 export interface ParsedProviderUrl {
   provider: Provider;
-  /** null for extension-tier providers (no playable MediaRef exists). */
-  ref: MediaRef | null;
+  /** Never null: a parse either yields a MediaRef or the whole parse fails.
+   *  The extension tier used to be the one exception — callers must not
+   *  reintroduce a "recognised but unqueueable" state. */
+  ref: MediaRef;
   titleHint: string | null;
 }
 
-/** Parse a pasted URL into a provider + MediaRef (or an extension-tier row). */
+/** Parse a pasted URL into a provider + MediaRef. Null means "not a link we
+ *  can hand to a browser", never "not on the list". */
 export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
   const url = raw.trim();
   if (!/^https?:\/\/\S+$/.test(url)) return null;
@@ -81,7 +96,7 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
   } catch {
     return null;
   }
-  const found = (id: string, ref: MediaRef | null, titleHint: string | null = null): ParsedProviderUrl => {
+  const found = (id: string, ref: MediaRef, titleHint: string | null = null): ParsedProviderUrl => {
     const provider = providerById(id);
     if (provider === undefined) throw new Error(`unknown provider ${id}`);
     return { provider, ref, titleHint };
@@ -151,7 +166,13 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
     });
   }
 
-  // DRM tier — recognized, never embedded.
+  // DRM tier — recognized, never embedded, and queued like any other page. No
+  // embed and no capture exist for these, so the room carries the LINK and
+  // each viewer's extension drives the site's own player (its driver.ts keys
+  // `page:${url}`, and its providers.ts classifies the same eight hosts).
+  // Matching a name here is therefore a BETTER row, not a gate: keeping the
+  // provider identity is what makes it render as Netflix instead of
+  // netflix.com, and the tier is what makes the UI say an extension is needed.
   const drmHosts: Record<string, string> = {
     'netflix.com': 'netflix',
     'primevideo.com': 'primevideo',
@@ -163,7 +184,13 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
     'crunchyroll.com': 'crunchyroll',
   };
   const drmId = Object.entries(drmHosts).find(([h]) => host === h || host.endsWith(`.${h}`))?.[1];
-  if (drmId !== undefined) return found(drmId, null);
+  if (drmId !== undefined) {
+    // Same https rule as the generic page branch below, stated here because a
+    // page ref reaches this return without passing that one.
+    if (!secure) return null;
+    const drm = found(drmId, { kind: 'page', url });
+    return { ...drm, titleHint: drm.provider.name };
+  }
 
   // Direct media.
   const lower = url.split('?')[0]?.toLowerCase() ?? '';

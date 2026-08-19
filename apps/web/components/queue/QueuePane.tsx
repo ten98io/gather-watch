@@ -47,6 +47,16 @@ const HOVER_REVEAL =
   '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 ' +
   '[@media(hover:hover)]:group-focus-within:opacity-100';
 
+/**
+ * Meta-line source word for a `page` row, in place of labels.ts's tier word
+ * ("Web page"). A page row is the one kind that plays somewhere other than
+ * this tab, and the composer note saying so is gone the second the item is
+ * added — so the row has to carry it, for the person who queued a Netflix link
+ * and for everyone who sees it afterwards. The row TITLE already names the
+ * site (parseProviderUrl's titleHint), so this names the mechanism instead.
+ */
+const PAGE_SOURCE = 'Plays in the Gather extension';
+
 /** Placeholder glyph when an item has no artwork: music sources get a note. */
 function ProviderIcon({ mediaRef, className }: { mediaRef: MediaRef; className: string }) {
   return mediaKindFor(mediaRef) === 'music' ? (
@@ -111,7 +121,7 @@ function QueueRow({
   const indicator = drag !== null && drag.overId === item.id && !isDragging ? drag.edge : null;
 
   const meta = [
-    providerLabel(item.mediaRef),
+    item.mediaRef.kind === 'page' ? PAGE_SOURCE : providerLabel(item.mediaRef),
     item.durationMs !== null ? formatMs(item.durationMs) : null,
     item.addedBy === me ? 'added by you' : null,
   ]
@@ -356,13 +366,12 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
       setError('Paste a web address — it has to start with https://');
       return;
     }
-    if (parsed.ref === null) {
-      // Protected tier: recognized, but there is nothing to embed — honest stop.
-      setError(
-        `${parsed.provider.name} protects its video, so it can’t play inside Gather. Watch it together with the Gather browser extension — everyone signs in with their own account.`,
-      );
-      return;
-    }
+    // No second refusal here. The DRM tier used to stop at this line with
+    // "X protects its video, so it can't play inside Gather" — i.e. Gather
+    // recommended the extension and then declined the eight services the
+    // extension exists for. They queue as page refs now; what needs saying
+    // about them is a note (the composer preview, and PAGE_SOURCE on the row),
+    // and a note costs no step.
     const title =
       parsed.titleHint ?? (parsed.ref.kind === 'youtube' ? 'YouTube video' : 'Shared media');
     connection.queueAdd({

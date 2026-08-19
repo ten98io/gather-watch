@@ -190,12 +190,23 @@ is a single-window experience, and it is what "browse-here-like" implies.
 
 ### One contract, three implementations
 
-`PlaybackDriver` is **defined, but not yet shared**: it lives in
-`apps/extension/src/driver.ts` (with the elastic corrector beside it), not in
-`packages/contracts` or a `packages/playback`. So the interface exists and the
-extension implements it; web and mobile satisfy the same shape by hand. Lifting
-it into a package is the honest completion of this section and has not
-happened. The three implementations:
+`PlaybackDriver` is **declared, unshared, and unimplemented** — three separate
+gaps, and the middle one used to be described as if it were closed.
+
+It lives in `apps/extension/src/driver.ts` (with the elastic corrector beside
+it), not in `packages/contracts` or a `packages/playback`, so web and mobile
+satisfy the same *shape* by hand rather than by type. And nothing `implements`
+it: grep `PlaybackDriver` across the repo and you get its own declaration and
+nothing else. `ElasticDriver`, the class that actually drives, exposes
+`tick`/`reset`/`state`/`setProfile` — a different surface. Four of the
+interface's members exist nowhere in the extension at all (`load`, `setMuted`,
+`isMuted`, `setVolume`): what the extension really does to a page's player is
+seek, rate, play and pause, and that is the whole list.
+
+So read the interface as a **target**, not as shipped capability. Lifting it
+into a package and making the three surfaces conform to it — or trimming it
+down to what is genuinely implemented — is the honest completion of this
+section, and neither has happened. The three implementations it anticipates:
 
 1. **Web adapters** (existing YouTube/HLS/SoundCloud/Vimeo/native) — for
    content the web can play directly. Keeps a room link working instantly

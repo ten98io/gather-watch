@@ -5,7 +5,7 @@
  * are load-bearing (object-src, frame-ancestors, the download-only escape
  * hatch for script/embed policy).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import nextConfig from '../next.config';
 
 type Header = { key: string; value: string };
@@ -26,6 +26,45 @@ describe('web security headers', () => {
     expect(byKey.get('X-Frame-Options')).toBe('DENY');
     expect(byKey.get('Permissions-Policy')).toContain('display-capture=(self)');
     expect(byKey.get('Content-Security-Policy')).toBeTypeOf('string');
+  });
+
+  /**
+   * `next dev` compiles React Refresh and HMR through `eval`. A CSP without
+   * 'unsafe-eval' does not fail loudly there — it throws an EvalError into the
+   * console on every reload and hot reloading quietly stops working, which
+   * reads as a flaky dev server rather than as a header. The relaxation is
+   * therefore deliberate AND must stay development-only: production never
+   * evaluates a string, and shipping 'unsafe-eval' would hand an injected
+   * string the one primitive the rest of this policy exists to deny.
+   */
+  it("relaxes eval and plaintext transports in development, NEVER in production", async () => {
+    const prev = process.env.NODE_ENV;
+    try {
+      for (const [env, shouldAllow] of [
+        ['development', true],
+        ['production', false],
+        ['test', false],
+      ] as const) {
+        vi.resetModules();
+        // NODE_ENV is readonly in the Next types; the config reads it at module
+        // load, which is the only way to observe the branch.
+        (process.env as Record<string, string>)['NODE_ENV'] = env;
+        const fresh = (await import('../next.config')).default;
+        const groups = await fresh.headers?.();
+        const all = groups?.find((g) => g.source === '/:path*') as { headers: Header[] };
+        const csp = all.headers.find((h) => h.key === 'Content-Security-Policy')!.value;
+        expect(csp.includes("'unsafe-eval'"), `${env} → unsafe-eval`).toBe(shouldAllow);
+        // The half that broke `pnpm dev` outright: a different PORT is a
+        // different ORIGIN, so the dev api is neither 'self' nor https:, and
+        // every REST call and the room socket were refused before they left
+        // the page. Production speaks https/wss and must never allow either.
+        expect(/connect-src[^;]*\bhttp:/.test(csp), `${env} → connect http:`).toBe(shouldAllow);
+        expect(/connect-src[^;]*\bws:/.test(csp), `${env} → connect ws:`).toBe(shouldAllow);
+      }
+    } finally {
+      (process.env as Record<string, string>)['NODE_ENV'] = prev ?? 'test';
+      vi.resetModules();
+    }
   });
 
   it('the CSP closes the frames and objects that matter', async () => {

@@ -3,8 +3,9 @@
 /**
  * MessageBubble — one chat message: quote, markdown-lite body, gif /
  * attachment / voice rendering, reactions with counts, tombstones, and the
- * right-click action menu (react / reply / edit / delete / pin). Author accent
- * leading edge on group starts (DESIGN.md §8); bubbles pop in with a spring.
+ * right-click action menu (react / reply / edit / delete / pin / report).
+ * Author accent leading edge on group starts (DESIGN.md §8); bubbles pop in
+ * with a spring.
  *
  * Actions live behind a context menu rather than a hover bar. The hover bar
  * cost a row of layout under every message the pointer crossed, so the log
@@ -23,6 +24,7 @@ import {
   ContextMenuRow,
   useContextMenuTrigger,
 } from '@/components/ui/context-menu';
+import { ReportDialog } from '@/components/report/ReportDialog';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
@@ -134,6 +136,7 @@ export function MessageBubble({
   const { point, close, triggerProps } = useContextMenuTrigger();
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(msg.body);
+  const [reporting, setReporting] = useState(false);
   const mine = msg.authorId === me;
 
   if (msg.deletedAt !== null) {
@@ -318,7 +321,28 @@ export function MessageBubble({
               Delete
             </ContextMenuItem>
           )}
+          {/* Reporting is open to everyone the message is not FROM — there is
+              nothing to escalate about your own words, and moderating is a
+              separate power from telling the operator. */}
+          {!mine && (
+            <ContextMenuItem onSelect={() => setReporting(true)} onClose={close}>
+              Report
+            </ContextMenuItem>
+          )}
         </ContextMenu>
+      )}
+
+      {/* Outside the menu on purpose — the menu unmounts as it closes, and a
+          dialog owned by it would go with it before it ever painted — and
+          mounted only while it is open: the log holds MAX_MESSAGES (300)
+          bubbles, and <Dialog> opens a portal per instance. */}
+      {reporting && (
+        <ReportDialog
+          open
+          onOpenChange={setReporting}
+          target={{ kind: 'message', messageId: msg.id, roomId: msg.roomId }}
+          subject="this message"
+        />
       )}
     </motion.div>
   );

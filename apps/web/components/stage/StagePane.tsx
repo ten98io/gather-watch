@@ -17,7 +17,7 @@
  * bursts float above.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { motion } from '@gather/design';
 import type { RoomId } from '@gather/contracts';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
@@ -35,8 +35,9 @@ import { SoundCloudAdapter } from '@/lib/player/soundcloud';
 import { VimeoAdapter } from '@/lib/player/vimeo';
 import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
-import { useExtensionDriver } from '@/lib/player/extension-driver';
+import { drivenIsDrm, useExtensionDriver } from '@/lib/player/extension-driver';
 import { extensionMediaKey, onEnded } from '@/lib/extension-bridge';
+import type { ProviderSummary } from '@/lib/extension-bridge';
 import { API_URL, getAccessToken } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -92,6 +93,95 @@ function useAmbientGlow(
   }, [adapter, playing, reducedMotion]);
 
   return color;
+}
+
+interface StageFullscreen {
+  /** This browser can fullscreen an ordinary element. False hides the control
+   *  outright — an affordance that throws is worse than no affordance. */
+  supported: boolean;
+  active: boolean;
+  toggle(): void;
+  exit(): void;
+}
+
+/**
+ * TWO ANSWERS, and both are required. iOS Safari on iPhone fullscreens only
+ * <video> (`webkitEnterFullscreen`): `Element.prototype.requestFullscreen` does
+ * not exist there at all, so calling it throws rather than degrading.
+ * `document.fullscreenEnabled` is the other half — false inside an iframe whose
+ * embedder withheld `allow="fullscreen"`, where the method exists and every
+ * call rejects.
+ */
+function fullscreenAvailable(): boolean {
+  return (
+    document.fullscreenEnabled === true &&
+    typeof Element.prototype.requestFullscreen === 'function' &&
+    typeof document.exitFullscreen === 'function'
+  );
+}
+
+/** The element holding the top layer, or null. Where the API is absent the
+ *  property is UNDEFINED rather than null, and `undefined !== null` would read
+ *  as "we are already fullscreen". */
+function fullscreenElement(): Element | null {
+  return document.fullscreenElement ?? null;
+}
+
+/**
+ * TRUE BROWSER FULLSCREEN for one element (DESIGN.md §11 D1.1: "true browser
+ * fullscreen, not just maximized", `F` to enter and exit). Until this there was
+ * no `requestFullscreen` call anywhere in apps/web — the only mention of the
+ * word was youtube.ts claiming the room's chrome handled it.
+ *
+ * Constraints this shape exists for:
+ *
+ *  - `supported` settles in an EFFECT, not during render: the server pass has
+ *    no `document`, and reading one during render makes the first client paint
+ *    disagree with the markup it is hydrating.
+ *  - `active` is read back from `document.fullscreenElement` on
+ *    `fullscreenchange` and never assumed from our own call. That event is the
+ *    only way we learn about the exits we did not perform — Escape, F11, the
+ *    browser's own overlay button, another element taking the top layer.
+ *  - ESCAPE IS THE BROWSER'S, and is deliberately not bound. The spec already
+ *    leaves fullscreen on it and then fires `fullscreenchange`, which the
+ *    listener below picks up; a binding would additionally eat the key that
+ *    dismisses every dialog and sheet in the room.
+ */
+function useFullscreen(targetRef: RefObject<HTMLElement | null>): StageFullscreen {
+  const [supported, setSupported] = useState(false);
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    const available = fullscreenAvailable();
+    setSupported(available);
+    if (!available) return undefined;
+    const sync = (): void => setActive(fullscreenElement() !== null);
+    sync();
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+
+  const exit = useCallback((): void => {
+    if (!fullscreenAvailable() || fullscreenElement() === null) return;
+    // Rejections (a document that already left the top layer) are not ours to
+    // report: `fullscreenchange` remains the single source of `active`.
+    void document.exitFullscreen().catch(() => undefined);
+  }, []);
+
+  const toggle = useCallback((): void => {
+    if (!fullscreenAvailable()) return;
+    if (fullscreenElement() !== null) {
+      exit();
+      return;
+    }
+    const el = targetRef.current;
+    if (el === null) return;
+    // Rejects when the browser will not honour the gesture. Nothing is latched
+    // optimistically, so a refusal simply leaves the control as it was.
+    void el.requestFullscreen().catch(() => undefined);
+  }, [targetRef, exit]);
+
+  return { supported, active, toggle, exit };
 }
 
 /** Sync pulse (§5.4): one soft ring expands when a seek/track-change lands. */
@@ -363,15 +453,23 @@ function LoadFailedStage({ title }: { title: string | null }) {
  * rather than pretending to be a player — the room's transport, chat, queue and
  * call all keep working here.
  */
-function ExtensionDrivingStage({ providerName }: { providerName: string | null }) {
+function ExtensionDrivingStage({ provider }: { provider: ProviderSummary | null }) {
+  const name = provider?.name ?? null;
+  // The capability stream's own answer, not one blanket promise for every tab.
+  // On the eight protected services (`drivenIsDrm`) there is no shared picture
+  // and there never can be: each viewer is playing their own copy from their
+  // own account, and only the timing is common. Saying "everyone stays on the
+  // same second" and stopping there read as though we were sending them video.
+  const protectedSource = drivenIsDrm(provider);
   return (
     <StageMessage>
       <p className="font-display text-lg font-semibold text-mid">
-        {providerName === null ? 'Playing in your other tab' : `Playing on ${providerName}`}
+        {name === null ? 'Playing in your other tab' : `Playing on ${name}`}
       </p>
       <p className="max-w-sm text-sm text-low">
-        Everyone stays on the same second. Play, pause and skip from here or from the
-        tab — the room follows either way.
+        {protectedSource
+          ? 'Everyone plays their own copy, signed in with their own account — the room keeps you all on the same second.'
+          : 'Everyone stays on the same second. Play, pause and skip from here or from the tab — the room follows either way.'}
       </p>
     </StageMessage>
   );
@@ -415,6 +513,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
 
   const mediaElRef = useRef<HTMLVideoElement | null>(null);
   const embedContainerRef = useRef<HTMLDivElement | null>(null);
+  /** The fullscreen element is the whole stage SECTION, not the video: the
+   *  transport bar, the shield, the badges and the emote overlay all live
+   *  inside it, and fullscreening the <video> alone would strand every one of
+   *  them behind the top layer. */
+  const stageRef = useRef<HTMLElement | null>(null);
   const [adapter, setAdapter] = useState<PlayerAdapter | null>(null);
   const [muted, setMuted] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(true);
@@ -439,6 +542,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   /** Bumped by every start gesture so the "did it actually start?" watchdog
    *  re-arms; without it a second refusal would go unnoticed. */
   const [startAttempt, setStartAttempt] = useState(0);
+
+  const fullscreen = useFullscreen(stageRef);
 
   const debug = useMemo(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug'),
@@ -919,8 +1024,27 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
             if (captionsAvailable) setCaptionsOn((v) => !v);
           },
         },
+        // Fullscreen is this viewer's own screen, so it is never policy-gated
+        // the way the transport is — a guest who may not press play may still
+        // fill their own display. Exiting is the same key, plus Escape, which
+        // the browser owns (see useFullscreen).
+        {
+          key: 'f',
+          handler: () => {
+            if (fullscreen.supported) fullscreen.toggle();
+          },
+        },
       ],
-      [activateStage, controlEnabled, adapter, connection, muted, captionsAvailable],
+      [
+        activateStage,
+        controlEnabled,
+        adapter,
+        connection,
+        muted,
+        captionsAvailable,
+        fullscreen.supported,
+        fullscreen.toggle,
+      ],
     ),
   );
 
@@ -941,11 +1065,14 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         captionsAvailable={captionsAvailable && adapter?.kind === 'native'}
         muted={muted}
         onMutedChange={setMuted}
+        fullscreenActive={fullscreen.active}
+        onToggleFullscreen={fullscreen.supported ? fullscreen.toggle : null}
       />
     ) : null;
 
   return (
     <section
+      ref={stageRef}
       aria-label="Stage"
       data-room={roomId}
       className="relative flex h-full w-full flex-col overflow-hidden bg-void"
@@ -979,9 +1106,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
           <ScreenShareStage restream={restream} />
         ) : extensionDriving ? (
           <ExtensionDrivingStage
-            providerName={
-              extension.state.phase === 'ready' ? (extension.state.provider?.name ?? null) : null
-            }
+            provider={extension.state.phase === 'ready' ? extension.state.provider : null}
           />
         ) : (
           <>
@@ -1132,7 +1257,14 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
             variant="secondary"
             size="sm"
             className="pointer-events-auto"
-            onClick={() => setShareOpen(true)}
+            onClick={() => {
+              // Dialogs portal to document.body (components/ui/dialog.tsx) and
+              // the fullscreen top layer paints over the entire document, so a
+              // dialog opened from inside fullscreen is simply not on screen.
+              // The gesture that asks for it leaves fullscreen first.
+              fullscreen.exit();
+              setShareOpen(true);
+            }}
           >
             Share screen
           </Button>

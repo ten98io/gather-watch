@@ -13,6 +13,7 @@ import type {
   CreateUploadResponse,
   MediaAsset,
   MessageAttachment,
+  ReportTarget,
   RoomId,
   UserId,
 } from '@gather/contracts';
@@ -398,6 +399,109 @@ export async function resolveMessageAttachment(
     // transcode pipeline ever produces one.
     durationMs: asset.durationMs ?? claimed.durationMs,
   };
+}
+
+// ── Revocation (a takedown has to actually take something down) ─────────────
+//
+// `GET /assets/:assetId/content` is unauthenticated BY DESIGN — the id is the
+// capability, the Discord/Slack model, and the bucket stays private. The
+// consequence nobody had built for is that possession of the link is
+// permanent: deleting the room, erasing the account and tombstoning the
+// message all left the AssetDoc alone, so every link ever pasted kept
+// resolving. For DMCA, for GDPR and for illegal content alike, the takedown
+// took nothing down.
+//
+// WHY THE DOC IS DELETED RATHER THAN FLAGGED. A "revoked" state wants a home
+// on the document, and there isn't one: AssetDoc is MediaAsset plus the two
+// storage fields, `MediaAssetStatus` is a contracts enum, and neither is this
+// module's to widen. The nearest existing state, `status: 'failed'`, is
+// actively wrong here — `completeAttachment` re-STATs and re-marks any
+// non-ready doc as 'ready', so a flagged asset could be un-revoked by its own
+// uploader replaying the completion call. Deleting the row is the only shape
+// that is unambiguous in the code that already exists: the content route's
+// `doc === null` branch answers 404 with no change, the message-attach path
+// answers "asset not found", and completion cannot resurrect what is gone.
+//
+// The object goes too, best-effort. A takedown for illegal content that
+// leaves the bytes in the bucket is a takedown of a pointer; but object
+// storage is a network call that can fail, and a failed DELETE must not stop
+// the capability from being revoked — so the row goes first and the object
+// follows, with its failure logged rather than thrown.
+
+/**
+ * Revoke assets by id: the capability URL stops resolving, then the bytes go.
+ * Unknown ids are skipped. Returns the number of asset rows removed.
+ */
+export async function revokeAssets(deps: Deps, assetIds: readonly AssetId[]): Promise<number> {
+  let revoked = 0;
+  for (const assetId of assetIds) {
+    const doc = await deps.store.assets.findById(assetId);
+    if (doc === null) {
+      continue;
+    }
+    // Row first: this is the half that must not fail, because it is the half
+    // that closes the URL.
+    if (!(await deps.store.assets.deleteOne({ id: doc.id }))) {
+      continue;
+    }
+    revoked += 1;
+    if (doc.storageKey !== null) {
+      await objectOps(deps)
+        .remove(doc.storageKey)
+        .catch((err: unknown) => {
+          deps.log.warn(
+            { err, assetId: doc.id },
+            'asset revoked but its object could not be removed',
+          );
+        });
+    }
+  }
+  return revoked;
+}
+
+/** Every asset id a room's messages point at. Read BEFORE the messages are
+ *  deleted — once the rows are gone nothing names the assets any more. */
+export async function roomAttachmentAssetIds(deps: Deps, roomId: RoomId): Promise<AssetId[]> {
+  const messages = await deps.store.messages.findMany({ roomId });
+  const ids: AssetId[] = [];
+  for (const message of messages) {
+    if (message.attachment !== null) {
+      ids.push(message.attachment.assetId);
+    }
+  }
+  return ids;
+}
+
+/** Every asset id owned by one account — the GDPR cascade's read. */
+export async function userAssetIds(deps: Deps, userId: UserId): Promise<AssetId[]> {
+  const assets = await deps.store.assets.findMany({ ownerId: userId });
+  return assets.map((asset) => asset.id);
+}
+
+/**
+ * The assets a takedown of this report target must revoke, read BEFORE the
+ * takedown runs (it tombstones the message that names them).
+ *
+ * A `user` target is deliberately empty: that action is a BAN, not an
+ * erasure — the account still exists and so do its uploads. Erasing an
+ * account is DELETE /me, which revokes them all (compliance/erasure.ts).
+ */
+export async function reportTargetAssetIds(
+  deps: Deps,
+  target: ReportTarget,
+): Promise<AssetId[]> {
+  switch (target.kind) {
+    case 'asset':
+      return [target.assetId];
+    case 'message': {
+      const message = await deps.store.messages.findById(target.messageId);
+      return message?.attachment == null ? [] : [message.attachment.assetId];
+    }
+    case 'room':
+      return roomAttachmentAssetIds(deps, target.roomId);
+    case 'user':
+      return [];
+  }
 }
 
 /**

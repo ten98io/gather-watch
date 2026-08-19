@@ -322,6 +322,83 @@ describe('mountOverlay — chat', () => {
   });
 });
 
+describe('mountOverlay — what is playing', () => {
+  it('draws the playing row, the one after it, and no skip by default', () => {
+    const { host } = mount({
+      initialState: room({ nowPlaying: 'The Feature', upNext: 'The Short' }),
+    });
+
+    expect(oneByClass(host, 'now').hidden).toBe(false);
+    expect(oneByClass(host, 'now-title').textContent).toBe('The Feature');
+    expect(oneByClass(host, 'now-next').textContent).toBe('Up next: The Short');
+    // The room's playbackControl policy decides; absent is not permission.
+    expect(oneByClass(host, 'skip').hidden).toBe(true);
+  });
+
+  it('renders a hostile title as text and builds no markup from it', () => {
+    const nasty = '<img src=x onerror="alert(1)">';
+    const { host } = mount({ initialState: room({ nowPlaying: nasty }) });
+
+    const title = oneByClass(host, 'now-title');
+    expect(title.textContent).toBe(nasty);
+    expect(title.childNodes).toHaveLength(1);
+    expect(title.childNodes[0]).toBeInstanceOf(FakeText);
+    expect(allElements(host).some((el) => el.tagName === 'IMG')).toBe(false);
+  });
+
+  it('shows nothing at all when the room is on nothing its queue names', () => {
+    const { host } = mount({ initialState: room() });
+
+    // An empty "Playing" heading is worse than no heading.
+    expect(oneByClass(host, 'now').hidden).toBe(true);
+    expect(oneByClass(host, 'now-next').hidden).toBe(true);
+  });
+
+  it('drops the up-next line at the end of the queue', () => {
+    const { host, overlay } = mount({
+      initialState: room({ nowPlaying: 'The Feature', upNext: 'The Short' }),
+    });
+
+    overlay.update(room({ nowPlaying: 'The Short' }));
+
+    expect(oneByClass(host, 'now-title').textContent).toBe('The Short');
+    expect(oneByClass(host, 'now-next').hidden).toBe(true);
+  });
+
+  it('sends one skip per press, and says so when the room refuses it', async () => {
+    const { host, sent } = mount({
+      initialState: room({ nowPlaying: 'The Feature', canSkip: true }),
+    });
+    const skip = oneByClass(host, 'skip');
+    expect(skip.hidden).toBe(false);
+
+    click(host, skip);
+    // A second press while the first is in flight is not a second intent.
+    click(host, skip);
+
+    expect(sent.filter((m) => m.kind === 'overlay:skip')).toHaveLength(1);
+    await flush();
+    expect(skip.disabled).toBe(false);
+
+    failNextSend = true;
+    click(host, skip);
+    await flush();
+
+    expect(oneByClass(host, 'notice').textContent).toBe('The room did not move on. Try again.');
+  });
+
+  it('works from the keyboard, and never reaches the page', () => {
+    const { host, sent, pageKeys } = mount({
+      initialState: room({ nowPlaying: 'The Feature', canSkip: true }),
+    });
+
+    keyActivate(host, oneByClass(host, 'skip'));
+
+    expect(sent).toContainEqual({ kind: 'overlay:skip' });
+    expect(pageKeys).toEqual([]);
+  });
+});
+
 describe('mountOverlay — the boundary with the page', () => {
   it('keeps the overlay’s own keys from a player listening on the way down', () => {
     const { host, pageKeys, pageCaptureKeys } = mount({ initialState: room() });

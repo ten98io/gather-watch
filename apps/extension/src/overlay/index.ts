@@ -19,6 +19,7 @@ export {
   personNote,
   safeOutgoing,
   statusLine,
+  upNextLine,
 } from './state';
 export type {
   MessageView,

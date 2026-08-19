@@ -180,9 +180,19 @@ const foregroundLabel = (fg: Foreground): string =>
  * use `--surface-glass` over an unknown page.
  */
 const PAIRINGS: readonly Pairing[] = [
-  { rule: '.panel / .room / .msg / .input', fg: 'textHi', bg: 'surface1', bar: WCAG_AA_TEXT },
+  {
+    rule: '.panel / .room / .msg / .input / .now-title',
+    fg: 'textHi',
+    bg: 'surface1',
+    bar: WCAG_AA_TEXT,
+  },
   { rule: '.room / .person-name on .head', fg: 'textHi', bg: 'surface2', bar: WCAG_AA_TEXT },
-  { rule: '.hide / .ahead / .notice / .link', fg: 'textMid', bg: 'surface1', bar: WCAG_AA_TEXT },
+  {
+    rule: '.hide / .skip / .now-next / .ahead / .notice / .link',
+    fg: 'textMid',
+    bg: 'surface1',
+    bar: WCAG_AA_TEXT,
+  },
   { rule: '.status on .head', fg: 'textMid', bg: 'surface2', bar: WCAG_AA_TEXT },
   { rule: '.section-title', fg: 'textLow', bg: 'surface1', bar: WCAG_AA_TEXT },
   { rule: '.person-note on .person', fg: 'textLow', bg: 'surface2', bar: WCAG_AA_TEXT },

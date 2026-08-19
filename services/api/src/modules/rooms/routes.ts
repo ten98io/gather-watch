@@ -20,9 +20,12 @@ import {
   UpdatePoliciesBody,
   UpdateRoomBody,
 } from '@gather/contracts';
+import type { RoomId } from '@gather/contracts';
 import { AppError } from '../../lib/errors';
 import { requireAccount, requireAuth } from '../../plugins/auth';
 import { parseWith } from '../../plugins/error-mapper';
+import { authRateLimit } from '../../plugins/rate-limit';
+import { revokeAssets, roomAttachmentAssetIds } from '../chat/attachments';
 import type { AuthContext } from '../types';
 import { RoomsService, startIdleRoomSweeper } from './service';
 import { getRoomsRuntime } from './runtime';
@@ -76,7 +79,13 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
     return { room: serializeRoom(room), member: serializeMember(member), lastEventSeq };
   });
 
-  app.post('/rooms/join', async (request) => {
+  /**
+   * AUTH TIER, not the general one. The body carries a room PASSWORD, and the
+   * gate behind it is scrypt — so this is a credential-guessing surface in
+   * exactly the way POST /auth/guest is, and it was sitting on the general
+   * 300/min budget while its twin was capped at 20/min.
+   */
+  app.post('/rooms/join', { config: authRateLimit(app) }, async (request) => {
     const auth = requireAccount(request);
     const body = parseWith(JoinRoomBody, request.body);
     const { room, member, lastEventSeq } = await service.joinByInvite(
@@ -215,7 +224,16 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
   app.delete<RoomParams>('/rooms/:roomId', async (request) => {
     const auth = requireAuth(request);
     assertGuestScope(auth, request.params.roomId);
+    // Read the room's attachments BEFORE the cascade: deleteRoom removes the
+    // messages, and the messages are the only thing that names the assets.
+    // A read cannot leak anything (nothing is returned, nothing is written)
+    // and the revoke below runs only if deleteRoom got past its host check —
+    // otherwise deleting a room would be a member's way of nuking its files.
+    const assetIds = await roomAttachmentAssetIds(app.deps, request.params.roomId as RoomId);
     await service.deleteRoom(request.params.roomId, auth.userId);
+    // The capability URLs die with the room. Without this the room is gone
+    // from every list and its files still serve to anyone holding a link.
+    await revokeAssets(app.deps, assetIds);
     return { ok: true as const };
   });
 

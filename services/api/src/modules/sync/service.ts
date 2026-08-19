@@ -91,9 +91,9 @@ interface MutationPayload {
 }
 
 export class SyncService {
-  /** roomId → userIds currently reporting buffering. In-memory only: the
-   *  set is pruned against locally-connected sockets before every read, so
-   *  disconnected users can never block playback. */
+  /** roomId → userIds currently reporting buffering. In-memory and
+   *  PER-INSTANCE (see prunedBuffering); pruned against the room's presence
+   *  set before every read, so a member who has left can never hold the room. */
   private readonly buffering = new Map<string, Set<string>>();
 
   constructor(private readonly deps: Deps) {}
@@ -620,13 +620,42 @@ export class SyncService {
     return true;
   }
 
-  /** The room's buffering reporters, minus anyone without a live local socket. */
+  /**
+   * The room's buffering reporters, minus anyone no longer IN THE ROOM.
+   *
+   * The test used to be `hub.localUserIds` alone — a live socket ON THIS
+   * PROCESS — which drops a reporter the moment their socket lands somewhere
+   * else: a reconnect, or the far side of a rolling deploy. Dropping them here
+   * declares them ready and releases a hold they never lifted, which is the
+   * whole point of waitForAll going missing precisely when the room is least
+   * stable.
+   *
+   * UNION, not a swap, and the asymmetry with voteSkip's quorum is deliberate.
+   * A skip threshold is a fraction of a shared denominator, so every instance
+   * has to compute the SAME denominator or the quorum means different things
+   * in different halves of the room — that one is room-presence and nothing
+   * else. This set is process-local either way, and the question asked of each
+   * member in it is only "are they still here?", to which a live local socket
+   * and a room-wide presence entry are both a yes. Taking either keeps a
+   * reporter whose first heartbeat has not landed yet, and still drops anyone
+   * who actually left.
+   *
+   * KNOWN GAP, deliberately left: the `buffering` SET is process-local, so
+   * `sync.waiting` still carries the reporters THIS instance heard from rather
+   * than the room's. Closing it needs the reports mirrored across instances —
+   * a new RoomCtlMessage kind in rooms/deps.ts, which is not this module's to
+   * add. What is fixed here is the half that wrongly RELEASED a hold; the
+   * residue only ever under-reports who is still waiting.
+   */
   private prunedBuffering(roomId: RoomId): UserId[] {
     const set = this.buffering.get(roomId);
     if (set === undefined) return [];
-    const connected = new Set<string>(this.deps.hub.localUserIds(roomId));
+    const here = new Set<string>(getRoomsRuntime(this.deps).presence.presentUserIds(roomId));
+    for (const userId of this.deps.hub.localUserIds(roomId)) {
+      here.add(userId);
+    }
     for (const userId of set) {
-      if (!connected.has(userId)) {
+      if (!here.has(userId)) {
         set.delete(userId);
       }
     }

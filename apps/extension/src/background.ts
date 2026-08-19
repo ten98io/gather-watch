@@ -80,6 +80,7 @@ import type {
   TelemetryPayload,
 } from './protocol';
 import { providerForUrl } from './providers';
+import type { TabProvider } from './providers';
 
 interface Session {
   roomId: string;
@@ -89,10 +90,10 @@ interface Session {
   drivenTabId: number | null;
   playback: PlaybackState | null;
   /**
-   * The room's queue, kept for ONE purpose: `sync.advance` names the item that
-   * ended, and `playback` carries an index but never an id (see
-   * {@link reportEndedItem}). Nothing draws it — the overlay shows the room's
-   * conversation, not its queue.
+   * The room's queue. It is what `sync.advance` names the ended item out of —
+   * `playback` carries an index but never an id (see {@link reportEndedItem})
+   * — and, since it is here anyway, the two rows the overlay draws: what is
+   * playing and what is next (see {@link overlayQueueLines}).
    *
    * It arrives with the join snapshot (the server answers a FIRST heartbeat
    * with presence + sync + queue) and on every queue mutation after that. A
@@ -178,7 +179,6 @@ let sharingTabId: number | null = null;
  * receiving pixels while the user is somewhere else).
  */
 let sharingRoomId: string | null = null;
-let provider: Record<string, unknown> | null = null;
 /** Cleared on disconnect — a stacked interval per reconnect was a real leak. */
 let driveTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -186,8 +186,37 @@ const ports = new EventPortRegistry();
 
 /* ── Tab bookkeeping (browser-derived; the page never names a tab) ── */
 
-/** Per-tab provider, reported by each tab's content script on load. */
-const tabProviders = new Map<number, ProviderSummary>();
+/**
+ * Per-tab provider: a CACHE of a pure classification, never a memory of a
+ * message.
+ *
+ * WHAT THIS USED TO BE. The map was written in exactly one place — a content
+ * script reporting its tab, which it does at module load and on an SPA route
+ * change and never again. MV3 terminates this worker after roughly thirty
+ * seconds of quiet and nothing repopulates the map for the tabs that are
+ * already open (it is not in the persisted shape either), so after one
+ * ordinary recycle every tab in the browser read as `undefined`. Undefined is
+ * not "generic": it SKIPPED the protected-tab refusal in {@link planShare},
+ * so "Share this tab" on Netflix started a capture that sends the room a
+ * black rectangle with nothing to explain it; it told the elastic driver a
+ * protected player was unprotected, which halves the interval it will seek
+ * one at; and it lost the music hint `profileForContent` picks a comfort band
+ * from.
+ *
+ * WHAT IT IS NOW. `providerForUrl` is pure and needs no page at all, and the
+ * tab's URL is a fact `chrome.tabs.get` will answer with at any time — so a
+ * missing entry is filled from the browser rather than waited for. See
+ * {@link resolveTabProvider}.
+ *
+ * The whole registry entry is stored, not the three-field summary the page is
+ * told about: the popup's cast control is built out of the `cast` descriptor,
+ * and redaction belongs on the external channel, which is the one place
+ * `redactProvider` is applied.
+ */
+const tabProviders = new Map<number, TabProvider>();
+/** Bumped whenever a tab's page changes, so a classification that was already
+ *  in flight cannot be cached for a page the tab has since left. */
+const tabProviderEpoch = new Map<number, number>();
 /** Last time a tab reported a media element (telemetry implies one exists). */
 const tabMediaSeenAt = new Map<number, number>();
 /** The last content tab the *user* focused — the 'auto' handoff target. */
@@ -200,6 +229,40 @@ function isDrivableTabUrl(url: string | undefined): boolean {
   const origin = originOfUrl(url ?? '');
   if (origin === null) return false;
   return !WEB_ORIGINS.includes(origin);
+}
+
+/**
+ * What this tab is: the cached answer, or the browser's.
+ *
+ * Undefined means one of two things and never a third: the tab is gone, or it
+ * is not an http(s) page (a `chrome://` tab, the PDF viewer, a blank tab). It
+ * never means "no content script has spoken yet", which is the state a
+ * recycled worker starts every open tab in.
+ *
+ * Nothing is cached for a tab that cannot be classified, so a blank tab that
+ * becomes a page is classified the next time it is asked about.
+ */
+async function resolveTabProvider(tabId: number): Promise<TabProvider | undefined> {
+  const known = tabProviders.get(tabId);
+  if (known !== undefined) return known;
+  const epoch = tabProviderEpoch.get(tabId) ?? 0;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const url = tab?.url ?? '';
+  if (originOfUrl(url) === null) return undefined;
+  const classified = providerForUrl(url);
+  // The tab may have gone somewhere else while this read was in flight — a
+  // redirect chain is exactly that — and caching the page it has left is the
+  // stale-provider bug all over again, one round trip wide.
+  if ((tabProviderEpoch.get(tabId) ?? 0) === epoch) tabProviders.set(tabId, classified);
+  return classified;
+}
+
+/** The tab's page changed under it, so what we classified it as no longer
+ *  describes it. Re-read rather than guess. */
+function forgetTabProvider(tabId: number): void {
+  tabProviderEpoch.set(tabId, (tabProviderEpoch.get(tabId) ?? 0) + 1);
+  tabProviders.delete(tabId);
+  void resolveTabProvider(tabId);
 }
 
 function tabHasMedia(tabId: number | null): boolean {
@@ -241,6 +304,7 @@ chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabProviders.delete(tabId);
+  tabProviderEpoch.delete(tabId);
   tabMediaSeenAt.delete(tabId);
   if (lastContentTabId === tabId) lastContentTabId = null;
   // Its capture died with it. The offscreen document sees the track end too,
@@ -387,6 +451,10 @@ function onFrameClaim(tabId: number, frameId: number, msg: Record<string, unknow
 
 /** A navigation (including an SPA route change) invalidates every claim. */
 chrome.tabs.onUpdated.addListener((tabId, change) => {
+  // A new URL is also a possibly-new provider, and this is the browser's own
+  // notice of one — it needs no page to fire, which is what makes the
+  // classification survive a worker recycle in a tab nobody touches.
+  if (change.url !== undefined) forgetTabProvider(tabId);
   if (change.url === undefined && change.status !== 'loading') return;
   claimsFor(tabId).clear();
   setWinner(tabId, null);
@@ -469,17 +537,21 @@ function refreshDriverContext(tabId: number, frameId: number): void {
     session.driver.reset();
     lastTelemetry = null;
   }
-  const summary = tabProviders.get(tabId);
+  // This tick reads what is already known; a tab nothing has classified yet
+  // is read from the browser and is answered on the next one. See
+  // {@link tabProviders} — it used to be answered never.
+  const known = tabProviders.get(tabId);
+  if (known === undefined) void resolveTabProvider(tabId);
   const claim = tabClaims.get(tabId)?.get(frameId);
   session.driver.setProfile(
     profileForContent({
-      providerId: summary?.id ?? null,
+      providerId: known?.id ?? null,
       mediaTag: claim?.metrics?.tag ?? null,
     }),
   );
   // Protected players charge a licence renegotiation for every seek, so the
   // driver seeks them far more reluctantly. We never do anything else to them.
-  session.driver.setCapabilities({ isDrmProtected: summary?.tier === 'drm' });
+  session.driver.setCapabilities({ isDrmProtected: known?.drm === true });
 }
 
 /**
@@ -761,16 +833,63 @@ function overlaySync(): ElasticDriverState | null {
   };
 }
 
+/**
+ * Where in the room's queue this player is, by identity rather than by the
+ * recorded index — {@link endedQueueItemId} is that question already answered
+ * (see its "ALSO ASKED OF AN ITEM THAT IS STILL PLAYING"), and asking it a
+ * second way here is how two parts of one worker start disagreeing about which
+ * row is playing. Null is a real answer: a room playing something that is not
+ * a row of its queue has no row to name, and nothing is drawn for it.
+ */
+function playingQueueIndex(live: Session): number | null {
+  const itemId = endedQueueItemId({
+    queueIndex: live.playback?.queueIndex ?? null,
+    items: live.queue,
+    mediaRef: live.playback?.mediaRef ?? null,
+  });
+  if (itemId === null) return null;
+  const index = live.queue.findIndex((it) => it.id === itemId);
+  return index < 0 ? null : index;
+}
+
+/**
+ * What is playing and what is next.
+ *
+ * The worker has held the queue all along, for naming the item that ends, and
+ * its own comment said "Nothing draws it" — which left the panel calling
+ * itself Model C ("chat/call/queue UI") while showing chat and a people list.
+ * Two titles is what is cheap and true here: they cost no request, they come
+ * from state that is already version-guarded, and they are the two rows a
+ * person watching actually asks about.
+ */
+function overlayQueueLines(): { nowPlaying: string | null; upNext: string | null } {
+  if (session === null) return { nowPlaying: null, upNext: null };
+  const index = playingQueueIndex(session);
+  if (index === null) return { nowPlaying: null, upNext: null };
+  return {
+    nowPlaying: session.queue[index]?.title ?? null,
+    upNext: session.queue[index + 1]?.title ?? null,
+  };
+}
+
 /** The room as the overlay shows it — or null when this tab is not the tab
  *  the room is being watched in, which is every tab but one. */
 function overlayStateFor(tabId: number | null): OverlayRoomState | null {
   if (session === null || tabId === null || tabId !== session.drivenTabId) return null;
+  const queue = overlayQueueLines();
   return {
     connection: overlayConnection(),
     roomName: session.roomName,
     people: overlayPeople(),
     messages: overlayMessages(),
     sync: overlaySync(),
+    nowPlaying: queue.nowPlaying,
+    upNext: queue.upNext,
+    // The same gate the room puts in front of every other transport send, and
+    // the panel only draws the control while it holds. The gate itself is
+    // re-applied when the button is pressed — a hidden control is not a check.
+    canSkip:
+      queue.nowPlaying !== null && canControlPlayback(session.playbackPolicy, session.role),
   };
 }
 
@@ -916,6 +1035,9 @@ async function loadRoomAccess(): Promise<void> {
     // A revived worker must not have to fetch this again.
     await persistSession();
   }
+  // Both of the answers above are drawn: the policy decides whether the panel
+  // offers a skip, and the id decides which person in it is "you".
+  pushOverlay();
 }
 
 /**
@@ -974,6 +1096,35 @@ async function sendRoomChat(tabId: number | null, text: string): Promise<null> {
     replyTo: null,
     mentions: [],
   });
+  return null;
+}
+
+/**
+ * The overlay's skip control.
+ *
+ * It sends the SAME intent the end of an item does — "the item I was playing
+ * is finished; move the room off it" — so it goes out through
+ * {@link reportEndedItem} rather than through a second spelling of
+ * `sync.advance`. The server compare-and-sets on the item named, so a skip
+ * that races the item genuinely ending is dropped rather than skipping twice.
+ *
+ * Two refusals, and both are re-checks of something the panel already knows:
+ * only the tab that holds the room may press it, and only a member the room
+ * lets drive playback. The control is hidden otherwise (see
+ * {@link overlayStateFor}) — hiding a control is a courtesy, never a gate.
+ */
+async function skipRoomItem(tabId: number | null): Promise<null> {
+  const live = session;
+  if (live === null || tabId === null || tabId !== live.drivenTabId) {
+    throw new Error('This tab is not in the room.');
+  }
+  if (!canControlPlayback(live.playbackPolicy, live.role)) {
+    throw new Error('The room does not let you skip.');
+  }
+  if (playingQueueIndex(live) === null) {
+    throw new Error('There is nothing in the queue to skip.');
+  }
+  reportEndedItem();
   return null;
 }
 
@@ -1081,6 +1232,8 @@ async function openSession(input: OpenSessionInput): Promise<void> {
     if (session === null || ev.payload.version < session.queueVersion) return;
     session.queue = [...ev.payload.items];
     session.queueVersion = ev.payload.version;
+    // …and the panel draws it now, so a queue mutation is a visible change.
+    pushOverlay();
   });
   // Chat is the overlay's reason to exist: the room's conversation, on the page
   // the film is playing on. It is kept here because the panel is torn down and
@@ -1588,8 +1741,14 @@ export interface ShareRoom {
 
 /** The capture surface of the browser, injected so `planShare` stays testable. */
 export interface ShareDeps {
-  /** Provider last reported by that tab's content script, if any. */
-  providerOf(tabId: number): ProviderSummary | undefined;
+  /**
+   * What that tab is. Asynchronous because the honest answer comes from the
+   * BROWSER — see {@link resolveTabProvider}. It was a synchronous read of a
+   * map only a content script ever wrote, and the refusal below is gated on
+   * it: an absent entry skipped the refusal outright, which is what a
+   * recycled worker made of every open tab.
+   */
+  providerOf(tabId: number): Promise<TabProvider | undefined>;
   tabStreamId(tabId: number): Promise<string>;
   chooseDesktop(sources: readonly DesktopSource[]): Promise<DesktopPick>;
 }
@@ -1710,10 +1869,10 @@ export async function planShare(
     // Capturing a protected surface is refused up front: output protection
     // black-frames it by design, and Gather never re-encodes protected media.
     // Mode A (everyone's own player, in sync) is the path that works.
-    const summary = deps.providerOf(room.tabId);
-    if (summary !== undefined && summary.tier === 'drm') {
+    const site = await deps.providerOf(room.tabId);
+    if (site !== undefined && site.drm) {
       throw new Error(
-        `${summary.name} is protected — capture would send a black frame. Everyone plays their own copy in sync instead.`,
+        `${site.name} is protected — capture would send a black frame. Everyone plays their own copy in sync instead.`,
       );
     }
     const streamId = await deps.tabStreamId(room.tabId);
@@ -1756,7 +1915,7 @@ export async function planShare(
  * one.
  */
 export const browserShareDeps: ShareDeps = {
-  providerOf: (tabId) => tabProviders.get(tabId),
+  providerOf: (tabId) => resolveTabProvider(tabId),
   tabStreamId: (tabId) => chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }),
   chooseDesktop: (sources) =>
     new Promise<DesktopPick>((resolve) => {
@@ -1894,6 +2053,12 @@ async function castActiveTab(): Promise<{ clicked: boolean; reason: string }> {
 
 /* ── External channel (the web app) ── */
 
+/**
+ * The provider of a tab as the PAGE is allowed to hear it (T6): a known id
+ * from a fixed public list, or the constant 'This page'. Redaction happens
+ * here and nowhere else — the map itself holds the full registry entry,
+ * because the popup is our own surface and builds its cast control from it.
+ */
 function currentProvider(tabId: number | null): ProviderSummary | null {
   if (tabId === null) return null;
   const known = tabProviders.get(tabId);
@@ -1916,6 +2081,21 @@ function broadcastStatus(): void {
   ports.broadcast((v) => eventMessage('status', status, v));
 }
 
+/**
+ * `statusOf`, with the driven tab read from the browser first.
+ *
+ * For the async answers only. `statusOf` itself is synchronous and is called
+ * from places that cannot wait (a port opening, a broadcast), so it reads the
+ * cache — which the drive tick keeps warm. An answer a page is *waiting* on
+ * can afford the one read, and a handoff is exactly the moment the cache is
+ * cold: the room has just been pointed at a tab nothing has classified.
+ */
+async function resolvedStatus(): Promise<SessionStatus> {
+  const tabId = session?.drivenTabId ?? null;
+  if (tabId !== null) await resolveTabProvider(tabId);
+  return statusOf();
+}
+
 const host: ExternalHost = {
   hello(): HelloResult {
     return {
@@ -1933,6 +2113,7 @@ const host: ExternalHost = {
   async capability(): Promise<CapabilityResult> {
     const tabId = session?.drivenTabId ?? (await resolveAutoTab());
     const hasMedia = tabHasMedia(tabId);
+    if (tabId !== null) await resolveTabProvider(tabId);
     return {
       hasMedia,
       targetKnown: tabId !== null,
@@ -1959,17 +2140,23 @@ const host: ExternalHost = {
       userId: null,
       resumed: false,
     });
-    if (input.intent !== null) applyIntentHint(input.intent);
-    return statusOf();
+    return resolvedStatus();
   },
 
-  async intent(intent: MediaIntent): Promise<SessionStatus> {
+  /**
+   * What the room believes is playing. The extension does not act on it: the
+   * tab it drives, and what that tab is, are browser facts it reads for
+   * itself. `intent.contentUrl` used to be classified here and written into a
+   * module-global the popup then showed as "This tab" — a queued URL described
+   * as the tab the user is looking at. Adopting a tab is what is left, and it
+   * is the part that was ever about the browser.
+   */
+  async intent(_intent: MediaIntent): Promise<SessionStatus> {
     if (session === null) {
       throw new ProtocolFault(ProtocolErrorCode.NotConnected, 'no room has been handed off yet');
     }
-    applyIntentHint(intent);
     await adoptTabIfArmed();
-    return statusOf();
+    return resolvedStatus();
   },
 
   async release(): Promise<SessionStatus> {
@@ -1978,16 +2165,6 @@ const host: ExternalHost = {
     return statusOf();
   },
 };
-
-/**
- * The only consumer of `intent.contentUrl` (T4): it classifies the provider
- * so the popup/web can name it. It is never fetched and never navigated to.
- */
-function applyIntentHint(intent: MediaIntent): void {
-  if (intent.contentUrl === null) return;
-  const classified = providerForUrl(intent.contentUrl);
-  provider = { ...classified };
-}
 
 chrome.runtime.onMessageExternal.addListener(
   (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse: (r?: unknown) => void) => {
@@ -2110,6 +2287,8 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       return respond(Promise.resolve(overlayStateFor(sender.tab?.id ?? null)));
     case 'overlay:chat':
       return respond(sendRoomChat(sender.tab?.id ?? null, String(msg['text'] ?? '')));
+    case 'overlay:skip':
+      return respond(skipRoomItem(sender.tab?.id ?? null));
     case 'overlay:leave':
       return respond(
         disconnect().then(() => {
@@ -2126,19 +2305,41 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       }
       return false;
     }
+    /**
+     * The popup, answered about THE TAB IT IS DRAWN OVER.
+     *
+     * It says "This tab: X" and builds its cast control out of that same
+     * answer, and the answer used to be a module-global written by whichever
+     * tab's content script spoke last — and overwritten again by the web
+     * app's handoff. Open Netflix in one window while YouTube autoplays in
+     * another and the popup over Netflix said YouTube and offered a cast
+     * button that dispatched into Netflix. The click itself was always aimed
+     * at the active tab (see castActiveTab), which is precisely what made the
+     * mismatch reachable rather than merely wrong.
+     *
+     * The position counter beside it belongs to the DRIVEN tab, so it is only
+     * shown when the driven tab is the tab being described.
+     */
     case 'popup:status':
       return respond(
-        (async () => ({
-          connected: session !== null,
-          roomName: session?.roomName ?? null,
-          playing: session?.playback?.playing ?? false,
-          telemetry: lastTelemetry,
-          provider,
-          // A share this worker no longer remembers — it was terminated and
-          // revived while the capture ran — is still a share, and the document
-          // still being open is the browser's own proof of it.
-          sharing: await isSharingLive(),
-        }))(),
+        (async () => {
+          const [tab] = await chrome.tabs
+            .query({ active: true, currentWindow: true })
+            .catch(() => []);
+          const tabId = tab?.id;
+          const driven = tabId !== undefined && tabId === session?.drivenTabId;
+          return {
+            connected: session !== null,
+            roomName: session?.roomName ?? null,
+            playing: session?.playback?.playing ?? false,
+            telemetry: driven ? lastTelemetry : null,
+            provider: tabId === undefined ? null : ((await resolveTabProvider(tabId)) ?? null),
+            // A share this worker no longer remembers — it was terminated and
+            // revived while the capture ran — is still a share, and the
+            // document still being open is the browser's own proof of it.
+            sharing: await isSharingLive(),
+          };
+        })(),
       );
     case 'telemetry': {
       const tabId = sender.tab?.id;
@@ -2253,21 +2454,23 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       reportEndedItem();
       return false;
     }
+    /**
+     * The top frame reporting that its page changed (load, or an SPA route).
+     *
+     * It carries no classification and is not asked to: what this tab is
+     * showing is `chrome.tabs.get(...).url`, which the page cannot forge and
+     * which is still there after MV3 recycles this worker. The message is a
+     * REASON TO LOOK — the browser's own `tabs.onUpdated` is the other, and
+     * both land on the same re-read.
+     */
     case 'provider': {
-      const raw = msg['provider'] as Record<string, unknown> | undefined;
-      provider = raw ?? null;
       const tabId = sender.tab?.id;
-      if (tabId !== undefined && raw !== undefined) {
-        tabProviders.set(tabId, {
-          id: String(raw['id'] ?? 'generic'),
-          name: String(raw['name'] ?? 'This page'),
-          tier: String(raw['tier'] ?? 'generic'),
-        });
-        if (session !== null && tabId === session.drivenTabId) {
-          const summary = currentProvider(tabId);
-          ports.broadcast((v) => eventMessage('capability', summary, v));
-        }
-      }
+      if (tabId === undefined) return false;
+      forgetTabProvider(tabId);
+      void resolveTabProvider(tabId).then((known) => {
+        if (known === undefined || session === null || tabId !== session.drivenTabId) return;
+        ports.broadcast((v) => eventMessage('capability', redactProvider(known), v));
+      });
       return false;
     }
     default:

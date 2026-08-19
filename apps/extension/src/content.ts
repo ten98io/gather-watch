@@ -35,7 +35,9 @@
  *                                 the SITE's player (driver frame, driven only)
  *   → { kind: 'mediaEnded', positionMs, durationMs }  the item ran out — a
  *                                 fact, never an intent (driver frame, driven)
- *   → { kind: 'provider', provider }                  (top frame, on route)
+ *   → { kind: 'provider' }                            this tab's page changed
+ *                                 (top frame, on load and on every route); the
+ *                                 worker re-reads the URL from the browser
  *   → { kind: 'overlay:state' } → the room for THIS tab, or null when it is
  *                                 not the tab in the room
  *   → { kind: 'overlay:chat' | 'overlay:leave' | 'overlay:open-app' }
@@ -73,6 +75,7 @@ import {
 } from './protocol';
 import { providerForUrl } from './providers';
 import { watchNavigation } from './spaWatch';
+import type { NavigationWatcher } from './spaWatch';
 
 /** Heartbeat: navigation poll + claim refresh + telemetry when driving. */
 const HEARTBEAT_MS = 1000;
@@ -241,11 +244,16 @@ function scheduleClaim(): void {
   }, 300);
 }
 
+/**
+ * Tell the worker this tab's page changed. It carries no classification: the
+ * worker reads the tab's own URL from the browser (`chrome.tabs.get`), which
+ * this page cannot forge and which is still there after MV3 recycles the
+ * worker — a classification the worker could only have been TOLD is one it
+ * loses on every recycle, for every tab already open.
+ */
 function reportProvider(): void {
-  if (window.top !== window) return; // one provider per tab, from the top frame
-  void chrome.runtime
-    .sendMessage({ kind: 'provider', provider: providerForUrl(location.href) })
-    .catch(() => undefined);
+  if (window.top !== window) return; // one report per tab, from the top frame
+  void chrome.runtime.sendMessage({ kind: 'provider' }).catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -536,31 +544,36 @@ chrome.runtime.onMessage.addListener(
 );
 
 // Route changes: same document, different content. Re-detect from scratch.
-const nav = watchNavigation(
-  {
-    history,
-    currentUrl: () => location.href,
-    addEventListener: (type, listener) => window.addEventListener(type, listener),
-    removeEventListener: (type, listener) => window.removeEventListener(type, listener),
-  },
-  () => {
-    cachedMedia = null;
-    scanDirty = true;
-    lastScanAt = 0;
-    // The element this frame was driving is gone; the ROLE is not ours to
-    // revoke, so the election is left to say whether this frame still wins.
-    driven = false;
-    lastCommand = null;
-    // Whatever ended on the old route ended there. The listener survives the
-    // route (one document, one registration) — the judgement does not.
-    mediaEnd.reset();
-    reportProvider();
-    reportClaim(true);
-    // A route change can mean the tab left the room's content, or that the
-    // site replaced the page under a panel that is still standing.
-    refreshRoomOverlay();
-  },
-);
+const navHost = {
+  history,
+  currentUrl: () => location.href,
+  addEventListener: (type: string, listener: () => void) =>
+    window.addEventListener(type, listener),
+  removeEventListener: (type: string, listener: () => void) =>
+    window.removeEventListener(type, listener),
+};
+
+function onRouteChange(): void {
+  cachedMedia = null;
+  scanDirty = true;
+  lastScanAt = 0;
+  // The element this frame was driving is gone; the ROLE is not ours to
+  // revoke, so the election is left to say whether this frame still wins.
+  driven = false;
+  lastCommand = null;
+  // Whatever ended on the old route ended there. The listener survives the
+  // route (one document, one registration) — the judgement does not.
+  mediaEnd.reset();
+  reportProvider();
+  reportClaim(true);
+  // A route change can mean the tab left the room's content, or that the
+  // site replaced the page under a panel that is still standing.
+  refreshRoomOverlay();
+}
+
+/** Null until {@link armPage} makes one — and null again after a teardown,
+ *  because a disposed watcher never fires and is not worth keeping. */
+let nav: NavigationWatcher | null = null;
 
 // The element is often replaced in place without any navigation at all.
 const observer = new MutationObserver((records) => {
@@ -571,7 +584,6 @@ const observer = new MutationObserver((records) => {
     }
   }
 });
-observer.observe(document.documentElement, { childList: true, subtree: true });
 
 // Media events do not bubble, but capture-phase listeners on the document see
 // them (including from open shadow roots) — the fastest re-claim signal.
@@ -671,14 +683,65 @@ function onMediaEnded(ev: Event): void {
 
 document.addEventListener('ended', (ev) => onMediaEnded(ev), true);
 
-window.addEventListener('pagehide', () => {
-  nav.dispose();
+/**
+ * Everything in this document that is TAKEN DOWN when the page goes away —
+ * and PUT BACK when it comes back.
+ *
+ * `pagehide` fires for both of those, and the difference is `persisted`: a
+ * document entering the back/forward cache is not destroyed, it is frozen and
+ * handed back intact on `pageshow`. The teardown used to have no partner, so a
+ * tab that went Back and then Forward again came back with a navigation
+ * watcher that had been disposed — `check()` returns immediately once disposed
+ * and the history methods have been unpatched — and a disconnected mutation
+ * observer. The 1 Hz heartbeat kept calling into both, so nothing threw and
+ * nothing worked: SPA route changes stopped being noticed for the life of that
+ * tab, and the overlay, torn down on the way out, never came back.
+ *
+ * Both are idempotent, because `pageshow` also fires on an ordinary first load
+ * (with `persisted` false), and a second arm would patch `history` twice.
+ */
+let armed = false;
+
+function armPage(): void {
+  if (armed) return;
+  armed = true;
+  // A disposed watcher never fires again — this takes a fresh one, anchored at
+  // the URL the page actually came back on.
+  nav = watchNavigation(navHost, onRouteChange);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  // The document was frozen, not reloaded, so the DOM may be exactly as it was
+  // — but this frame's claim has long since expired out of the election, and
+  // the worker may have been recycled and restored since.
+  scanDirty = true;
+  reportProvider();
+  reportClaim(true);
+  // Nothing is injected by asking: this is "is this tab in a room?", and the
+  // answer for almost every page in almost every tab is "no".
+  refreshRoomOverlay();
+}
+
+function disarmPage(): void {
+  if (!armed) return;
+  armed = false;
+  nav?.dispose();
+  nav = null;
   observer.disconnect();
   hideRoomOverlay();
+}
+
+window.addEventListener('pagehide', () => {
+  disarmPage();
+});
+
+window.addEventListener('pageshow', (ev: Event) => {
+  // A fresh document armed itself at module scope; only a restore from the
+  // back/forward cache has a teardown to undo.
+  if ((ev as PageTransitionEvent).persisted !== true) return;
+  armPage();
 });
 
 setInterval(() => {
-  nav.check();
+  nav?.check();
   reportClaim();
   if (role === 'driver') sendTelemetry();
 }, HEARTBEAT_MS);
@@ -725,8 +788,4 @@ if (window.top === window && WEB_ORIGINS.includes(location.origin)) {
   announceToGather();
 }
 
-reportProvider();
-reportClaim(true);
-// Nothing is injected here: this asks whether the tab is in a room, and the
-// answer for almost every page in almost every tab is "no".
-refreshRoomOverlay();
+armPage();

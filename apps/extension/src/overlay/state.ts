@@ -49,6 +49,14 @@ export interface OverlayRoomState {
   messages: readonly OverlayMessage[];
   /** Straight from `ElasticDriver.state()`; only ever read by syncStatusLabel. */
   sync: ElasticDriverState | null;
+  /** The title of the row of the room's queue this player is on. Null when the
+   *  room is playing something that is not a row of its queue. */
+  nowPlaying?: string | null;
+  /** The row after it, or null at the end of the queue. */
+  upNext?: string | null;
+  /** Whether the room's playbackControl policy admits this member. False hides
+   *  the skip control; it is not the gate — see background.ts's skipRoomItem. */
+  canSkip?: boolean;
   /**
    * Messages that belong to a moment this viewer has not reached yet. Chat is
    * anchored to media time so nothing spoils (docs/EXTENSION_FIRST.md,
@@ -70,6 +78,9 @@ export interface OverlayRoomState {
 export type OverlayOutbound =
   | { kind: 'overlay:state' }
   | { kind: 'overlay:chat'; text: string }
+  /** Move the room off the item it is on — the same `sync.advance` the worker
+   *  sends when an item runs out of frames. */
+  | { kind: 'overlay:skip' }
   | { kind: 'overlay:leave' }
   | { kind: 'overlay:open-app' };
 
@@ -79,6 +90,9 @@ export type OverlaySend = (message: OverlayOutbound) => Promise<unknown>;
 /* ─────────────────────────────── clamps ──────────────────────────────────── */
 
 export const MAX_ROOM_NAME = 60;
+/** A queue title is up to 300 characters on the wire and the panel is 320px
+ *  wide; past this it is an ellipsis either way, and the clamp says so. */
+export const MAX_ITEM_TITLE = 80;
 export const MAX_PERSON_NAME = 32;
 export const MAX_MESSAGE_TEXT = 1500;
 export const MAX_PEOPLE = 60;
@@ -215,6 +229,12 @@ export interface RoomView {
   /** '' when nothing is being held back. */
   aheadLine: string;
   canSend: boolean;
+  /** The playing item's title, '' when the room is not on a queued row. */
+  nowPlaying: string;
+  /** 'Up next: X', '' at the end of the queue and when nothing is playing. */
+  upNextLine: string;
+  /** Draw the skip control at all. Never true without something to skip. */
+  canSkip: boolean;
 }
 
 const UNTITLED_ROOM = 'Your room';
@@ -227,6 +247,9 @@ export const EMPTY_VIEW: RoomView = {
   messages: [],
   aheadLine: '',
   canSend: false,
+  nowPlaying: '',
+  upNextLine: '',
+  canSkip: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -304,6 +327,15 @@ export function personNote(person: PersonView): string {
   if (person.away) return 'away';
   if (person.micOn) return 'mic on';
   return '';
+}
+
+/**
+ * The row after the playing one, as a sentence. '' when there is no next row,
+ * because "Up next: nothing" is a line that says less than no line at all —
+ * the end of a queue is not news until the item actually ends.
+ */
+export function upNextLine(title: string): string {
+  return title.length > 0 ? `Up next: ${title}` : '';
 }
 
 /** Never silently withhold: say how many messages are waiting, in words. */
@@ -389,6 +421,10 @@ export function normalizeRoomState(raw: unknown): RoomView {
   if (!isRecord(raw)) return EMPTY_VIEW;
   const connection = readConnection(raw['connection']);
   const roomName = safeText(raw['roomName'], MAX_ROOM_NAME, 'name');
+  // A queue title was typed by whoever added the row, so it is scrubbed as a
+  // NAME: it stands for something, it is drawn on one line, and an invisible
+  // character in it buys nothing but a title that is not what it looks like.
+  const nowPlaying = safeText(raw['nowPlaying'], MAX_ITEM_TITLE, 'name');
   return {
     connection,
     roomTitle: roomName.length > 0 ? roomName : UNTITLED_ROOM,
@@ -397,5 +433,11 @@ export function normalizeRoomState(raw: unknown): RoomView {
     messages: readMessages(raw['messages']),
     aheadLine: aheadLine(finiteOr(raw['messagesAhead'], 0)),
     canSend: typeof raw['canSend'] === 'boolean' ? raw['canSend'] : connection === 'live',
+    nowPlaying,
+    // Both hang off the playing row: there is no "next" without a "now", and a
+    // skip with nothing to skip is a control that can only fail.
+    upNextLine:
+      nowPlaying.length > 0 ? upNextLine(safeText(raw['upNext'], MAX_ITEM_TITLE, 'name')) : '',
+    canSkip: nowPlaying.length > 0 && raw['canSkip'] === true,
   };
 }

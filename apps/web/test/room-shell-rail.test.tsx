@@ -337,4 +337,21 @@ describe('theater is the user’s latch, not the item’s', () => {
       [...host.querySelectorAll('button')].map((b) => b.getAttribute('aria-label')),
     ).not.toContain('Turn theater mode on');
   });
+
+  /**
+   * The header arrow said "Leave room" and was an <a href="/home">. Nothing in
+   * the product called POST /rooms/:id/leave, so the membership survived every
+   * "leave": rooms never expire, and /home was therefore append-only — a row
+   * for every room ever opened, with no way to lose one. Leaving is now a real
+   * call in the room menu, and this arrow says only what it does.
+   */
+  it('the header arrow is navigation, and no longer claims to leave the room', async () => {
+    await mountRoom(makeRoom('watch', { theater: false }), VIDEO);
+    const back = host.querySelector<HTMLAnchorElement>('header a[href="/home"]');
+    expect(back).not.toBeNull();
+    expect(back?.getAttribute('aria-label')).toBe('Your rooms');
+    expect(
+      [...host.querySelectorAll('a, button')].map((el) => el.getAttribute('aria-label')),
+    ).not.toContain('Leave room');
+  });
 });

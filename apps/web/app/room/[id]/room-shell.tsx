@@ -15,6 +15,7 @@ import { api, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { describeError } from '@/lib/describe-error';
 import { ROLE_LABEL } from '@/lib/labels';
+import { canAct } from '@/lib/permissions';
 import { toast } from '@/components/ui/toast';
 import { RoomMenu } from '@/components/room/RoomMenu';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
@@ -175,7 +176,10 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /** Theater layout: rail hidden by default, opens as a glass overlay. */
   const [railOpen, setRailOpen] = useState(false);
-  const canManage = member.role === 'host' || member.role === 'moderator';
+  /** The 'mods' tier, from the one place that defines it — the same predicate
+   *  the panes use, and the same one the server's requireRole('host',
+   *  'moderator') spells out on rename, policies, kick, ban and pin. */
+  const canManage = canAct('mods', member.role);
   /** What the stage is showing right now — the room has no mode of its own.
    *  Selecting the classified kind (a primitive) keeps this render quiet
    *  across the position-only playback updates every sync tick sends. */
@@ -261,9 +265,16 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
     <CallSessionProvider>
       <div className="flex h-dvh flex-col">
         <header className="flex flex-wrap items-center gap-3 px-4 py-3">
+          {/* Navigation, and only that. It said "Leave room" while leaving a
+              room had no control anywhere in the app — the membership survived,
+              so /home grew a row per room ever opened and never lost one.
+              Leaving is POST /rooms/:id/leave, and it lives in the room menu.
+              The wording avoids RoomNotice's "Back to your rooms" button on
+              purpose — room-closed-notice.test.ts tells the two screens apart
+              by that string. */}
           <Link
             href="/home"
-            aria-label="Leave room"
+            aria-label="Your rooms"
             className="text-low transition-colors hover:text-hi"
           >
             <ArrowLeftIcon size={20} aria-hidden />

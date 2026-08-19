@@ -20,7 +20,8 @@ import type {
   ShareResult,
   ShareRoom,
 } from '../src/background';
-import type { ProviderSummary } from '../src/protocol';
+import { providerForUrl } from '../src/providers';
+import type { TabProvider } from '../src/providers';
 
 /**
  * The room socket is the one dependency this file cannot stand up: it opens a
@@ -126,6 +127,15 @@ interface ChromeFake {
   /** Make the offscreen API reject, as it does once the document is gone. */
   offscreenBroken: boolean;
   activeTab: { id: number; url: string } | null;
+  /**
+   * What each tab the browser has is showing.
+   *
+   * The worker classifies a tab by asking `chrome.tabs.get` for its URL, so
+   * this map is how a test says "that tab is Netflix" — and, crucially, how it
+   * says so WITHOUT a content script having reported anything, which is the
+   * state every open tab is in after MV3 recycles the worker.
+   */
+  tabUrls: Map<number, string>;
   /** Tabs the browser no longer has. `chrome.tabs.get` refuses these, which is
    *  how the worker learns a tab it remembers is gone. */
   closedTabs: Set<number>;
@@ -133,6 +143,10 @@ interface ChromeFake {
   store: Record<string, unknown>;
   onMessage: FakeEvent<MessageListener>;
   onRemoved: FakeEvent<(tabId: number) => void>;
+  /** Chrome's notice that a tab is showing something else — see navigateTab. */
+  onUpdated: FakeEvent<
+    (tabId: number, change: Record<string, unknown>, tab: Record<string, unknown>) => void
+  >;
   /** The web app's event port arrives here — see openEventPort. */
   onConnectExternal: FakeEvent<(port: unknown) => void>;
   /** Chrome's notice that it is about to terminate the worker. The worker
@@ -159,6 +173,8 @@ function installChromeFake(): ChromeFake {
 
   const onMessage = evt<MessageListener>();
   const onRemoved = evt<(tabId: number) => void>();
+  const onUpdated =
+    evt<(tabId: number, change: Record<string, unknown>, tab: Record<string, unknown>) => void>();
   const onConnectExternal = evt<(port: unknown) => void>();
   const onSuspend = evt<() => void>();
   const state: ChromeFake = {
@@ -176,10 +192,12 @@ function installChromeFake(): ChromeFake {
     stopBeforeClose: null,
     offscreenBroken: false,
     activeTab: { id: 7, url: 'https://example.com/watch' },
+    tabUrls: new Map<number, string>([[7, 'https://example.com/watch']]),
     closedTabs: new Set<number>(),
     store: {},
     onMessage,
     onRemoved,
+    onUpdated,
     onConnectExternal,
     onSuspend,
     allEvents,
@@ -201,13 +219,13 @@ function installChromeFake(): ChromeFake {
     },
     tabs: {
       onActivated: evt(),
-      onUpdated: evt(),
+      onUpdated,
       onRemoved,
       // A closed tab is not a tab: Chrome rejects, and that rejection is the
       // only way the worker can tell a remembered tab id from an open one.
       get: async (tabId: number) => {
         if (state.closedTabs.has(tabId)) throw new Error(`No tab with id: ${String(tabId)}`);
-        return {};
+        return { id: tabId, url: state.tabUrls.get(tabId) };
       },
       query: async () => (state.activeTab === null ? [] : [state.activeTab]),
       sendMessage: async (
@@ -307,6 +325,15 @@ let fetched: string[] = [];
 /** Make GET /rooms/:id never answer, as a dead network does. */
 let hangRoomFetch = false;
 
+/** The ordinary page every test starts on: a site in no registry, with a
+ *  player. Its provider is 'generic', which refuses nothing. */
+const WATCH_URL = 'https://example.com/watch';
+/** A tab showing nothing classifiable — the worker caches no answer for one. */
+const BLANK_URL = 'about:blank';
+/** Every tab id this file uses. Reset between tests, because the worker's
+ *  classification of a tab outlives the test that navigated it. */
+const TEST_TABS: readonly number[] = [7, 8, 9];
+
 let fake: ChromeFake;
 let bg: typeof import('../src/background');
 
@@ -356,7 +383,13 @@ beforeEach(() => {
   fake.stopBeforeClose = null;
   fake.offscreenBroken = false;
   fake.activeTab = { id: 7, url: 'https://example.com/watch' };
+  fake.tabUrls.clear();
   fake.closedTabs.clear();
+  // Put the browser's tabs back where every test expects them, THROUGH the
+  // event the browser would fire: the worker caches what it classified a tab
+  // as, so a test that left tab 7 on Netflix has to navigate it away again,
+  // exactly as a user would.
+  for (const tabId of TEST_TABS) navigateTab(tabId, tabId === 7 ? WATCH_URL : BLANK_URL);
   // Hang up the previous test's pages: an open port is a surface, and a leaked
   // one would tell the worker somebody is still watching.
   for (const close of livePorts.splice(0)) close();
@@ -369,6 +402,9 @@ interface PopupStatus {
   roomName: string | null;
   sharing: boolean;
   telemetry: { positionMs: number } | null;
+  /** The FULL registry entry, not the redacted summary the page gets: the
+   *  popup's cast control is built out of `cast`. */
+  provider: TabProvider | null;
 }
 
 /**
@@ -421,16 +457,85 @@ async function closeTab(tabId: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * A tab goes somewhere else. Chrome's own `tabs.onUpdated` carries it, and
+ * that event is the whole point: it needs no content script, so it is what
+ * keeps the worker's idea of a tab true across a recycle.
+ */
+function navigateTab(tabId: number, url: string): void {
+  fake.tabUrls.set(tabId, url);
+  for (const listener of [...fake.onUpdated.listeners]) {
+    listener(tabId, { url }, { id: tabId, url });
+  }
+}
+
+/** Put a tab at a URL and make it the one the popup is drawn over. */
+function focusTab(tabId: number, url: string): void {
+  navigateTab(tabId, url);
+  fake.activeTab = { id: tabId, url };
+}
+
+/**
+ * A tab the browser ALREADY has, arriving with no event at all.
+ *
+ * This is every open tab from the point of view of a worker that has just
+ * started — or just been revived, which MV3 does roughly every thirty seconds
+ * of quiet. Nothing has reported it and nothing will; the only way to know
+ * what it is showing is to ask the browser.
+ */
+function existingTab(tabId: number, url: string): void {
+  fake.tabUrls.set(tabId, url);
+  fake.activeTab = { id: tabId, url };
+}
+
+/** The top frame telling the worker its page changed. It carries no
+ *  classification — the worker reads the tab's URL for itself. */
+function pageChanged(tabId: number): void {
+  notify({ kind: 'provider' }, { tab: { id: tabId } });
+}
+
+/**
+ * The worker is terminated, and something wakes it.
+ *
+ * Everything the worker held in memory goes: its module variables, its
+ * timers, its listeners, the ports pages had open on it. Everything the
+ * BROWSER holds stays: chrome.storage.session, the offscreen document, the
+ * user's tabs. Re-importing the module reproduces exactly that split — and
+ * the import is itself the wake, because background.ts ends in
+ * `void restoreSession()`.
+ *
+ * Callers hold the fake clock BEFORE the recycle, always: the revived worker
+ * arms a fresh beat timer, and a timer armed while the clock is real is a
+ * timer `advanceTimersByTime` can never reach.
+ */
+async function recycleWorker(): Promise<void> {
+  // Chrome's notice before it terminates. The worker's own handler stops its
+  // timers on it — without that, `vi.resetModules()` leaves the dead worker's
+  // intervals running and two workers beat for one room.
+  for (const listener of [...fake.onSuspend.listeners]) listener();
+  for (const event of fake.allEvents) event.listeners.length = 0;
+  room.handlers.clear();
+  vi.resetModules();
+  bg = await import('../src/background');
+  await vi.advanceTimersByTimeAsync(0);
+}
+
 /* ── injected deps, so the plan can be tested without a browser ── */
+
+const NETFLIX_URL = 'https://www.netflix.com/watch/80100172';
+const YOUTUBE_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
 
 const ROOM: ShareRoom = { roomId: 'room_1', accessToken: 'tok_abc', tabId: 7, userId: 'user_1' };
 
-const NETFLIX: ProviderSummary = { id: 'netflix', name: 'Netflix', tier: 'drm' };
-const YOUTUBE: ProviderSummary = { id: 'youtube', name: 'YouTube', tier: 'api' };
+/** Built by the registry rather than by hand: the refusal reads the same
+ *  `drm` flag the classifier sets, and a hand-written stub can agree with it
+ *  today and drift tomorrow. */
+const NETFLIX = providerForUrl(NETFLIX_URL);
+const YOUTUBE = providerForUrl(YOUTUBE_URL);
 
 function fakeDeps(
   over: {
-    provider?: ProviderSummary | undefined;
+    provider?: TabProvider | undefined;
     tabStreamId?: string;
     pick?: DesktopPick;
   } = {},
@@ -440,7 +545,7 @@ function fakeDeps(
   return {
     pickedSources,
     tabCaptured,
-    providerOf: () => over.provider,
+    providerOf: async () => over.provider,
     tabStreamId: async (tabId) => {
       tabCaptured.push(tabId);
       return over.tabStreamId ?? 'tab-stream-1';
@@ -546,6 +651,67 @@ describe('planShare — protected tabs', () => {
     const plan = await bg.planShare(ROOM, 'screen', deps);
     expect(plan.start).toBe(true);
     expect(deps.pickedSources).toHaveLength(1);
+  });
+});
+
+/**
+ * The refusal above is only worth anything if the worker can still SAY what a
+ * tab is. It used to know that from one place — a content script's report, at
+ * module load and on an SPA route change — so MV3 terminating the worker (it
+ * does so after roughly thirty seconds of quiet) left every already-open tab
+ * unclassified with nothing to reclassify it. Unclassified is not "generic"
+ * here: the guard reads `undefined` and lets the capture through, and the room
+ * gets a black rectangle nobody can explain.
+ */
+describe('what a tab is, after the worker has forgotten', () => {
+  afterEach(async () => {
+    vi.useRealTimers();
+    if ((await status()).connected) await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('refuses a protected tab no content script has ever reported', async () => {
+    existingTab(9, NETFLIX_URL);
+    await connectRoom();
+
+    await expect(share('tab')).rejects.toThrow(
+      'Netflix is protected — capture would send a black frame.',
+    );
+    expect(fake.tabCaptureCalls).toEqual([]);
+  });
+
+  it('still refuses it after MV3 has recycled the worker', async () => {
+    vi.useFakeTimers();
+    focusTab(7, NETFLIX_URL);
+    await connectRoom();
+    // The content script reported once, as it does on load…
+    pageChanged(7);
+    await vi.advanceTimersByTimeAsync(0);
+    // …and then the worker died and woke up, which is all it takes.
+    await recycleWorker();
+
+    await expect(share('tab')).rejects.toThrow('Netflix is protected');
+    expect(fake.tabCaptureCalls).toEqual([]);
+  });
+
+  it('still captures an unprotected tab it was never told about', async () => {
+    existingTab(9, YOUTUBE_URL);
+    await connectRoom();
+
+    const result = await share('tab');
+
+    expect(result.shared).toBe(true);
+    expect(fake.tabCaptureCalls).toEqual([9]);
+  });
+
+  it('captures a tab it cannot classify rather than refusing on a guess', async () => {
+    // A tab the browser will not describe — it closed under us, or it is not a
+    // page. Nothing is known, so nothing is claimed, and the platform's own
+    // output protection remains the backstop the screen path already relies on.
+    fake.activeTab = { id: 9, url: 'https://example.com/watch' };
+    fake.tabUrls.delete(9);
+    await connectRoom();
+
+    expect((await share('tab')).shared).toBe(true);
   });
 });
 
@@ -917,6 +1083,78 @@ describe('stopping a share that is not there', () => {
     // started; the document still being open is the browser's own proof.
     fake.offscreenOpen = true;
     expect((await status()).sharing).toBe(true);
+  });
+});
+
+/**
+ * The popup is drawn over one tab and says "This tab: X" about it. That
+ * sentence used to come from a module-global written by ANY tab's top frame,
+ * on load and on every SPA route change, and overwritten again by the web
+ * app's handoff — so the tab it named was whichever one spoke last. The cast
+ * affordance is derived from the same answer, while the cast CLICK correctly
+ * targets the active tab, which is what turned a wrong sentence into a button
+ * that dispatched into the wrong site.
+ */
+describe('the popup is answered about the tab it is drawn over', () => {
+  afterEach(async () => {
+    // Give the election back what this suite borrowed: a claim is not scoped
+    // to a test, and a leaked one drives a tab the next test says nothing has
+    // ever claimed. Null is a frame saying it holds no player.
+    claimFrom(7, 3, null);
+    if ((await status()).connected) await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('names the active tab, not the tab that reported last', async () => {
+    // A room driving YouTube in one window…
+    focusTab(7, YOUTUBE_URL);
+    await connectRoom();
+    pageChanged(7);
+    // …while the user is looking at Netflix in another.
+    focusTab(9, NETFLIX_URL);
+
+    expect((await status()).provider?.name).toBe('Netflix');
+  });
+
+  it('carries the cast descriptor the popup builds its control from', async () => {
+    focusTab(9, YOUTUBE_URL);
+
+    const provider = (await status()).provider;
+
+    expect(provider?.cast.native).toBe(true);
+    expect(provider?.cast.buttons.length).toBeGreaterThan(0);
+  });
+
+  it('says a protected site is protected, so the popup can say so too', async () => {
+    focusTab(9, NETFLIX_URL);
+
+    const provider = (await status()).provider;
+
+    expect(provider?.drm).toBe(true);
+    expect(provider?.cast.native).toBe(false);
+  });
+
+  it('shows the position counter only for the tab the room is driving', async () => {
+    focusTab(7, YOUTUBE_URL);
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('sync.state', playbackAt(0));
+    notify(
+      { kind: 'telemetry', positionMs: 12_000, durationMs: 600_000, playing: true, rate: 1 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+    expect((await status()).telemetry?.positionMs).toBe(12_000);
+
+    // The user moves to another tab. That tab's line is about that tab, and
+    // the driven tab's position is not a fact about it.
+    focusTab(9, NETFLIX_URL);
+
+    expect((await status()).telemetry).toBeNull();
+  });
+
+  it('has nothing to say when the browser has no active tab', async () => {
+    fake.activeTab = null;
+
+    expect((await status()).provider).toBeNull();
   });
 });
 
@@ -1805,6 +2043,9 @@ interface OverlayState {
   people: Array<{ id: string; name: string; you: boolean; micOn: boolean; away: boolean }>;
   messages: Array<{ id: string; author: string; text: string; mine: boolean }>;
   sync: { stalled: boolean } | null;
+  nowPlaying: string | null;
+  upNext: string | null;
+  canSkip: boolean;
 }
 
 function presence(userId: string, over: { state?: string; micOn?: boolean } = {}): unknown {
@@ -1947,6 +2188,143 @@ describe('the injected room overlay', () => {
   });
 });
 
+/**
+ * The worker has held the room's queue all along — it is what `sync.advance`
+ * names the ended item out of — and its own comment said "Nothing draws it",
+ * while the panel's header cited a model defined as injecting the
+ * chat/call/QUEUE UI. Two titles and a skip is what is cheap and honest: no
+ * request, no new state, and the two rows a person watching actually asks
+ * about.
+ */
+describe('the overlay says what is playing and what is next', () => {
+  const FEATURE = { kind: 'url', url: 'https://cdn.example.com/feature.m3u8', mime: 'video/mp4' };
+  const SECOND = { kind: 'url', url: 'https://cdn.example.com/second.m3u8', mime: 'video/mp4' };
+
+  const queueRow = (id: string, title: string, mediaRef: Record<string, unknown>): unknown => ({
+    id,
+    mediaRef,
+    title,
+    durationMs: null,
+    artworkUrl: null,
+    addedBy: 'user_1',
+    votesToSkip: [],
+  });
+
+  const advances = (): unknown[] =>
+    room.sent.filter((m) => m.type === 'sync.advance').map((m) => m.payload);
+
+  /** A room on the first of two queued rows, driven from tab 7. */
+  async function playingFirstOfTwo(): Promise<void> {
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('queue.state', {
+      items: [queueRow('q_a', 'The Feature', FEATURE), queueRow('q_b', 'The Short', SECOND)],
+      version: 1,
+    });
+    room.emit('sync.state', { ...playbackAt(600_000, FEATURE), queueIndex: 0 });
+  }
+
+  const drawn = (): OverlayState => {
+    const push = lastOverlayPush();
+    if (push === undefined) throw new Error('nothing was pushed to the page');
+    return push.msg['state'] as OverlayState;
+  };
+
+  afterEach(async () => {
+    claimFrom(7, 3, null);
+    if ((await status()).connected) await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('names the playing row and the one after it', async () => {
+    await playingFirstOfTwo();
+
+    expect(drawn().nowPlaying).toBe('The Feature');
+    expect(drawn().upNext).toBe('The Short');
+  });
+
+  it('says nothing is next at the end of the queue', async () => {
+    await connectRoom();
+    room.emit('queue.state', { items: [queueRow('q_b', 'The Short', SECOND)], version: 1 });
+    room.emit('sync.state', { ...playbackAt(0, SECOND), queueIndex: 0 });
+
+    expect(drawn().nowPlaying).toBe('The Short');
+    expect(drawn().upNext).toBeNull();
+  });
+
+  it('names nothing for a room playing something its queue does not hold', async () => {
+    await connectRoom();
+    room.emit('queue.state', { items: [queueRow('q_b', 'The Short', SECOND)], version: 1 });
+    room.emit('sync.state', playbackAt(0, FEATURE));
+
+    expect(drawn().nowPlaying).toBeNull();
+    expect(drawn().canSkip).toBe(false);
+  });
+
+  it('redraws when the queue changes under an unchanged playing item', async () => {
+    await playingFirstOfTwo();
+    fake.tabMessages.length = 0;
+
+    room.emit('queue.state', {
+      items: [queueRow('q_a', 'The Feature', FEATURE), queueRow('q_c', 'Something Else', SECOND)],
+      version: 2,
+    });
+
+    expect(drawn().upNext).toBe('Something Else');
+  });
+
+  it('offers no skip to a member the room does not let drive playback', async () => {
+    await playingFirstOfTwo();
+
+    expect(drawn().canSkip).toBe(false);
+
+    await expect(ask({ kind: 'overlay:skip' }, { tab: { id: 7 } })).rejects.toThrow(
+      'The room does not let you skip.',
+    );
+    expect(advances()).toEqual([]);
+  });
+
+  it('offers a skip once the room says this member may drive', async () => {
+    roomWire = {
+      room: { policies: { playbackControl: 'everyone' } },
+      member: { role: 'guest', userId: 'user_1' },
+    };
+    await playingFirstOfTwo();
+    // loadRoomAccess is started without being waited on; it lands a turn later.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(drawn().canSkip).toBe(true);
+  });
+
+  /** The same intent the end of an item produces, so the server's own
+   *  compare-and-set is the only thing that decides what happens. */
+  it('sends sync.advance naming the row it is on', async () => {
+    roomWire = {
+      room: { policies: { playbackControl: 'everyone' } },
+      member: { role: 'guest', userId: 'user_1' },
+    };
+    await playingFirstOfTwo();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await ask({ kind: 'overlay:skip' }, { tab: { id: 7 } });
+
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
+  });
+
+  it('refuses a skip from a tab that is not in the room', async () => {
+    roomWire = {
+      room: { policies: { playbackControl: 'everyone' } },
+      member: { role: 'guest', userId: 'user_1' },
+    };
+    await playingFirstOfTwo();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(ask({ kind: 'overlay:skip' }, { tab: { id: 8 } })).rejects.toThrow(
+      'This tab is not in the room.',
+    );
+    expect(advances()).toEqual([]);
+  });
+});
+
 describe('the overlay names the people in the room', () => {
   afterEach(async () => {
     await ask({ kind: 'popup:disconnect' });
@@ -2058,32 +2436,6 @@ describe('the presence beat belongs to a surface the user can close', () => {
 
   /** Beats written to the room since the last reset. */
   const beats = (): number => room.sent.filter((m) => m.type === 'presence.update').length;
-
-  /**
-   * The worker is terminated, and something wakes it.
-   *
-   * Everything the worker held in memory goes: its module variables, its
-   * timers, its listeners, the ports pages had open on it. Everything the
-   * BROWSER holds stays: chrome.storage.session, the offscreen document, the
-   * user's tabs. Re-importing the module reproduces exactly that split — and
-   * the import is itself the wake, because background.ts ends in
-   * `void restoreSession()`.
-   *
-   * Callers hold the fake clock BEFORE the recycle, always: the revived worker
-   * arms a fresh beat timer, and a timer armed while the clock is real is a
-   * timer `advanceTimersByTime` can never reach.
-   */
-  async function recycleWorker(): Promise<void> {
-    // Chrome's notice before it terminates. The worker's own handler stops its
-    // timers on it — without that, `vi.resetModules()` leaves the dead
-    // worker's intervals running and two workers beat for one room.
-    for (const listener of [...fake.onSuspend.listeners]) listener();
-    for (const event of fake.allEvents) event.listeners.length = 0;
-    room.handlers.clear();
-    vi.resetModules();
-    bg = await import('../src/background');
-    await vi.advanceTimersByTimeAsync(0);
-  }
 
   afterEach(async () => {
     vi.useRealTimers();

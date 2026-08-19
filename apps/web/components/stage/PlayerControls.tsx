@@ -22,6 +22,7 @@ import {
   PauseIcon,
   PipIcon,
   PlayIcon,
+  TheaterIcon,
   VolumeIcon,
   VolumeMutedIcon,
 } from '@/components/ui/icons';
@@ -29,7 +30,12 @@ import { useRoomConnection } from '@/lib/room-context';
 import { describeError } from '@/lib/describe-error';
 import { formatMs } from '@/lib/permissions';
 import type { PlayerAdapter } from '@/lib/player/adapter';
-import { useExtensionDriver } from '@/lib/player/extension-driver';
+import {
+  extensionPositionMs,
+  extensionTelemetryLive,
+  useExtensionDriver,
+  useExtensionPlayback,
+} from '@/lib/player/extension-driver';
 import type { NativeAdapter } from '@/lib/player/native';
 import {
   airPlayAvailable,
@@ -40,6 +46,11 @@ import {
 import { toast } from '@/components/ui/toast';
 
 const RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+
+/** There is no number to show. A live stream never had a length, and a driven
+ *  tab that has stopped reporting has no position that describes now — a
+ *  frozen `0:00` reads as a real playhead, which is the lie this replaces. */
+const UNKNOWN_TIME = '--:--';
 
 /** `size="sm"` is 36px and pads for a text label; icon controls are 32px squares.
  *  `!` is required because `cn` only joins — Tailwind's own source order would
@@ -97,6 +108,8 @@ export function PlayerControls({
   captionsAvailable,
   muted,
   onMutedChange,
+  fullscreenActive = false,
+  onToggleFullscreen = null,
 }: {
   adapter: PlayerAdapter | null;
   playback: PlaybackState;
@@ -108,6 +121,11 @@ export function PlayerControls({
   /** Controlled by the pane so the M shortcut shares the state. */
   muted: boolean;
   onMutedChange(muted: boolean): void;
+  /** The stage is filling this viewer's screen right now. */
+  fullscreenActive?: boolean;
+  /** Null (or absent) where the platform has no element-level fullscreen at
+   *  all — iOS Safari on iPhone. The control is withheld, never offered dead. */
+  onToggleFullscreen?: (() => void) | null;
 }) {
   const connection = useRoomConnection();
   const [now, setNow] = useState(() => Date.now());
@@ -168,21 +186,52 @@ export function PlayerControls({
     return () => clearTimeout(h);
   }, [scrubMs]);
 
-  const expected =
-    playback.playing && adapter !== null
+  // Shares StagePane's singleton store; this is a second subscriber, not a
+  // second detection pass.
+  const extension = useExtensionDriver();
+  /**
+   * WHERE THE NUMBERS COME FROM WHILE THE EXTENSION DRIVES.
+   *
+   * StagePane nulls the adapter kind then (two players for one room is the bug
+   * that rule exists to prevent), so `adapter` is null and every reading below
+   * used to fall back to a value nothing updates: the position froze at
+   * `playback.positionMs`, the length read 0:00, and the scrubber was inert —
+   * while the driven tab streamed all three once a second into a store with no
+   * consumer.
+   *
+   * This is the one component that subscribes to that store, and it is the
+   * right one: it already re-renders twice a second to move a clock, which is
+   * exactly the cost extension-driver.ts kept the telemetry out of the session
+   * snapshot to avoid inflicting on everyone else.
+   */
+  const driven = useExtensionPlayback();
+  const driving = extension.driving;
+  /** The driven tab is still reporting. A reading older than that is not a
+   *  position, and `extensionPositionMs` stops projecting it for the same
+   *  reason. */
+  const drivenLive = driving && extensionTelemetryLive(driven, now);
+  /** Driving, and the tab has gone quiet. Say so rather than draw a playhead. */
+  const drivenStale = driving && !drivenLive;
+
+  const expected = driving
+    ? extensionPositionMs(driven, now)
+    : playback.playing && adapter !== null
       ? adapter.positionMs() // freshest local read; drift engine keeps it true
       : playback.positionMs;
   void now; // re-render heartbeat for the clock display
 
   const positionMs = scrubMs ?? expected;
-  const seekMax = Math.max(1, durationMs);
+  /** The item's length, from whichever player actually knows it. */
+  const lengthMs = driving ? driven.durationMs : durationMs;
+  const seekMax = Math.max(1, lengthMs);
+  /** Scrubbing needs a length to scrub within. The other half of the rule —
+   *  a player still answering — is enforced by not rendering the scrubber at
+   *  all while `drivenStale`, which is stronger than disabling it. */
+  const canSeek = enabled && lengthMs > 0;
   const canCast = nativeEl !== null && remotePlaybackAvailable(nativeEl);
   const canAirPlay = nativeEl !== null && airPlayAvailable(nativeEl);
   const canPip = nativeEl !== null && 'requestPictureInPicture' in document;
 
-  // Shares StagePane's singleton store; this is a second subscriber, not a
-  // second detection pass.
-  const extension = useExtensionDriver();
   const castExplain = castExplanation({
     adapterKind: adapter !== null ? adapter.kind : null,
     nativeEl,
@@ -192,9 +241,20 @@ export function PlayerControls({
       extension.state.phase === 'ready' ? (extension.state.provider?.name ?? null) : null,
   });
 
+  /**
+   * Play/pause is a ROOM event, so it works with no local player at all — the
+   * extension follows the room's transport like every other client. What it
+   * cannot do is invent the position to pin the room at: a stale reading would
+   * pause everyone back where the tab was a minute ago, so an unattested
+   * position is omitted and the server keeps its own.
+   */
   const togglePlay = (): void => {
-    if (!enabled || adapter === null) return;
-    const pos = adapter.positionMs();
+    if (!enabled) return;
+    const pos = driving
+      ? drivenLive
+        ? Math.round(extensionPositionMs(driven, Date.now()))
+        : undefined
+      : adapter?.positionMs();
     if (playback.playing) connection.syncPause(pos);
     else connection.syncPlay(pos);
   };
@@ -205,7 +265,7 @@ export function PlayerControls({
         <Button
           variant="primary"
           size="sm"
-          disabled={!enabled || adapter === null}
+          disabled={!enabled || (adapter === null && !driving)}
           onClick={togglePlay}
           className={ICON_BTN}
         >
@@ -214,42 +274,60 @@ export function PlayerControls({
       </Tooltip>
 
       <span className="hidden w-12 shrink-0 text-right font-mono text-xs text-mid tabular-nums sm:inline">
-        {formatMs(positionMs)}
+        {drivenStale ? UNKNOWN_TIME : formatMs(positionMs)}
       </span>
       {/* basis-24 (not flex-1) so wrapping actually triggers on a narrow stage:
           a 0-basis item is collected into the line at zero width and then
           overflows past min-width instead of pushing the tail onto row two. */}
-      <Tooltip content="Seek (arrow keys ±10s)" className="min-w-[6rem] grow basis-24">
-        <Slider
-          aria-label="Seek"
-          min={0}
-          max={seekMax}
-          step={500}
-          value={Math.min(positionMs, seekMax)}
-          disabled={!enabled || durationMs <= 0}
-          // Dragging only moves the local preview; the room hears about it once.
-          onValueChange={(ms) => {
-            draggingRef.current = true;
-            setScrubMs(ms);
-          }}
-          onValueCommit={(ms) => {
-            draggingRef.current = false;
-            if (!enabled) return;
-            connection.syncSeek(Math.round(ms));
-          }}
-          className="h-8"
-        />
-      </Tooltip>
+      {drivenStale ? (
+        // The same slot, saying the true thing. A disabled scrubber sitting at
+        // the last known position is indistinguishable from a paused room.
+        <span className="min-w-[6rem] grow basis-24 truncate px-2 text-label text-low">
+          The playing tab stopped reporting
+        </span>
+      ) : (
+        <Tooltip content="Seek (arrow keys ±10s)" className="min-w-[6rem] grow basis-24">
+          <Slider
+            aria-label="Seek"
+            min={0}
+            max={seekMax}
+            step={500}
+            value={Math.min(positionMs, seekMax)}
+            disabled={!canSeek}
+            // Dragging only moves the local preview; the room hears about it once.
+            onValueChange={(ms) => {
+              draggingRef.current = true;
+              setScrubMs(ms);
+            }}
+            onValueCommit={(ms) => {
+              draggingRef.current = false;
+              if (!enabled) return;
+              connection.syncSeek(Math.round(ms));
+            }}
+            className="h-8"
+          />
+        </Tooltip>
+      )}
       <span className="w-12 shrink-0 font-mono text-xs text-low tabular-nums">
-        {formatMs(durationMs)}
+        {driving && lengthMs <= 0 ? UNKNOWN_TIME : formatMs(lengthMs)}
       </span>
 
       <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border-glass" />
 
-      <Tooltip content={muted ? 'Unmute (M)' : 'Mute (M)'}>
+      {/* Output is LOCAL, and while the extension drives there is no local
+          output: the sound is in another tab and the protocol carries no
+          volume intent at all (MediaIntent in lib/extension-bridge.ts is
+          position/rate/playing). Left live, this flipped its own icon and
+          reached nothing. */}
+      <Tooltip
+        content={
+          driving ? 'Volume lives in the playing tab' : muted ? 'Unmute (M)' : 'Mute (M)'
+        }
+      >
         <Button
           variant="ghost"
           size="sm"
+          disabled={driving}
           onClick={() => {
             const next = !muted;
             adapter?.setMuted(next);
@@ -268,6 +346,7 @@ export function PlayerControls({
           min={0}
           max={1}
           step={0.05}
+          disabled={driving}
           value={muted ? 0 : volume}
           onValueChange={(v) => {
             setVolume(v);
@@ -369,6 +448,24 @@ export function PlayerControls({
             </Tooltip>
           )}
         </>
+      )}
+      {/* True browser fullscreen for the whole stage (DESIGN.md §11 D1.1), and
+          the last control in the bar because that is where every player in the
+          world puts it. One glyph carries both states, with `aria-pressed` and
+          the label saying which: components/ui/icons.tsx is the single icon
+          source (§8) and has a maximize and no minimize. */}
+      {onToggleFullscreen !== null && (
+        <Tooltip content={fullscreenActive ? 'Exit fullscreen (F)' : 'Fullscreen (F)'} align="end">
+          <Button
+            variant={fullscreenActive ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={fullscreenActive}
+            onClick={onToggleFullscreen}
+            className={ICON_BTN}
+          >
+            <TheaterIcon size={16} />
+          </Button>
+        </Tooltip>
       )}
     </div>
   );
