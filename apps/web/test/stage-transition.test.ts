@@ -98,13 +98,43 @@ function stubMatchMedia(reducedMotion: boolean): void {
   })) as unknown as typeof window.matchMedia;
 }
 
+/**
+ * THE FRAME IS HELD, and that is what makes the rise assertion deterministic.
+ *
+ * `StageMessage` starts displaced and flips home in a `requestAnimationFrame`
+ * callback, so "is it displaced?" is only a stable question while no frame has
+ * run. jsdom's rAF is a real ~16ms timer, and `await act(async …)` yields to
+ * the event loop — so on a loaded machine (the whole suite in parallel) the
+ * frame fired DURING the mount and the test read the settled value. It passed
+ * alone, failed under load, and the flake was in the assertion rather than in
+ * the component.
+ *
+ * Queueing the callbacks instead lets the test name the moment it is looking
+ * at, and assert BOTH ends of the rise rather than whichever one it caught.
+ */
+let frames: FrameRequestCallback[] = [];
+
+function flushFrames(): void {
+  const pending = frames;
+  frames = [];
+  for (const cb of pending) cb(0);
+}
+
 describe('the stage between two items', () => {
   let host: HTMLDivElement;
   let root: Root;
+  const realRaf = globalThis.requestAnimationFrame;
+  const realCancelRaf = globalThis.cancelAnimationFrame;
 
   beforeEach(() => {
     SilentAdapter.live = null;
     stubMatchMedia(false);
+    frames = [];
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) =>
+      frames.push(cb)) as unknown as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = ((handle: number) => {
+      frames.splice(handle - 1, 1);
+    }) as unknown as typeof cancelAnimationFrame;
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -115,6 +145,8 @@ describe('the stage between two items', () => {
       root.unmount();
     });
     host.remove();
+    globalThis.requestAnimationFrame = realRaf;
+    globalThis.cancelAnimationFrame = realCancelRaf;
   });
 
   /** Renders the stage on an item the room is playing and this device is not. */
@@ -175,13 +207,22 @@ describe('the stage between two items', () => {
 
   it('fades and rises by the token, not by a number someone typed', async () => {
     await mountArriving();
-    const cue = [...host.querySelectorAll('div')].find((d) =>
-      d.className.includes('animate-fade-in'),
+    const risingCue = (): HTMLDivElement | undefined =>
+      [...host.querySelectorAll('div')].find((d) => d.className.includes('animate-fade-in'));
+
+    // Before the first frame: displaced by exactly `pageRisePx`, carrying the
+    // micro duration that brings it home.
+    expect(risingCue()?.getAttribute('style') ?? '').toContain(
+      `translateY(${String(motion.pageRisePx)}px)`,
     );
-    expect(cue).toBeDefined();
-    // The rise starts displaced by exactly `pageRisePx` and transitions home.
-    expect(cue?.getAttribute('style') ?? '').toContain(`translateY(${String(motion.pageRisePx)}px)`);
-    expect(cue?.getAttribute('style') ?? '').toContain(`${String(motion.microMs)}ms`);
+    expect(risingCue()?.getAttribute('style') ?? '').toContain(`${String(motion.microMs)}ms`);
+
+    // …and after it, home. A rise that never lands is a layout bug, not a
+    // transition, and only holding the frame makes the difference observable.
+    await act(async () => {
+      flushFrames();
+    });
+    expect(risingCue()?.getAttribute('style') ?? '').toContain('transform: none');
   });
 
   it('drops the motion entirely under prefers-reduced-motion', async () => {

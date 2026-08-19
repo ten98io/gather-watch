@@ -36,11 +36,12 @@ import { VimeoAdapter } from '@/lib/player/vimeo';
 import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
 import { drivenIsDrm, useExtensionDriver } from '@/lib/player/extension-driver';
+import type { ExtensionDriverState } from '@/lib/player/extension-driver';
 import { extensionMediaKey, onEnded } from '@/lib/extension-bridge';
 import type { ProviderSummary } from '@/lib/extension-bridge';
 import { API_URL, getAccessToken } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonClasses } from '@/components/ui/button';
 import { PlayIcon } from '@/components/ui/icons';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
@@ -48,6 +49,27 @@ import { EmoteOverlay } from './EmoteOverlay';
 import { ListenStage } from './ListenStage';
 import { PlayerControls } from './PlayerControls';
 import { ScreenShareStage } from './ScreenShareStage';
+
+/**
+ * ── The two ambient washes, and why they are numbers and not classes ─────
+ *
+ * The stage's own conic aurora (§5.5) and the bloom the EMPTY stage adds under
+ * it (§5.1's fallback, which is what an artwork-less room has) both sit behind
+ * `--text-low` — the floor of the whole palette — so they are a contrast
+ * budget, not a styling choice, and they are spent together.
+ *
+ * Composited in paint order — the worst drift stop onto the void, the bloom
+ * onto that — `--text-low` holds 5.36:1 on dark and 4.68:1 on light at these
+ * two values. Push the pair to 0.08 / 0.16 and light falls to 4.33:1, under
+ * AA, on the one screen every room shows first.
+ * test/stage-ambient-contrast.test.ts measures both claims and fails the build.
+ *
+ * The drift is 0.05 rather than the 0.06 it shipped at because DESIGN.md §5.5
+ * pins `.void-aurora` at 5% and this is the same wash: one value, written
+ * twice, is one of them being wrong.
+ */
+export const AMBIENT_AURORA_OPACITY = 0.05;
+export const IDLE_BLOOM_OPACITY = 0.12;
 
 /** Ambient stage glow (§5.1): dominant color sampled off the video at 1 fps,
  *  bled into the void behind the stage. Cross-origin video without CORS
@@ -199,7 +221,12 @@ function SyncPulse({ pulseKey }: { pulseKey: number }) {
     <span
       aria-hidden
       className={cn(
-        'pointer-events-none absolute inset-0 z-10 m-auto h-24 w-24 rounded-full border-2 border-aurora-2',
+        // `--accent`, not `--aurora-2`. A ring is a standalone non-text
+        // graphic and only the tokens in STANDALONE_UI_TOKENS are measured as
+        // one; `aurora-2` is a GRADIENT STOP and is excluded by rule (§2). It
+        // also has to retint with the artwork in a listen room, which is what
+        // `--accent` does and a raw stop cannot.
+        'pointer-events-none absolute inset-0 z-10 m-auto h-24 w-24 rounded-full border-2 border-accent',
         reduced && 'opacity-40',
       )}
       style={reduced ? undefined : { animation: 'sync-pulse 0.9s ease-out forwards' }}
@@ -219,6 +246,19 @@ function SyncPulse({ pulseKey }: { pulseKey: number }) {
  * only exists while playback is not running. It sits BELOW the room's own
  * chrome (badges/transport z-20, call overlay z-30), so nothing above it is
  * blocked.
+ *
+ * ── The stage's one gradient ─────────────────────────────────────────────
+ * The ring is `.aurora-gradient` at 96px with the signature glow under it, and
+ * it is the ONLY place on this stage the gradient is spent (§2 budgets the
+ * whole product at three, a screen region at one). That is why the transport
+ * bar's play button is `secondary`: the two are the same action, and the one
+ * worth colouring is the oversized "everyone starts together" moment, not a
+ * 32px square in a bar that also holds nine other 32px squares.
+ *
+ * Everything inside is a <span>. A <button>'s content model is phrasing
+ * content, so the artwork primitive (a <div>) may not come in here — the
+ * paused composition says what this is in words instead, and the picture is
+ * the thing behind the backdrop.
  */
 function StageShield({
   gate,
@@ -244,6 +284,7 @@ function StageShield({
       : gate === 'paused'
         ? 'Play'
         : 'Pause';
+  const overline = gate === 'blocked' ? 'Ready when you are' : 'Paused';
   const hint =
     gate === 'blocked'
       ? `Tap to start ${verb} together`
@@ -255,19 +296,25 @@ function StageShield({
     gate === 'none' ? null : (
       <span
         className={cn(
-          'absolute inset-0 flex flex-col items-center justify-center gap-4 bg-surface-0 px-6 text-center',
+          // `headline`, never `display`: a failed load draws its own title in
+          // this same slot, one layer down, and two display settings can
+          // therefore be in the DOM at once (§3, §10).
+          'grain absolute inset-0 flex flex-col items-center justify-center bg-surface-0 px-6 py-12',
           !reduced && 'animate-fade-in',
         )}
       >
-        {title !== null && title !== '' && (
-          <span className="line-clamp-2 max-w-lg text-title text-hi">{title}</span>
-        )}
+        <span className="flex max-w-lg flex-col items-center gap-3 text-center">
+          <span className="text-caption text-low">{overline}</span>
+          {title !== null && title !== '' && (
+            <span className="line-clamp-2 text-headline text-hi">{title}</span>
+          )}
+        </span>
         {actionable && (
-          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-2 text-hi shadow-glow">
-            <PlayIcon size={24} />
+          <span className="aurora-gradient mt-8 grid h-24 w-24 place-items-center rounded-full shadow-glow">
+            <PlayIcon size={28} />
           </span>
         )}
-        <span className="text-label text-low">{hint}</span>
+        <span className="mt-6 text-label text-low">{hint}</span>
       </span>
     );
 
@@ -306,6 +353,9 @@ function StageShield({
  * things moving around it. This animates only in the gaps where there IS no
  * content — an empty queue, the handover to the extension, the moment between
  * two items.
+ *
+ * It owns the motion and the box, and NOTHING about the layout inside it: the
+ * two shapes below decide that, and they decide it differently on purpose.
  */
 function StageMessage({ children }: { children: ReactNode }) {
   const reduced = useReducedMotion();
@@ -318,7 +368,7 @@ function StageMessage({ children }: { children: ReactNode }) {
   return (
     <div
       className={cn(
-        'flex h-full w-full flex-col items-center justify-center gap-2 p-8 text-center',
+        'relative flex h-full w-full items-center justify-center px-6 py-12',
         !reduced && 'animate-fade-in',
       )}
       style={
@@ -335,21 +385,107 @@ function StageMessage({ children }: { children: ReactNode }) {
   );
 }
 
-/** Anchors the stage offers as actions. Same shape as ListenStage's own
- *  "Tap to start listening together" control, because they are the same kind of
- *  thing: one calm affordance on a stage with no picture on it. */
-const STAGE_LINK_CLASS =
-  'glass-raised inline-flex items-center rounded-ctl px-3 py-2 text-body text-hi transition-colors hover:text-accent';
-
-/** An empty room promises nothing — the stage decides when media plays. */
-function EmptyStage() {
+/**
+ * ── The two shapes a picture-less stage takes ────────────────────────────
+ *
+ * Which one a state gets is decided by whether it OWNS the stage, and that is
+ * a structural fact rather than a taste: it is what decides how much type the
+ * state may spend.
+ *
+ *  · A POSTER owns the stage — nothing else can be on screen with it — so it
+ *    is laid out like one: an overline, the display step, one sentence and at
+ *    most two actions, set left in a measure, on a grained plate. `EmptyStage`,
+ *    `PageLinkStage` and `ExtensionDrivingStage` are posters, and each one is
+ *    reachable only when every other state is impossible (no media at all / a
+ *    ref no player can be built for / the extension holding the whole branch).
+ *    That exclusivity is what lets them each take `text-display`.
+ *  · A NOTICE sits over a picture that is paused, arriving or broken. It is
+ *    centred, it is momentary, and it stops at `headline`, because two of them
+ *    genuinely can be in the DOM together — a load failure under a shield's
+ *    backdrop — and a screen gets exactly one display setting (§3, §10).
+ *
+ * Left-aligned is not decoration either. A sentence centred in a 900×700 void
+ * reads as an apology; the same sentence set against a left edge, under a
+ * display line, reads as a page that meant to be there.
+ */
+function StagePoster({
+  overline,
+  title,
+  children,
+  actions,
+}: {
+  /** A word or two of category — or, once, the live indicator (§2). */
+  overline: ReactNode;
+  title: string;
+  /** One sentence. Two at the outside — this is a poster, not a page. */
+  children: ReactNode;
+  actions?: ReactNode;
+}) {
   return (
     <StageMessage>
-      <p className="font-display text-lg font-semibold text-mid">Nothing playing yet</p>
-      <p className="max-w-sm text-sm text-low">
-        Add to the queue from the Queue tab — everyone’s player follows along.
-      </p>
+      {/* Grain belongs to large quiet surfaces and carries nothing (§4): a host
+          page with a strict `img-src` drops the data URI and the poster is
+          still complete. */}
+      <span aria-hidden className="grain pointer-events-none absolute inset-0" />
+      {/* The rhythm is the composition. 12 between an overline and the title it
+          labels, 24 to the sentence, 32 to the actions — three rungs, so the
+          reader is told what belongs to what before reading a word. */}
+      <div className="relative flex w-full max-w-xl flex-col items-start">
+        <p className="flex items-center gap-2 text-caption text-low">{overline}</p>
+        {/* `display` is a DESKTOP display setting. 44px of it swamps a 375px
+            stage — "The room is ready" came down as two lines with a sentence
+            underneath and no picture left to be about. One rung down below
+            `md` keeps the poster a poster; the step above is unchanged from
+            768 up, which is where the composition was already right. */}
+        <h2 className="mt-3 line-clamp-3 text-headline text-hi md:text-display">{title}</h2>
+        <div className="mt-6 flex max-w-md flex-col gap-3 text-body text-low">{children}</div>
+        {actions !== undefined && (
+          <div className="mt-8 flex flex-wrap items-center gap-3">{actions}</div>
+        )}
+      </div>
     </StageMessage>
+  );
+}
+
+/** A notice over a picture: centred, momentary, `headline` at the most. */
+function StageNotice({ title, children }: { title: string | null; children: ReactNode }) {
+  return (
+    <StageMessage>
+      <div className="flex max-w-md flex-col items-center gap-3 text-center">
+        {title !== null && title !== '' && (
+          <p className="line-clamp-2 text-headline text-hi">{title}</p>
+        )}
+        {children}
+      </div>
+    </StageMessage>
+  );
+}
+
+/**
+ * An empty room — and this is the FIRST thing anyone ever sees of one, which
+ * is the whole argument for spending the display step and the aurora bloom on
+ * it (the bloom itself lives in the pane's ambient layer, so the light fills
+ * the stage rather than a box inside it).
+ *
+ * No action. The queue lives in the rail and this surface cannot open it, and
+ * an `<EmptyState>` action that scrolls nowhere is worse than a sentence that
+ * says where to go — DESIGN.md §12's budget counts interactions, so inventing
+ * one here would cost a step and buy nothing.
+ */
+function EmptyStage() {
+  return (
+    // "Nothing playing yet" was the display line here, and at 44px an apology
+    // is simply a louder apology. The stage is not broken and it is not waiting
+    // for us — it is waiting for THEM, which is a different sentence and the
+    // one worth setting large. The body still says what to do; what changed is
+    // that the biggest words on the first screen of every room now state the
+    // promise instead of the absence.
+    <StagePoster overline="The stage" title="The room is ready">
+      <p>
+        Paste any link into the Queue tab — a video, a track, or a page you already pay
+        for. Everyone’s player follows this room, to the same second.
+      </p>
+    </StagePoster>
   );
 }
 
@@ -363,67 +499,99 @@ function EmptyStage() {
  */
 function CueingStage({ title }: { title: string | null }) {
   return (
-    <StageMessage>
-      {title !== null && title !== '' && (
-        <p className="line-clamp-2 max-w-lg text-title text-hi">{title}</p>
-      )}
-      <p className="text-label text-low">Starting…</p>
-    </StageMessage>
+    <StageNotice title={title}>
+      <p className="text-caption text-low">Starting…</p>
+    </StageNotice>
   );
+}
+
+/**
+ * The one extra sentence a page item owes THIS browser, or null.
+ *
+ * `extensionInstallUrl()` returns null in two unrelated situations — this build
+ * has no store listing, and this browser could never host the extension — and a
+ * null URL cannot tell them apart, nor from the third case where the extension
+ * is already installed and simply is not driving this tab yet. The driver's
+ * phase knows all three, so the sentence is chosen from that and omitted rather
+ * than guessed at. Saying nothing is allowed; saying something untrue is not.
+ */
+function pageItemNote(state: ExtensionDriverState): string | null {
+  if (state.phase === 'ready') {
+    return 'You already have the extension — open the link and it picks the page up from there.';
+  }
+  if (state.phase === 'unavailable' && state.reason === 'unsupported-browser') {
+    return 'The extension needs Chrome on a computer. On a phone, the Gather app plays these.';
+  }
+  return null;
 }
 
 /**
  * A `page` item on a browser that cannot play one.
  *
- * The queue accepts ANY link — that is the promise QueuePane makes at the
- * paste box — but a page is a LINK, not media bytes: only the extension can
- * play it, by driving whatever video the page itself mounts, in the viewer's
- * own tab. `adapterKindFor` correctly refuses to build a player for one, and
- * until now NOTHING rendered in its place: a completely blank stage, no
- * message, no controls, no explanation, directly contradicting what the queue
- * had just promised.
+ * The queue accepts ANY link — that is the promise QueuePane makes at the paste
+ * box — but a page is a LINK, not media bytes: only the extension can play it,
+ * by driving whatever video the page itself mounts, in the viewer's own tab.
+ * `adapterKindFor` correctly refuses to build a player for one, so this state
+ * owns the whole stage whenever it is up.
  *
- * Both ways out are offered because both are real: add the extension and it
- * plays here in time with the room, or open the link and watch it on your own.
+ * It is also about to be COMMON rather than rare: protected rows (Netflix,
+ * Disney+) became queueable, and this is what everyone without the extension
+ * sees for one. So it says the three things that actually settle it — what the
+ * item is, that each person plays their own copy from their own account, and
+ * how to get the extension when there is honestly somewhere to send them.
  */
 function PageLinkStage({
   url,
   title,
   installUrl,
+  note,
 }: {
   url: string;
   title: string | null;
-  /** Null when this browser cannot install the extension at all, or already
-   *  has it — either way there is nothing to send anyone to. */
+  /** Null when there is nothing to send anyone to — see `pageItemNote`. */
   installUrl: string | null;
+  /** The browser-specific sentence, or null when there is nothing true to say. */
+  note: string | null;
 }) {
   return (
-    <StageMessage>
-      {title !== null && title !== '' && (
-        <p className="line-clamp-2 max-w-lg text-title text-hi">{title}</p>
-      )}
-      <p className="max-w-sm text-sm text-low">
-        This one is a link to a page, and the Gather extension is what plays those — in
-        your own browser, in time with everyone.
-      </p>
-      <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-        {installUrl !== null && (
+    <StagePoster
+      overline="Plays in your own browser"
+      title={title !== null && title !== '' ? title : 'A link to a page'}
+      actions={
+        <>
+          {installUrl !== null && (
+            <a
+              href={installUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonClasses({ variant: 'primary', size: 'lg' })}
+            >
+              Add the extension
+              <span className="sr-only">(opens in a new tab)</span>
+            </a>
+          )}
           <a
-            href={installUrl}
+            href={url}
             target="_blank"
             rel="noopener noreferrer"
-            className={STAGE_LINK_CLASS}
+            className={buttonClasses({
+              variant: installUrl === null ? 'primary' : 'secondary',
+              size: 'lg',
+            })}
           >
-            Add the extension
+            Open the link
             <span className="sr-only">(opens in a new tab)</span>
           </a>
-        )}
-        <a href={url} target="_blank" rel="noopener noreferrer" className={STAGE_LINK_CLASS}>
-          Open the link
-          <span className="sr-only">(opens in a new tab)</span>
-        </a>
-      </div>
-    </StageMessage>
+        </>
+      }
+    >
+      <p>
+        This is a link to a page, not a file the room can hand you. The Gather extension
+        plays it in the tab you are already signed in to — everyone plays their own copy,
+        from their own account, and the room keeps you all on the same second.
+      </p>
+      {note !== null && <p className="text-label">{note}</p>}
+    </StagePoster>
   );
 }
 
@@ -435,15 +603,12 @@ function PageLinkStage({
  */
 function LoadFailedStage({ title }: { title: string | null }) {
   return (
-    <StageMessage>
-      {title !== null && title !== '' && (
-        <p className="line-clamp-2 max-w-lg text-title text-hi">{title}</p>
-      )}
-      <p className="max-w-sm text-sm text-low">
+    <StageNotice title={title}>
+      <p className="text-body text-low">
         This didn’t load on your device. Everyone else is unaffected, and the next item
         starts fresh.
       </p>
-    </StageMessage>
+    </StageNotice>
   );
 }
 
@@ -453,7 +618,15 @@ function LoadFailedStage({ title }: { title: string | null }) {
  * rather than pretending to be a player — the room's transport, chat, queue and
  * call all keep working here.
  */
-function ExtensionDrivingStage({ provider }: { provider: ProviderSummary | null }) {
+function ExtensionDrivingStage({
+  provider,
+  playing,
+}: {
+  provider: ProviderSummary | null;
+  /** The room says playback is running. Gates the live indicator, which must
+   *  never claim motion the room is not in. */
+  playing: boolean;
+}) {
   const name = provider?.name ?? null;
   // The capability stream's own answer, not one blanket promise for every tab.
   // On the eight protected services (`drivenIsDrm`) there is no shared picture
@@ -462,16 +635,29 @@ function ExtensionDrivingStage({ provider }: { provider: ProviderSummary | null 
   // same second" and stopping there read as though we were sending them video.
   const protectedSource = drivenIsDrm(provider);
   return (
-    <StageMessage>
-      <p className="font-display text-lg font-semibold text-mid">
-        {name === null ? 'Playing in your other tab' : `Playing on ${name}`}
-      </p>
-      <p className="max-w-sm text-sm text-low">
+    <StagePoster
+      // The gradient's second sanctioned use on this stage, and it is
+      // exclusive with the shield's ring — this branch replaces the player
+      // outright. A dot that is on while the room is paused would be the
+      // indicator lying, so it is gated on the room's own state.
+      overline={
+        playing ? (
+          <>
+            <span aria-hidden className="aurora-gradient h-2 w-2 rounded-full" />
+            Live
+          </>
+        ) : (
+          'Ready'
+        )
+      }
+      title={name === null ? 'Playing in your other tab' : `Playing on ${name}`}
+    >
+      <p>
         {protectedSource
           ? 'Everyone plays their own copy, signed in with their own account — the room keeps you all on the same second.'
           : 'Everyone stays on the same second. Play, pause and skip from here or from the tab — the room follows either way.'}
       </p>
-    </StageMessage>
+    </StagePoster>
   );
 }
 
@@ -902,6 +1088,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
    *  precedence rules: below the shield, and only where we were driving. */
   const failed = drivenSurface && loadFailed && !localPlaying;
 
+  /** Nothing is on this stage at all — not a share, not the extension, not an
+   *  item. The one state that gets the aurora bloom, and the one that gets the
+   *  display step, because it is also the only one with nothing to lose it to. */
+  const idle = !shareOnStage && !extensionDriving && mediaRef === null;
+
   /** A pasted link with no extension to play it. `adapterKindFor` returns null
    *  for a page ref on purpose, so nothing else on this stage claims the space. */
   const pageRef = mediaRef !== null && mediaRef.kind === 'page' ? mediaRef : null;
@@ -909,6 +1100,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
     extension.state.phase === 'unavailable' || extension.state.phase === 'incompatible'
       ? extension.state.installUrl
       : null;
+  const extensionNote = pageItemNote(extension.state);
 
   /** The stage's one action: recover a refused start locally, or drive the
    *  room's transport under the same policy gate as the keyboard map. */
@@ -1079,18 +1271,31 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       onMouseMove={wakeChrome}
       onFocus={wakeChrome}
     >
-      {/* Ambient glow: sampled media color over a slow aurora wash (§5.1, §5.5) */}
+      {/* Ambient light: a slow aurora wash, the colour sampled off the picture
+          when there is one, and — when there is NOTHING on the stage — the
+          bloom that makes signature moment §5.1 visible in the state every room
+          shows first. An empty room is the only screen in the product with
+          nothing to compete with the nebula, so it is the only one that gets to
+          see it. Both values are measured; see the constants at the top. */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div
-          className={cn(
-            'absolute inset-[-20%] opacity-[0.06]',
-            !reduced && 'animate-aurora-drift',
-          )}
+          className={cn('absolute inset-[-20%]', !reduced && 'animate-aurora-drift')}
           style={{
+            opacity: AMBIENT_AURORA_OPACITY,
             background:
               'conic-gradient(from 0deg, var(--aurora-1), var(--aurora-2), var(--aurora-3), var(--aurora-1))',
           }}
         />
+        {idle && (
+          <div
+            className="absolute inset-0"
+            style={{
+              background: `radial-gradient(58% 54% at 50% 46%, color-mix(in oklch, var(--aurora-2) ${String(
+                IDLE_BLOOM_OPACITY * 100,
+              )}%, transparent), transparent 72%)`,
+            }}
+          />
+        )}
         {glow !== null && (
           <div
             className="absolute inset-0 transition-[background] duration-[800ms]"
@@ -1107,6 +1312,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         ) : extensionDriving ? (
           <ExtensionDrivingStage
             provider={extension.state.phase === 'ready' ? extension.state.provider : null}
+            playing={wantsPlay}
           />
         ) : (
           <>
@@ -1143,7 +1349,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 )}
               />
               {adapterKind === 'embed' && (
-                <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-[10px] text-white/90">
+                // Glass and tokens, not `bg-black/60` + `text-white/90`: this
+                // chip floats over a running third-party player, which is the
+                // one thing §4 reserves glass FOR, and a Tailwind black is a
+                // colour literal wherever it is written (§10).
+                <span className="glass-raised absolute bottom-3 left-1/2 max-w-[90%] -translate-x-1/2 rounded-pill px-3 py-1 text-center text-label text-hi">
                   Approximate sync — this service plays in its own player on each device
                 </span>
               )}
@@ -1191,7 +1401,14 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 ref={mediaElRef}
                 playsInline
                 className={cn(
-                  'max-h-full max-w-full bg-black',
+                  // `bg-void`, never Tailwind's black: the ground under a
+                  // letterboxed picture is a palette decision like every other.
+                  // `rounded-stage` is the 28px rung §4 names "the stage frame"
+                  // — and it comes off in fullscreen, where the picture IS the
+                  // screen and a rounded corner is a bezel we invented. The two
+                  // are a ternary because `cn` joins and does not resolve.
+                  'max-h-full max-w-full bg-void',
+                  fullscreen.active ? '' : 'rounded-stage',
                   adapterKind === 'native' ? '' : 'hidden',
                 )}
                 aria-label="Shared video"
@@ -1203,6 +1420,7 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 url={pageRef.url}
                 title={currentItem?.title ?? null}
                 installUrl={extensionInstall}
+                note={extensionNote}
               />
             )}
             {/* The item is on its way. Below the shield (z-10) and inert, so

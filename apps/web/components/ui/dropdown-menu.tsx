@@ -99,8 +99,13 @@ export function DropdownMenuContent({
       // reserves glass for surfaces floating over moving video. `shadow-e2`,
       // not `shadow-glow`: an aurora halo under a context menu is the product
       // shouting about a list of words.
+      //
+      // The edge comes from `shadow-e2` and ONLY from it. The ladder is
+      // hairline-first (§4) — every level opens with `0 0 0 1px var(--hairline)`
+      // — so the `border-hairline` that used to sit here painted a second edge
+      // inside the first and made a menu look outlined rather than raised.
       className={cn(
-        'absolute z-[60] mt-1.5 min-w-44 rounded-card border border-hairline bg-surface-2 p-1 shadow-e2',
+        'absolute z-[60] mt-1.5 min-w-44 rounded-card bg-surface-2 p-1 shadow-e2',
         align === 'end' ? 'right-0' : 'left-0',
         className,
       )}

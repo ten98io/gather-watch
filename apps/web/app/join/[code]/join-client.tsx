@@ -9,9 +9,9 @@ import { formatInviteCode } from '@gather/contracts';
 import type { InviteCode, RoomId } from '@gather/contracts';
 import { api, guestJoin } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { Button } from '@/components/ui/button';
+import { Button, buttonClasses } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Logo } from '@/components/Logo';
+import { Wordmark } from '@/components/Logo';
 
 /**
  * Why a failed join failed, in words that are true of THIS failure.
@@ -50,6 +50,39 @@ export function describeJoinFailure(err: unknown): string {
 }
 
 /**
+ * The room passphrase field.
+ *
+ * It stays on THIS screen and is never a second page: DESIGN.md §12 budgets a
+ * password-gated join at 3 interactions precisely because the passphrase is a
+ * field fill on the invite screen rather than a navigation. It is also always
+ * rendered rather than revealed, because nothing here can know whether the room
+ * has one — the server answers a wrong passphrase and an unknown invite code
+ * with the same NOT_FOUND, and there is no invite-preview endpoint, so a
+ * "does this room need a password?" probe would be a lie dressed as a question.
+ *
+ * `autoComplete="off"`: this is the ROOM's passphrase, not the person's, and a
+ * password manager offering their account password here would be filling the
+ * wrong secret into a field that is sent to a room's members.
+ */
+function RoomPassword({ value, onChange }: { value: string; onChange(next: string): void }) {
+  return (
+    <label className="flex flex-col gap-2">
+      <span className="text-label text-mid">Room password</span>
+      <Input
+        type="password"
+        inputSize="lg"
+        autoComplete="off"
+        placeholder="Only if this room has one"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+        }}
+      />
+    </label>
+  );
+}
+
+/**
  * Guest join: pick a display name → POST /auth/guest (sets the httpOnly
  * refresh cookie + returns the room) → /room/[id]. Signed-in ACCOUNTS join
  * through their account instead.
@@ -67,6 +100,14 @@ export function describeJoinFailure(err: unknown): string {
  *
  * And the cheap case first: a guest who re-opens their OWN room's link is sent
  * back into that room rather than handed a second throwaway identity in it.
+ *
+ * ── The composition (2026-08-19) ──────────────────────────────────────────
+ * This is how every second person ever arrives at Gather, and it was a 448px
+ * card with a glow. The invite is now the screen: the page's one display
+ * setting says what happened, the code is set beside it as an object rather
+ * than as a violet caption, and the form sits on its own plate underneath. The
+ * code used to be `text-aurora-1`, which is a 3:1 colour and forbidden as text
+ * on Daylight (DESIGN.md §2) — the accent is carried by the chip's ring now.
  */
 export function JoinClient({ code }: { code: InviteCode }) {
   const router = useRouter();
@@ -141,102 +182,135 @@ export function JoinClient({ code }: { code: InviteCode }) {
   /** A guest may only take the guest path; an account may only take its own. */
   const guestPath = user === null || isGuest;
 
+  /**
+   * The way out for someone who already HAS an account.
+   *
+   * Without it this screen offered exactly one identity to a signed-out
+   * visitor — a throwaway guest — so a member opening an invite either took a
+   * second, room-scoped identity under their own name or navigated away and
+   * lost the code. `?next=` is what makes leaving safe: /login hands it to
+   * lib/after-signin.ts and /auth/verify lands them back on this invitation.
+   *
+   * It is a LINK and not a second button, deliberately. §8 allows one primary
+   * per screen region and it is spent on the action most people here want; a
+   * second aurora beside it would make both read as "a button".
+   */
+  const signInHref = `/login?next=${encodeURIComponent(`/join/${code}`)}`;
+
   return (
-    <main className="flex min-h-dvh items-center justify-center px-4">
-      <div className="glass-panel w-full max-w-md p-8 shadow-glow">
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <Logo size={52} />
-          <h1 className="font-display text-display font-bold">You’re invited</h1>
-          <p className="font-mono text-sm tracking-widest text-aurora-1">{formatInviteCode(code)}</p>
+    <div className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-6">
+      <header className="py-6">
+        <Link href="/" aria-label="Gather home">
+          <Wordmark size={30} />
+        </Link>
+      </header>
+
+      {/* Composition rungs halve below `md` (see app/home/page.tsx). */}
+      <main className="flex flex-1 flex-col justify-center gap-8 py-12 md:gap-section md:py-chapter">
+        <div>
+          <p className="text-caption text-low">Invitation</p>
+          <h1 className="mt-4 font-display text-headline text-hi md:text-display">You’re invited.</h1>
+          <p className="mt-8">
+            <span className="inline-block rounded-ctl bg-surface-2 px-4 py-2 font-mono text-title text-hi ring-1 ring-accent">
+              {formatInviteCode(code)}
+            </span>
+          </p>
         </div>
 
-        {loading ? null : ownRoomId !== null ? (
-          <div className="flex flex-col gap-4">
-            <p className="text-center text-sm text-mid">
-              You’re already a guest in this room.
-            </p>
-            <Link href={`/room/${ownRoomId}`}>
-              <Button size="lg" className="w-full">
+        {/* No grain: this plate carries a form. §4 keeps the texture for the
+            void and for large quiet surfaces, and the void already has it. */}
+        <div className="rounded-stage bg-surface-1 p-8">
+          {loading ? null : ownRoomId !== null ? (
+            <div className="flex flex-col gap-6">
+              <p className="text-body text-mid">
+                You’re already a guest here — the identity you have still works.
+              </p>
+              <Link
+                href={`/room/${ownRoomId}`}
+                className={buttonClasses({ size: 'lg', className: 'w-full' })}
+              >
                 Open the room
+              </Link>
+            </div>
+          ) : !guestPath ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void joinAsMember();
+              }}
+              className="flex flex-col gap-6"
+            >
+              <p className="text-body text-mid">
+                Joining as <span className="text-hi">{user?.displayName}</span>
+              </p>
+              <RoomPassword value={password} onChange={setPassword} />
+              <Button type="submit" size="lg" className="w-full" disabled={pending}>
+                {pending ? 'Joining…' : 'Join the room'}
               </Button>
-            </Link>
-          </div>
-        ) : !guestPath ? (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void joinAsMember();
-            }}
-            className="flex flex-col gap-4"
-          >
-            <p className="text-center text-sm text-mid">
-              Joining as <span className="font-semibold text-hi">{user?.displayName}</span>
-            </p>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-mid">Room password (if required)</span>
-              <Input
-                type="password"
-                placeholder="Only needed if the room has a password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            <Button type="submit" size="lg" disabled={pending}>
-              {pending ? 'Joining…' : 'Join the room'}
-            </Button>
-          </form>
-        ) : (
-          <form onSubmit={(e) => void joinAsGuest(e)} className="flex flex-col gap-4">
-            {isGuest && (
-              <div className="rounded-panel bg-surface-2 p-4">
-                <p className="text-sm font-medium text-hi">
-                  A guest identity belongs to one room.
-                </p>
-                <p className="mt-1 text-sm text-mid">
-                  You’re a guest elsewhere, so that identity can’t come with you. Joining here
-                  creates a new guest and signs this browser out of your other room. Add an email
-                  to that identity first if you want to keep it.
+            </form>
+          ) : (
+            <form onSubmit={(e) => void joinAsGuest(e)} className="flex flex-col gap-6">
+              {isGuest && (
+                <div className="rounded-card bg-surface-2 p-5">
+                  <p className="text-body text-hi">A guest identity belongs to one room.</p>
+                  <p className="mt-2 text-body text-mid">
+                    You’re a guest elsewhere, so that identity can’t come with you. Joining here
+                    creates a new guest and signs this browser out of your other room. Add an
+                    email to that identity first if you want to keep it.
+                  </p>
+                </div>
+              )}
+              <label className="flex flex-col gap-2">
+                <span className="text-label text-mid">Display name</span>
+                <Input
+                  required
+                  minLength={1}
+                  maxLength={80}
+                  autoFocus
+                  inputSize="lg"
+                  placeholder="What should everyone call you?"
+                  value={displayName}
+                  onChange={(e) => {
+                    setDisplayName(e.target.value);
+                  }}
+                />
+              </label>
+              <RoomPassword value={password} onChange={setPassword} />
+              <Button
+                type="submit"
+                size="lg"
+                className="w-full"
+                disabled={pending || displayName.trim().length === 0}
+              >
+                {pending ? 'Joining…' : 'Join as guest'}
+              </Button>
+              <div className="flex flex-col gap-2 border-t border-hairline pt-6 text-label text-low">
+                <p>Guests are room-scoped. Attach an email later to keep the identity.</p>
+                <p>
+                  Already have an account?{' '}
+                  {/* Underlined, not merely coloured: it is inline in a
+                      sentence, and colour alone is not an affordance (WCAG
+                      1.4.1). The rule firms up on hover rather than the text
+                      changing colour, so nothing moves. */}
+                  <Link
+                    href={signInHref}
+                    className="text-hi underline decoration-hairline underline-offset-4 transition-colors hover:decoration-current"
+                  >
+                    Sign in instead
+                  </Link>{' '}
+                  — you’ll land back on this invitation.
                 </p>
               </div>
-            )}
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-mid">Display name</span>
-              <Input
-                required
-                minLength={1}
-                maxLength={80}
-                autoFocus
-                placeholder="What should everyone call you?"
-                value={displayName}
-                onChange={(e) => {
-                  setDisplayName(e.target.value);
-                }}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-mid">Room password (if required)</span>
-              <Input
-                type="password"
-                placeholder="Only needed if the room has a password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            <Button type="submit" size="lg" disabled={pending || displayName.trim().length === 0}>
-              {pending ? 'Joining…' : 'Join as guest'}
-            </Button>
-            <p className="text-center text-xs text-low">
-              Guests are room-scoped. You can attach an email later to keep your identity.
-            </p>
-          </form>
-        )}
+            </form>
+          )}
 
-        {error !== null && (
-          <p role="alert" className="mt-4 text-center text-sm text-danger">
-            {error}
-          </p>
-        )}
-      </div>
-    </main>
+          {error !== null && (
+            <p role="alert" className="mt-6 text-label text-danger">
+              {error}
+            </p>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }

@@ -51,6 +51,41 @@ const sizeClasses: Record<ButtonSize, string> = {
   icon: 'h-ctl-md w-ctl-md rounded-ctl',
 };
 
+export interface ButtonSkin {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  className?: string;
+}
+
+/**
+ * The button's skin, without the `<button>`.
+ *
+ * Exists because half the primary actions in the product NAVIGATE, and the
+ * shape those had settled on was `<Link><Button/></Link>` — an `<a>` wrapping a
+ * `<button>`. That is an interactive element nested inside an interactive
+ * element: invalid HTML, two tab stops for one action, and a screen reader
+ * announcing a link that contains a button. A `<Link>` wearing this string is
+ * one control with one role, and it renders identically.
+ *
+ * Rule for callers: every pair of classes it emits is mutually exclusive, and
+ * anything you add through `className` must be too. `cn` is a plain joiner —
+ * `bg-surface-2` plus `bg-accent` does not resolve to the second one, it
+ * resolves to whichever Tailwind happened to emit later.
+ */
+export function buttonClasses({ variant = 'primary', size = 'md', className }: ButtonSkin = {}): string {
+  return cn(
+    'inline-flex select-none items-center justify-center whitespace-nowrap',
+    // Colour and filter only. `transition-all` also animated the height,
+    // which under `@media (pointer: coarse)` meant the control visibly grew
+    // on a device rotation. 150ms is the standard (DESIGN.md §6).
+    'transition-[background-color,color,filter] duration-150 ease-spring',
+    'disabled:pointer-events-none disabled:opacity-50',
+    variantClasses[variant],
+    sizeClasses[size],
+    className,
+  );
+}
+
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -67,17 +102,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       type={type ?? 'button'}
-      className={cn(
-        'inline-flex select-none items-center justify-center whitespace-nowrap',
-        // Colour and filter only. `transition-all` also animated the height,
-        // which under `@media (pointer: coarse)` meant the control visibly grew
-        // on a device rotation. 150ms is the standard (DESIGN.md §6).
-        'transition-[background-color,color,filter] duration-150 ease-spring',
-        'disabled:pointer-events-none disabled:opacity-50',
-        variantClasses[variant],
-        sizeClasses[size],
-        className,
-      )}
+      className={buttonClasses({ variant, size, ...(className === undefined ? {} : { className }) })}
       {...props}
     />
   );

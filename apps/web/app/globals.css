@@ -27,18 +27,22 @@
   }
   body {
     @apply bg-void text-hi font-sans antialiased;
-    font-size: clamp(15px, 0.94rem + 0.15vw, 17px);
-    /* Grain overlay (2% SVG noise) kills gradient banding on the void. */
+    /* The `body` step's maxFontSize (DESIGN.md §3): 16 → 18px across the fluid
+       band. The `text-body` utility itself stays a flat 16 so `sm:` variants
+       can override it. */
+    font-size: clamp(16px, 0.94rem + 0.2vw, 18px);
+    /* Grain (DESIGN.md §4). Both values come from @gather/design — the noise
+       used to be written out here, where only web could reach it. */
     background-image: var(--grain);
     background-repeat: repeat;
-    background-size: 180px 180px;
-  }
-  :root {
-    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
+    background-size: var(--grain-size);
   }
   h1, h2, h3, h4 {
     @apply font-display;
-    letter-spacing: -0.01em;
+    /* No tracking here. The ramp carries it per step and it now differs by a
+       factor of four across the display end (-0.045em on `hero`, -0.01em on
+       `title`); one blanket value on every heading element would silently
+       override the step the surface actually asked for. */
   }
   ::selection {
     background: color-mix(in oklch, var(--aurora-1) 35%, transparent);
@@ -54,6 +58,26 @@
   :focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
+  }
+  /* Chrome paints an autofilled input with its own background — a light
+     lavender that survives every `background-color` rule, because the UA style
+     is `!important` on an internal pseudo-class. The only thing that reaches it
+     is an inset shadow large enough to cover the field, plus `-webkit-text-fill-color`
+     for the text (`color` is likewise overridden). The long transition delay is
+     the second half of the trick: Chrome repaints the native colour on the next
+     frame, and a delay it never reaches means it never gets to.
+
+     Values are tokens, so this follows the theme like everything else. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: var(--text-hi);
+    -webkit-box-shadow: 0 0 0 1000px var(--surface-2) inset;
+    box-shadow: 0 0 0 1000px var(--surface-2) inset;
+    caret-color: var(--text-hi);
+    transition: background-color 9999s ease-in-out 0s;
   }
   * {
     scrollbar-width: thin;
@@ -114,6 +138,27 @@
   }
   .surface-3 {
     background-color: var(--surface-3);
+  }
+  /* The scrim behind a dialog or a sheet. `--scrim` is measured: everything the
+     page can show, composited under it, lands inside a band too narrow to carry
+     text (packages/design/test/palette.test.ts). The blur is not doing that job
+     — it is what stops the suppressed page reading as a photograph of itself —
+     so a reduced-transparency reader loses the blur and keeps the suppression. */
+  .scrim {
+    background: var(--scrim);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+  }
+  /* Grain on a surface (DESIGN.md §4). Composed rather than baked into
+     `.surface-*` because it belongs to LARGE quiet surfaces only — a stage
+     plate, a full-bleed empty state, a sheet — and on a 56px row the 160px tile
+     repeats visibly and reads as dirt. Never over video, never over text, and
+     never load-bearing: a host page with a strict `img-src` drops the data URI
+     and the surface has to still be complete. */
+  .grain {
+    background-image: var(--grain);
+    background-repeat: repeat;
+    background-size: var(--grain-size);
   }
   /* The ONLY gradient in the system: aurora 135deg, primary actions + brand.
 
@@ -272,7 +317,9 @@
     transparent 68%,
     color-mix(in oklch, var(--aurora-1) 55%, transparent)
   );
-  opacity: 0.06;
+  /* 6% → 5%: the void went to a true cinema black, and the same wash reads
+     stronger against it. Ambient light, not a smudge. */
+  opacity: 0.05;
   filter: blur(60px);
   animation: aurora-drift 60s linear infinite;
   will-change: transform;
@@ -313,6 +360,12 @@
   .glass-panel,
   .glass-raised {
     background: var(--bg-deep);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* The scrim keeps its wash — suppressing the page behind a modal is the
+     point of it, not an effect. Only the blur goes. */
+  .scrim {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }

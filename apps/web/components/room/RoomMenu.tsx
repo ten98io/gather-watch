@@ -20,6 +20,7 @@
  * room.updated, so the controls read `room` and never mirror it in state.
  */
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { SetRoomPasswordResponse, UpdateRoomResponse } from '@gather/contracts';
 import { Ok } from '@gather/contracts';
@@ -35,6 +36,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { SettingsIcon } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
@@ -70,6 +72,23 @@ const TIER_POLICIES: ReadonlyArray<{
   { key: 'chat', label: 'Who can chat', patch: (tier) => ({ chat: tier }) },
 ];
 
+/**
+ * The rule between two blocks of a dialog, and the name of the block under it.
+ *
+ * `caption` (11/14, uppercase, +0.08em) rather than another 16px heading: at
+ * body size a section head competes with the controls it introduces, and this
+ * dialog is five blocks deep. §3 assigns the caption step to overlines by
+ * name, and it is the step that reads as structure instead of as content.
+ */
+function Section({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <section className="mt-6 border-t border-hairline pt-4">
+      <h3 className="text-caption text-low">{label}</h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
 function TierRow({
   label,
   value,
@@ -82,8 +101,13 @@ function TierRow({
   onPick(tier: RoomPolicyLevel): void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-sm text-mid">{label}</span>
+    // Stacked below `sm`. The three tiers need ~194px and the dialog's content
+    // box on a 375px phone is 279px, so side by side the label was left with
+    // 73px and "Who can play" came down as two ragged lines against a control
+    // group that is one. A label over its group is the same relationship said
+    // vertically, and it costs height the dialog can now scroll.
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+      <span className="text-body text-mid">{label}</span>
       <div role="group" aria-label={label} className="flex gap-1">
         {TIERS.map((tier) => (
           <Button
@@ -206,9 +230,13 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
 
   return (
     <>
+      {/* An icon from components/ui/icons.tsx, not a `⚙` character. DESIGN.md
+          §8: icons are inline SVG on `currentColor`; emoji are content
+          (reactions, chat) and never controls — a glyph control renders at
+          whatever size and colour the platform's emoji font decides. */}
       <Button
         variant="ghost"
-        size="sm"
+        size="icon"
         aria-label="Room settings"
         onClick={() => {
           setName(room.name);
@@ -219,7 +247,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
           setOpen(true);
         }}
       >
-        ⚙
+        <SettingsIcon size={16} aria-hidden />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent aria-label="Room settings">
@@ -232,64 +260,65 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
           </DialogDescription>
 
           {canManage && (
-            <form
-              className="mt-4 flex gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void rename();
-              }}
-            >
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={120}
-                aria-label="Room name"
-              />
-              <Button type="submit" disabled={busy || name.trim().length === 0}>
-                Rename
-              </Button>
-            </form>
+            <Section label="Name">
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void rename();
+                }}
+              >
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  maxLength={120}
+                  aria-label="Room name"
+                />
+                <Button type="submit" disabled={busy || name.trim().length === 0}>
+                  Rename
+                </Button>
+              </form>
+            </Section>
           )}
 
           {isHost && (
-            <form
-              className="mt-4 flex gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void savePassword();
-              }}
-            >
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                maxLength={120}
-                placeholder={
-                  room.hasPassword
-                    ? 'New password (submit empty to clear)'
-                    : 'Set a room password'
-                }
-                aria-label="Room password"
-              />
-              <Button type="submit" disabled={busy}>
-                {room.hasPassword ? 'Update' : 'Set'}
-              </Button>
-            </form>
-          )}
-          {isHost && (
-            <p className="mt-1.5 text-xs text-low">
-              New joins need the password. If it is lost, set a new one here — that is the
-              recovery.
-            </p>
+            <Section label="Password">
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void savePassword();
+                }}
+              >
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  maxLength={120}
+                  placeholder={
+                    room.hasPassword
+                      ? 'New password (submit empty to clear)'
+                      : 'Set a room password'
+                  }
+                  aria-label="Room password"
+                />
+                <Button type="submit" disabled={busy}>
+                  {room.hasPassword ? 'Update' : 'Set'}
+                </Button>
+              </form>
+              <p className="mt-2 text-label text-low">
+                New joins need the password. If it is lost, set a new one here — that is the
+                recovery.
+              </p>
+            </Section>
           )}
 
           {canManage && (
-            <section className="mt-6 border-t border-border-glass pt-4">
-              <h3 className="text-sm font-medium text-hi">What this room allows</h3>
-              <p className="mt-1 text-xs text-low">
+            <Section label="What this room allows">
+              <p className="text-label text-low">
                 Applies the moment you pick it, for everyone who is here.
               </p>
-              <div className="mt-3 flex flex-col gap-2">
+              <div className="mt-4 flex flex-col gap-2">
                 {TIER_POLICIES.map(({ key, label, patch }) => (
                   <TierRow
                     key={key}
@@ -303,10 +332,10 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
                 ))}
               </div>
 
-              <div className="mt-4 flex flex-col gap-1.5">
+              <div className="mt-4 flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm text-mid">Skip on a vote of</span>
-                  <span className="text-xs text-low">
+                  <span className="text-body text-mid">Skip on a vote of</span>
+                  <span className="text-label text-low tabular-nums">
                     {skipPct === 0 ? 'Nobody — voting off' : `${skipPct}% of the room`}
                   </span>
                 </div>
@@ -328,7 +357,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
               </div>
 
               <label className="mt-4 flex items-center justify-between gap-4">
-                <span className="text-sm text-mid">Wait for everyone before playing</span>
+                <span className="text-body text-mid">Wait for everyone before playing</span>
                 <Switch
                   aria-label="Wait for everyone before playing"
                   checked={room.policies.waitForAll}
@@ -341,14 +370,14 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
                   }}
                 />
               </label>
-            </section>
+            </Section>
           )}
 
-          <div className="mt-6 border-t border-border-glass pt-4">
+          <Section label="Your membership">
             <div className="flex flex-wrap items-center justify-between gap-2">
               {confirmLeave ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-mid">Leave this room?</span>
+                  <span className="text-body text-mid">Leave this room?</span>
                   <Button variant="ghost" size="sm" onClick={() => setConfirmLeave(false)}>
                     Stay
                   </Button>
@@ -379,16 +408,16 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
                 Report this room…
               </Button>
             </div>
-            <p className="mt-1.5 text-xs text-low">
+            <p className="mt-2 text-label text-low">
               Leaving takes this room off your list — you need an invite to come back.
             </p>
-          </div>
+          </Section>
 
           {canManage && (
-            <div className="mt-6 border-t border-border-glass pt-4">
+            <div className="mt-6 border-t border-hairline pt-4">
               {confirmDelete ? (
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-danger">Delete this room for everyone?</span>
+                  <span className="text-body text-danger">Delete this room for everyone?</span>
                   <div className="flex gap-2">
                     <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
                       Keep

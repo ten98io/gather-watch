@@ -19,7 +19,7 @@
  * failed.
  */
 import { useCallback, useEffect, useState } from 'react';
-import type { MediaRef, QueueItemInput, RoomHistoryEntry, RoomId } from '@gather/contracts';
+import type { QueueItemInput, RoomHistoryEntry, RoomId } from '@gather/contracts';
 import { api } from '@/lib/api';
 import { describeError } from '@/lib/describe-error';
 import { formatDurationMs, formatTimestamp } from '@/lib/format';
@@ -33,7 +33,10 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { FilmIcon, MusicIcon, PlusIcon } from '@/components/ui/icons';
+import { EmptyState } from '@/components/ui/empty-state';
+import { MediaRow } from '@/components/ui/media-row';
+import { HistoryIcon, PlusIcon } from '@/components/ui/icons';
+import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 
 /** How many rows one read pulls. Two screenfuls — enough that "Show older"
@@ -73,12 +76,40 @@ function whoLine(
     : `queued by ${queuer}, played by ${starter}`;
 }
 
-function EntryIcon({ mediaRef }: { mediaRef: MediaRef }) {
-  const className = 'text-low';
-  return mediaKindFor(mediaRef) === 'music' ? (
-    <MusicIcon size={18} className={className} />
-  ) : (
-    <FilmIcon size={18} className={className} />
+/**
+ * The first paint, cut like the rows it stands in for: a 48px poster, a title
+ * line and a shorter meta line, at the row's own pitch. "Loading…" is a
+ * spinner wall with better manners (§10) — it says nothing about what is
+ * coming, and the panel visibly re-shapes when it arrives.
+ *
+ * The widths differ per row on purpose. Four identical bars read as a loading
+ * GRAPHIC; four unequal ones read as titles that have not landed yet.
+ */
+const SKELETON_WIDTHS: readonly [string, string][] = [
+  ['w-3/5', 'w-2/5'],
+  ['w-4/5', 'w-1/3'],
+  ['w-1/2', 'w-2/5'],
+  ['w-2/3', 'w-1/4'],
+];
+
+function HistorySkeleton() {
+  return (
+    <div>
+      <p role="status" className="sr-only">
+        Loading what this room has played.
+      </p>
+      <ul aria-hidden className="flex flex-col gap-1">
+        {SKELETON_WIDTHS.map(([title, meta]) => (
+          <li key={title} className="flex min-h-row items-center gap-3 px-2 py-2">
+            <Skeleton radius="ctl" className="h-12 w-12 shrink-0" />
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <Skeleton radius="ctl" className={`h-4 ${title}`} />
+              <Skeleton radius="ctl" className={`h-3 ${meta}`} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -175,58 +206,72 @@ export function HistoryList({ roomId }: { roomId: RoomId }) {
   };
 
   if (state.error !== null && state.entries.length === 0) {
-    return <p className="py-6 text-center text-sm text-warn">{state.error}</p>;
+    return <p className="py-8 text-center text-body text-warn">{state.error}</p>;
   }
   if (state.loading && state.entries.length === 0) {
-    return <p className="py-6 text-center text-sm text-low">Loading…</p>;
+    return <HistorySkeleton />;
   }
   if (state.entries.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-low">
-        Nothing has played in this room yet.
-      </p>
+      <EmptyState
+        icon={<HistoryIcon size={20} />}
+        title="Nothing has played here yet"
+        description="Whatever this room watches together shows up here, ready to queue again."
+      />
     );
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-4">
       <ul className="flex flex-col gap-1">
         {state.entries.map((entry) => {
-          const meta = [
-            providerLabel(entry.mediaRef),
-            entry.durationMs !== null ? formatDurationMs(entry.durationMs) : null,
-            whoLine(entry, me, names),
-            formatTimestamp(entry.playedAt),
-          ]
+          // Duration is a readout and lives in `trailing`; the meta line is
+          // for the things a sentence is the right shape for.
+          const meta = [providerLabel(entry.mediaRef), whoLine(entry, me, names), formatTimestamp(entry.playedAt)]
             .filter((part): part is string => part !== null)
             .join(' · ');
           return (
-            <li
+            <MediaRow
+              as="li"
               key={entry.id}
-              className="flex items-center gap-3 rounded-ctl border border-border-glass bg-glass px-3 py-2"
-            >
-              <EntryIcon mediaRef={entry.mediaRef} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-hi">{entry.title}</span>
-                <span className="block truncate text-xs text-low">{meta}</span>
-              </span>
-              <button
-                type="button"
-                aria-label={`Add ${entry.title} to the queue`}
-                className="rounded-ctl p-2 text-mid hover:bg-raised hover:text-hi"
-                onClick={() => {
-                  requeue(entry);
-                }}
-              >
-                <PlusIcon size={16} />
-              </button>
-            </li>
+              artwork={{
+                src: entry.artworkUrl,
+                alt: entry.title,
+                // Null only for a null ref, which a history entry cannot have.
+                kind: mediaKindFor(entry.mediaRef) ?? 'video',
+                shape: 'square',
+              }}
+              title={entry.title}
+              meta={meta}
+              trailing={entry.durationMs !== null ? formatDurationMs(entry.durationMs) : null}
+              actions={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Add ${entry.title} to the queue`}
+                  onClick={() => {
+                    requeue(entry);
+                  }}
+                >
+                  <PlusIcon size={16} aria-hidden />
+                </Button>
+              }
+            />
           );
         })}
       </ul>
-      {state.error !== null && <p className="px-1 pt-1 text-xs text-warn">{state.error}</p>}
+      {state.error !== null && <p className="px-1 text-label text-warn">{state.error}</p>}
       {state.nextBefore !== null && (
-        <Button size="sm" variant="secondary" onClick={loadOlder} disabled={state.loading}>
+        // Centred and only as wide as its label: in a flex column a plain
+        // button stretches to the panel, which makes "Show older" look like
+        // the dialog's primary action rather than the end of a list.
+        <Button
+          size="sm"
+          variant="ghost"
+          className="self-center"
+          onClick={loadOlder}
+          disabled={state.loading}
+        >
           {state.loading ? 'Loading…' : 'Show older'}
         </Button>
       )}
@@ -247,11 +292,14 @@ export function RecentlyPlayed({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-label="What this room has played">
+        {/* The overline is the hierarchy the dialog was missing: it says WHOSE
+            history this is, so the title is free to be one short noun. */}
+        <p className="text-caption text-low">This room</p>
         <DialogTitle>Recently played</DialogTitle>
         <DialogDescription>
           Everything this room has played, newest first. Add any of it back to the queue.
         </DialogDescription>
-        <div className="mt-3 max-h-80 overflow-y-auto">
+        <div className="mt-6 max-h-96 overflow-y-auto">
           {/* Mounted only while open, so opening the dialog is the read. */}
           {open && <HistoryList roomId={roomId} />}
         </div>

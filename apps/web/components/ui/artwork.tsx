@@ -22,7 +22,7 @@ import { FilmIcon, MusicIcon } from '@/components/ui/icons';
 export type ArtworkKind = 'video' | 'music';
 export type ArtworkSize = 40 | 48 | 64 | 96 | 'full';
 export type ArtworkShape = 'square' | 'video';
-export type ArtworkRadius = 'sm' | 'ctl' | 'card' | 'panel' | 'full';
+export type ArtworkRadius = 'sm' | 'ctl' | 'card' | 'panel' | 'stage' | 'full';
 
 export interface ArtworkProps {
   /** Poster/thumbnail URL. Null, empty or broken → deterministic placeholder. */
@@ -53,6 +53,11 @@ const RADIUS_CLASS: Record<ArtworkRadius, string> = {
   ctl: 'rounded-ctl',
   card: 'rounded-card',
   panel: 'rounded-panel',
+  // DESIGN.md §4 names now-playing artwork as one of the surfaces the 28px
+  // rung exists for. The union carried `stage` before this map did, which is
+  // a compile error rather than a missing corner — the exhaustive Record is
+  // what makes adding a rung to the ladder land here.
+  stage: 'rounded-stage',
   full: 'rounded-full',
 };
 
@@ -118,7 +123,12 @@ export function Artwork({
           className="h-full w-full object-cover"
         />
       ) : (
-        <span className="absolute inset-0 grid place-items-center text-white/55">
+        // `--ink-white`, not a Tailwind `white`: the placeholder gradient is
+        // two mid-dark stops (L 0.52 / 0.34 in artwork-color.ts) whichever seed
+        // it came from, so the ink on it is the white endpoint in both themes —
+        // chosen per FILL, never per theme (§2.1). The opacity is what makes it
+        // a watermark rather than a control.
+        <span className="absolute inset-0 grid place-items-center text-[var(--ink-white)] opacity-60">
           <Glyph size={GLYPH_SIZE[size === 'full' ? 'full' : (String(size) as '40' | '48' | '64' | '96')]} />
         </span>
       )}

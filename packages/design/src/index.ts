@@ -82,8 +82,10 @@ export type {
   Motion,
   RadiusName,
   ShadowLayer,
+  ShadowWash,
   SpacingName,
   Spring,
+  Texture,
   TypeStep,
   TypeStepName,
 } from './scales';
@@ -98,6 +100,7 @@ export {
   motion,
   radii,
   spacing,
+  texture,
   typeRamp,
 } from './scales';
 

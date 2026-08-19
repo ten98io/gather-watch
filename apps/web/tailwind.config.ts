@@ -9,6 +9,7 @@ import {
   layout,
   motion,
   radii,
+  spacing,
   typeRamp,
 } from '@gather/design';
 
@@ -93,6 +94,7 @@ const colorUtility: Readonly<Record<ColorTokenName, string>> = {
   surface2: 'surface-2',
   surface3: 'surface-3',
   hairline: 'hairline',
+  scrim: 'scrim',
   textHi: 'hi',
   textMid: 'mid',
   textLow: 'low',
@@ -165,14 +167,16 @@ const config: Config = {
       // utility; `font-bold` &co still win because core fontWeight sorts after
       // core fontSize. Use these instead of ad-hoc text-sm/text-xs.
       fontSize,
-      // Radius ladder (DESIGN.md §4): tighter corners read as more precise.
-      // The keys are class suffixes, which is why `control` is spelled `ctl` —
-      // 38 call sites already say `rounded-ctl` and renaming it is a codemod.
+      // Radius ladder (DESIGN.md §4). Committed at both ends: controls stay
+      // crisp, large surfaces are genuinely soft. The keys are class suffixes,
+      // which is why `control` is spelled `ctl` — 38 call sites already say
+      // `rounded-ctl` and renaming it is a codemod.
       borderRadius: {
         sm: px(radii.sm),
         ctl: px(radii.control),
         card: px(radii.card),
         panel: px(radii.panel),
+        stage: px(radii.stage),
         pill: px(radii.pill),
       },
       // Layout constants that were previously arbitrary values. `tabBar` is in
@@ -190,6 +194,14 @@ const config: Config = {
         tap: px(layout.tap), // minimum touch target
         row: px(layout.row), // media row height
         rail: px(layout.rail), // right rail width
+        // The composition-scale end of the spacing ramp, by name. Tailwind's
+        // own `16 / 24 / 32` happen to be the same pixels, but `gap-chapter`
+        // says what the gap IS and `gap-24` says how big it is — and the ramp
+        // is the vocabulary mobile and the overlay share, so a number here
+        // would be the one client that opted out of it.
+        section: px(spacing.section),
+        chapter: px(spacing.chapter),
+        canvas: px(spacing.canvas),
         ...controlSpacing,
       },
       // Two elevation vocabularies, and they are not interchangeable:

@@ -9,11 +9,17 @@
  * hover-revealed right side, `meta` is whatever the caller wants to show under
  * the title. The row owns layout, the active treatment and the hover-reveal
  * cascade; it owns none of the behaviour.
+ *
+ * A row that can be activated says so on its ARTWORK: the poster is what a
+ * reader points at when they mean "play this", so that is where the play mark
+ * goes. It is the only thing separating a list of media from a list of links,
+ * and it costs no step — the click was already on the row body.
  */
 import { isValidElement } from 'react';
 import type { HTMLAttributes, ReactNode } from 'react';
 import { Artwork } from '@/components/ui/artwork';
-import type { ArtworkKind } from '@/components/ui/artwork';
+import type { ArtworkKind, ArtworkShape } from '@/components/ui/artwork';
+import { PlayIcon } from '@/components/ui/icons';
 import { cn } from '@/lib/cn';
 
 /**
@@ -32,11 +38,33 @@ export const HOVER_REVEAL =
   '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 ' +
   '[@media(hover:hover)]:group-focus-within:opacity-100';
 
+/**
+ * The play wash over the artwork — deliberately NOT `HOVER_REVEAL`.
+ *
+ * They look like the same problem and are opposites. `HOVER_REVEAL` is for
+ * CONTROLS, which is why it stays visible where hover does not exist: a delete
+ * button that only appears under a cursor does not exist on a phone (§10). This
+ * is decoration over a picture — the row body is already the control and the
+ * glyph is `aria-hidden` — so on touch it would simply sit on the artwork
+ * forever, hiding the one thing the row is a picture of. Hover/focus only, and
+ * that is correct here and nowhere near `actions`.
+ */
+const ARTWORK_PLAY_REVEAL =
+  'opacity-0 transition-opacity duration-150 ' +
+  'group-hover:opacity-100 group-focus-within:opacity-100';
+
 /** Shorthand artwork: pass this instead of a node and MediaRow renders it. */
 export interface MediaRowArtwork {
   src?: string | null;
   alt: string;
   kind: ArtworkKind;
+  /**
+   * Overrides the shape <Artwork> picks from `kind`. A 16:9 thumbnail is the
+   * truer poster for a video, and in the 380px rail it is also 85px of a row
+   * that has a title, a duration and two controls to fit — so the rail rows
+   * ask for 'square' and let the provider word name the medium instead.
+   */
+  shape?: ArtworkShape;
 }
 
 export interface MediaRowProps extends Omit<HTMLAttributes<HTMLElement>, 'title'> {
@@ -48,10 +76,17 @@ export interface MediaRowProps extends Omit<HTMLAttributes<HTMLElement>, 'title'
   title: ReactNode;
   /** 1 (default) or 2 lines before truncation. */
   titleLines?: 1 | 2;
-  /** Secondary line — `text-low`. Provider · duration · who added. */
+  /** Secondary line — `text-low`. Provider · who added · a state chip. */
   meta?: ReactNode;
   /** Left of the artwork: the drag grabber, an index, a checkbox. */
   leading?: ReactNode;
+  /**
+   * Right of the title, ALWAYS visible: a runtime, a timestamp, a count. It is
+   * separate from `actions` because those hide behind hover on a pointer
+   * device, and a readout that vanishes when the cursor leaves is not a
+   * readout — it is a control that has been mislabelled.
+   */
+  trailing?: ReactNode;
   /** Right side, hidden until hover/focus on pointer devices. */
   actions?: ReactNode;
   /** Playing / selected: surface-3 plus a 3px accent left edge. */
@@ -79,6 +114,7 @@ export function MediaRow({
   titleLines = 1,
   meta,
   leading,
+  trailing,
   actions,
   active = false,
   onActivate,
@@ -88,7 +124,35 @@ export function MediaRow({
 }: MediaRowProps) {
   const Root = as;
   const art = isArtworkSpec(artwork) ? (
-    <Artwork src={artwork.src ?? null} alt={artwork.alt} kind={artwork.kind} size={48} />
+    // Wrapped so the artwork can carry the play wash. `rounded-ctl` on the
+    // wash is <Artwork>'s own default corner, and MediaRowArtwork exposes no
+    // `rounded`, so the two cannot drift apart.
+    <span className="relative shrink-0">
+      <Artwork
+        src={artwork.src ?? null}
+        alt={artwork.alt}
+        kind={artwork.kind}
+        size={48}
+        // exactOptionalPropertyTypes: an explicit `undefined` is not the same as
+        // an absent prop, and <Artwork> derives the shape when it is absent.
+        {...(artwork.shape !== undefined ? { shape: artwork.shape } : {})}
+      />
+      {onActivate !== undefined && (
+        <span
+          aria-hidden
+          className={cn(
+            'absolute inset-0 grid place-items-center rounded-ctl',
+            // The measured scrim and the absolute white, the same pair the
+            // call tiles use: what is behind this is an arbitrary poster, so
+            // neither half may invert with the theme.
+            'bg-scrim text-[var(--ink-white)]',
+            ARTWORK_PLAY_REVEAL,
+          )}
+        >
+          <PlayIcon size={16} />
+        </span>
+      )}
+    </span>
   ) : (
     artwork
   );
@@ -149,6 +213,10 @@ export function MediaRow({
         </button>
       ) : (
         <div className={bodyClass}>{body}</div>
+      )}
+
+      {trailing !== undefined && trailing !== null && (
+        <span className="shrink-0 text-label tabular-nums text-low">{trailing}</span>
       )}
 
       {actions !== undefined && actions !== null && (

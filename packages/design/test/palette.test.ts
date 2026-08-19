@@ -33,6 +33,7 @@ import {
   THEME_NAMES,
   WCAG_AA_NON_TEXT,
   WCAG_AA_TEXT,
+  compositeOver,
   contrastRatio,
   effectiveSurfaces,
   emitCssThemes,
@@ -144,9 +145,10 @@ describe('every filled control is readable under the ink it gets', () => {
     // THIS USED TO BE A RECORDED FAILURE. The light gradient's best single ink
     // measured 3.96:1 — over the 3:1 non-text bar, under the 4.5:1 text bar —
     // and this test asserted the weaker bar with a comment saying the fix was
-    // "a palette decision, not a test one". The palette decision was taken
-    // (light aurora1 0.55→0.59, aurora2 0.58→0.60; see src/tokens.ts), so the
-    // bar here is now the real one, in both themes.
+    // "a palette decision, not a test one". The palette decision was taken and
+    // has survived the 2026-08-19 re-tune of the trio: the light gradient's
+    // floor under black is 4.68:1, and the bar here is the real one in both
+    // themes.
     const floor = (theme: 'dark' | 'light', ink: string): number =>
       Math.min(
         ...AURORA_GRADIENT_STOPS.map((stop) =>
@@ -178,7 +180,7 @@ describe('every filled control is readable under the ink it gets', () => {
 
   it('picks the gradient ink by its WORST stop, not by any single one', () => {
     // The distinction that matters: `inkOn(theme, 'aurora3')` answers about one
-    // stop, and on light `aurora3` white measures 2.73:1. A per-stop pick would
+    // stop, and on light `aurora3` white measures 3.41:1. A per-stop pick would
     // be green on each colour and illegible across the button.
     for (const theme of THEME_NAMES) {
       const chosen = inkOnGradient(theme);
@@ -237,6 +239,51 @@ describe('a colour that is the whole affordance holds the non-text bar', () => {
       });
     }
   }
+});
+
+/**
+ * The scrim is the one token whose job is the OPPOSITE of contrast: it exists
+ * to stop the page behind a dialog from being read, and the shipped one did
+ * not. At the alpha it carried, body text under an open dialog still measured
+ * comfortably over AA, so the dialog was modal in the DOM and not to a reader.
+ *
+ * Measured rather than eyeballed, because "faint" is the failure that gets
+ * shipped: everything the page can present, composited under the scrim, has to
+ * end up inside a band too narrow to carry text.
+ */
+describe('the scrim actually obscures the page behind it', () => {
+  for (const theme of THEME_NAMES) {
+    it(`${theme}: nothing behind it clears ${WCAG_AA_NON_TEXT}:1`, () => {
+      const scrim = resolveColorToken(theme, 'scrim');
+      expect(scrim.kind, 'the scrim is a wash, not an opaque colour').toBe('overlay');
+      if (scrim.kind !== 'overlay') return;
+
+      // Everything a page can put under a dialog: every surface, and the
+      // brightest ink that can sit on one.
+      const behind = [
+        ...effectiveSurfaces(theme).map((surface) => surface.hex),
+        resolveColorToken(theme, 'textHi').hex,
+      ].map((hex) => compositeOver(scrim.hex, scrim.alpha, hex));
+
+      let worst = 1;
+      for (const a of behind) for (const b of behind) worst = Math.max(worst, contrastRatio(a, b));
+      expect(
+        worst,
+        `the page behind the scrim still reaches ${worst.toFixed(2)}:1`,
+      ).toBeLessThan(WCAG_AA_NON_TEXT);
+    });
+  }
+
+  it('is the same wash in both themes, not a palette value that inverts', () => {
+    // A scrim washed from `--bg-void` would turn into a white veil the moment
+    // the light theme loaded and stop obscuring anything at all. It is also the
+    // same ALPHA in both, which is not an oversight: what a scrim has to
+    // suppress is the brightest pixel the page can show, and that is a
+    // near-white in both themes (`--text-hi` on dark, `--surface-1` on light).
+    const dark = resolveColorToken('dark', 'scrim');
+    const light = resolveColorToken('light', 'scrim');
+    expect(dark).toEqual(light);
+  });
 });
 
 describe('the palette itself is intact', () => {

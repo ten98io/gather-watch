@@ -20,7 +20,11 @@ export function EmoteOverlay() {
         {emotes.map((e) => (
           <motion.span
             key={e.id}
-            className="absolute text-3xl"
+            // `text-headline`, not a Tailwind core step: the ramp is the only
+            // place a type size is written (§10). An emote is content, so only
+            // the SIZE of the step applies — and the display step above it is
+            // spoken for by whatever the screen is actually about (§3).
+            className="absolute text-headline"
             style={{ left: `${e.xPct}%`, top: `${e.yPct}%` }}
             initial={reduced ? { opacity: 0 } : { opacity: 0, y: 0, scale: 0.6 }}
             animate={

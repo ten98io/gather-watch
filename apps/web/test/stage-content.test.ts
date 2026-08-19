@@ -74,8 +74,12 @@ describe('StagePane adapts to the playing item', () => {
 
   it.each(KINDS)('shows one neutral empty stage when nothing plays (stored kind %s)', (kind) => {
     const html = renderStage(makeRoom(kind), null, [], null);
-    expect(html).toContain('Nothing playing yet');
+    // Copy updated 2026-08-19 from "Nothing playing yet": at the display step
+    // that line was a 44px apology on the first screen of every room. The
+    // assertion is unchanged in kind — one empty stage, neutral about mode.
+    expect(html).toContain('The room is ready');
     // The old listen-room copy promised a mode before anything played.
     expect(html).not.toContain('Queue something to listen to');
+    expect(html).not.toContain('listen');
   });
 });

@@ -231,11 +231,12 @@ export function ContextMenu({
       onKeyDown={onMenuKeyDown}
       // Raw point; the layout effect clamps it before paint.
       style={{ left: point.x, top: point.y }}
-      // Same treatment as <DropdownMenuContent>: solid ladder surface, hairline,
-      // neutral elevation. Two menu primitives that looked different was itself
-      // part of the problem.
+      // Same treatment as <DropdownMenuContent>, down to the missing border:
+      // solid ladder surface, and the edge carried by `shadow-e2`'s own
+      // hairline ring rather than restated (§4). Two menu primitives that
+      // looked different was itself part of the problem.
       className={cn(
-        'fixed z-[70] min-w-44 rounded-card border border-hairline bg-surface-2 p-1 shadow-e2 outline-none',
+        'fixed z-[70] min-w-44 rounded-card bg-surface-2 p-1 shadow-e2 outline-none',
         className,
       )}
     >

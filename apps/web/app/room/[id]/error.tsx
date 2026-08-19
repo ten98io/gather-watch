@@ -35,20 +35,27 @@ export default function RoomError({
     logBoundaryError('room', error);
   }, [error]);
 
+  // Composed as RoomNotice in room-shell.tsx is, deliberately: a reader who
+  // hits both should not be able to tell that two different mechanisms caught
+  // them. Type in a canvas of void — no card, no glass, no glow — with the way
+  // out as the region's one aurora action.
   return (
-    <main className="flex min-h-dvh items-center justify-center px-4">
-      <div className="glass-panel flex w-full max-w-md flex-col items-center gap-4 p-8 text-center shadow-glow">
-        <span aria-hidden className="text-4xl">🌌</span>
-        <h1 className="font-display text-2xl font-bold">This room stopped rendering</h1>
-        <p className="text-sm text-mid">{describeBoundaryError(error)}</p>
-        <p className="text-sm text-low">
-          The room itself is fine — everyone else is still in it, and rejoining picks up where
-          the room is now.
-        </p>
-        <div className="flex gap-2">
-          <Button variant="secondary" onClick={reset}>Retry</Button>
+    <main className="flex min-h-dvh flex-col items-center justify-center px-4 py-section text-center md:py-canvas">
+      <div className="flex w-full max-w-2xl flex-col items-center gap-6">
+        <h1 className="font-display text-headline text-hi md:text-display">This room stopped rendering</h1>
+        <div className="flex max-w-md flex-col gap-2">
+          <p className="text-body text-mid">{describeBoundaryError(error)}</p>
+          <p className="text-body text-low">
+            The room itself is fine — everyone else is still in it, and rejoining picks up where
+            the room is now.
+          </p>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+          <Button size="lg" variant="secondary" onClick={reset}>
+            Retry
+          </Button>
           <Link href="/home">
-            <Button>Back to your rooms</Button>
+            <Button size="lg">Back to your rooms</Button>
           </Link>
         </div>
       </div>

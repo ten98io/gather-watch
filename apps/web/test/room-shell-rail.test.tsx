@@ -26,7 +26,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { MediaRef, Room } from '@gather/contracts';
+import type { MediaRef, Message, Room, UserId } from '@gather/contracts';
 
 (globalThis as unknown as { React: typeof React }).React = React;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -93,6 +93,28 @@ const h = React.createElement;
 
 const VIDEO: MediaRef = { kind: 'youtube', videoId: 'dQw4w9WgXcQ' };
 const MUSIC: MediaRef = { kind: 'soundcloud', url: 'https://soundcloud.com/artist/neon-rain' };
+const PEER = 'user-peer' as UserId;
+
+/** A message from someone else — the only kind that counts as unread. */
+function peerMessage(seq: number): Message {
+  return {
+    id: `msg_${String(seq)}` as Message['id'],
+    roomId: ROOM_ID,
+    authorId: PEER,
+    kind: 'text',
+    body: `line ${String(seq)}`,
+    gifUrl: null,
+    attachment: null,
+    replyTo: null,
+    mentions: [],
+    reactions: {},
+    pinned: false,
+    editedAt: null,
+    deletedAt: null,
+    seq,
+    createdAt: 1_000 + seq,
+  };
+}
 
 let captured: RoomConnection | null = null;
 
@@ -211,8 +233,13 @@ describe('the desktop rail across a theater flip', () => {
     // goes theater → windowed → theater keeps the rail on screen throughout.
     await mountRoom(makeRoom('watch', { theater: true }), VIDEO);
     clickButton(host, 'Chat & queue');
+    // Select Chat first: the rail opens on Queue now, and panels mount lazily,
+    // so without this the mount count below would be 0 before AND after and
+    // the assertion would pass on a rail that had been rebuilt twice.
+    clickButton(host, 'Chat');
     const before = railNode(host);
     const chatMounts = mounts.chat;
+    expect(chatMounts).toBe(1);
 
     await setTheater(false);
     await setTheater(true);
@@ -249,6 +276,7 @@ describe('theater is the user’s latch, not the item’s', () => {
 
   beforeEach(() => {
     mounts.dock = 0;
+    mounts.chat = 0;
     captured = null;
     window.matchMedia = ((query: string) => ({
       matches: query.includes('min-width: 768px'),
@@ -353,5 +381,97 @@ describe('theater is the user’s latch, not the item’s', () => {
     expect(
       [...host.querySelectorAll('a, button')].map((el) => el.getAttribute('aria-label')),
     ).not.toContain('Leave room');
+  });
+});
+
+/**
+ * WHICH PANE THE RAIL OPENS ON, AND WHAT THE OTHER TWO COST.
+ *
+ * The rail always opened on Chat. DESIGN.md §12 budgets "add content to queue"
+ * at 2, "play a queued item" and "reorder / remove a queue item" at 1, and
+ * history-replay at 3 — and every one of those flows begins with a trip to the
+ * Queue tab, so opening on Chat spent a step on all four and put the first one
+ * over its budget outright.
+ *
+ * The trade only works because Chat can ask for you and the queue cannot: the
+ * unread count is on Chat's own trigger. Which is the second case here, and it
+ * is not incidental — panels mount lazily, so on a visit that never opens Chat
+ * the pane that used to publish that count does not exist. The shell reads the
+ * store instead and hands the number down.
+ */
+describe('the rail’s opening pane', () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mounts.chat = 0;
+    captured = null;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('min-width: 768px'),
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  async function mountRoom(): Promise<void> {
+    const room = makeRoom('watch', { theater: false });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        h(
+          RoomProvider,
+          { room, member: makeMember('host'), lastEventSeq: 0 } as never,
+          h(
+            Seeded,
+            { patch: { room, playback: null, queue: { items: [], version: 0 } } },
+            h(QueryClientProvider, { client }, h(RoomLayout, { roomId: ROOM_ID })),
+          ),
+        ),
+      );
+    });
+  }
+
+  /** The tab whose trigger reports itself selected, by its own label. */
+  function selectedTabs(): Array<string | null> {
+    return [...host.querySelectorAll('[role="tab"]')]
+      .filter((t) => t.getAttribute('aria-selected') === 'true')
+      .map((t) => t.textContent);
+  }
+
+  it('is Queue — where the flows §12 budgets at one and two actually start', async () => {
+    await mountRoom();
+    expect(selectedTabs()).toEqual(['Queue']);
+  });
+
+  it('carries the unread count although chat has never been mounted', async () => {
+    await mountRoom();
+    const connection = captured;
+    if (connection === null) throw new Error('no room connection was captured');
+    await act(async () => {
+      connection.useRoomState.setState({ messages: [peerMessage(1), peerMessage(2)] });
+      await Promise.resolve();
+    });
+
+    const chat = [...host.querySelectorAll('[role="tab"]')].find((t) =>
+      (t.textContent ?? '').startsWith('Chat'),
+    );
+    // The count published by the pane is unavailable by construction here.
+    expect(mounts.chat).toBe(0);
+    expect(chat?.textContent).toContain('2 unread');
   });
 });

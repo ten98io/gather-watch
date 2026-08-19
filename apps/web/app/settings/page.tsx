@@ -26,8 +26,17 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { toast } from '@/components/ui/toast';
-import { Logo } from '@/components/Logo';
+import { MonitorIcon, SmartphoneIcon } from '@/components/ui/icons';
+import { Wordmark } from '@/components/Logo';
 
+/**
+ * ACCOUNT DATA, not palette. `AccentColor` is a `#rrggbb` string persisted on
+ * the user row and rendered as their avatar ring wherever they appear, so these
+ * are the presets offered for a value the PERSON owns — the one kind of colour
+ * in the product that cannot come from `packages/design/src/tokens.ts`, because
+ * the point of it is that it is not the product's colour. Nothing in the design
+ * system may read them, and they are never used as a surface or as ink.
+ */
 const ACCENT_PRESETS = ['#7c5cfc', '#d64db8', '#e8b34d', '#4dc9e8', '#5ce88a', '#ff6b6b'];
 
 function Section({
@@ -39,11 +48,14 @@ function Section({
   description: string;
   children: ReactNode;
 }) {
+  // Solid ladder, not glass: a settings section is a resting surface on a
+  // static page, and DESIGN.md §4 reserves glass for things floating over
+  // moving video.
   return (
-    <section className="glass-panel flex flex-col gap-4 p-6">
+    <section className="flex flex-col gap-6 rounded-panel bg-surface-1 p-6 md:p-8">
       <div>
-        <h2 className="font-display text-lg font-semibold text-hi">{title}</h2>
-        <p className="text-sm text-mid">{description}</p>
+        <h2 className="font-display text-title text-hi">{title}</h2>
+        <p className="mt-1 max-w-prose text-body text-mid">{description}</p>
       </div>
       {children}
     </section>
@@ -97,6 +109,7 @@ function ProfileSection() {
         <Avatar src={user.avatarUrl} name={user.displayName} accentColor={accentColor} size={64} />
         <Input
           aria-label="Avatar image URL"
+          inputSize="lg"
           placeholder="Paste an image URL"
           value={avatarUrl}
           onChange={(e) => {
@@ -104,10 +117,11 @@ function ProfileSection() {
           }}
         />
       </div>
-      <label className="flex flex-col gap-1.5">
-        <span className="text-sm font-medium text-mid">Display name</span>
+      <label className="flex flex-col gap-2">
+        <span className="text-label text-mid">Display name</span>
         <Input
           maxLength={80}
+          inputSize="lg"
           value={displayName}
           onChange={(e) => {
             setDisplayName(e.target.value);
@@ -115,8 +129,8 @@ function ProfileSection() {
         />
       </label>
       <fieldset>
-        <legend className="mb-1.5 text-sm font-medium text-mid">Accent color</legend>
-        <div className="flex gap-2">
+        <legend className="mb-3 text-label text-mid">Accent color</legend>
+        <div className="flex flex-wrap gap-3">
           {ACCENT_PRESETS.map((hex) => (
             <button
               key={hex}
@@ -126,10 +140,15 @@ function ProfileSection() {
               onClick={() => {
                 setAccentColor(hex);
               }}
+              // `h-ctl-md w-ctl-md`, not `h-9 w-9`. A hand-written 36px square
+              // is a touch target under DESIGN.md §9's 44px floor on every
+              // phone — and the control tokens already answer this: 32px
+              // under a mouse, 44px under a finger, decided by
+              // `(pointer: coarse)` rather than by a breakpoint guess.
               className={
                 accentColor === hex
-                  ? 'h-9 w-9 rounded-full ring-2 ring-ring ring-offset-2 ring-offset-void'
-                  : 'h-9 w-9 rounded-full ring-1 ring-border-glass transition-transform hover:scale-105'
+                  ? 'h-ctl-md w-ctl-md rounded-pill ring-2 ring-ring ring-offset-2 ring-offset-surface-1'
+                  : 'h-ctl-md w-ctl-md rounded-pill ring-1 ring-hairline transition-transform hover:scale-105'
               }
               style={{ backgroundColor: hex }}
             />
@@ -169,19 +188,40 @@ function SessionsSection() {
       {sessionsQuery.isPending ? (
         <Skeleton className="h-20" />
       ) : sessionsQuery.isError ? (
-        <p role="alert" className="text-sm text-mid">Couldn’t load sessions.</p>
+        <p role="alert" className="text-body text-mid">Couldn’t load sessions.</p>
       ) : (
         <ul className="flex flex-col gap-2">
           {sessionsQuery.data.sessions.map((s) => (
-            <li key={s.id} className="glass-raised flex items-center gap-3 px-3 py-2.5">
-              <span aria-hidden className="text-lg">{/mobile|ios|android/i.test(s.device) ? '📱' : '💻'}</span>
+            <li
+              key={s.id}
+              // The chip takes 94px of a 247px row, which left the column
+              // beside it 101px for a 105px "Last active 03:16" — so the one
+              // row that carries a chip was also the only one whose metadata
+              // came down as two lines. Below `sm` the chip drops to a line of
+              // its own instead; from `sm` up the row is what it was.
+              className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-card bg-surface-2 px-4 py-3 sm:flex-nowrap"
+            >
+              {/* Icons, not emoji: a device glyph is a control-adjacent label,
+                  and DESIGN.md §8 keeps emoji for content only. */}
+              <span aria-hidden className="text-low">
+                {/mobile|ios|android/i.test(s.device) ? (
+                  <SmartphoneIcon size={20} />
+                ) : (
+                  <MonitorIcon size={20} />
+                )}
+              </span>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-hi">{s.device}</p>
-                <p className="text-xs text-low">
-                  Last active {formatTimestamp(s.lastSeenAt)}
-                </p>
+                <p className="truncate text-body text-hi">{s.device}</p>
+                <p className="text-label text-low">Last active {formatTimestamp(s.lastSeenAt)}</p>
               </div>
-              {s.current && <Badge variant="aurora">This device</Badge>}
+              {/* The wrapper, not the chip, carries `basis-full`: a chip given
+                  a 100% basis stretches into a 247px pill. This one takes the
+                  line and lets the chip stay the size of its own label. */}
+              {s.current && (
+                <div className="basis-full sm:basis-auto">
+                  <Badge variant="aurora">This device</Badge>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -253,7 +293,7 @@ function DataSection() {
             Your account, messages, uploads and memberships are scheduled for deletion after a
             short grace period. This cannot be undone once the purge runs.
           </DialogDescription>
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="mt-8 flex flex-wrap justify-end gap-4">
             <Button variant="secondary" onClick={() => {
               setConfirmOpen(false);
             }}>
@@ -311,17 +351,17 @@ function NotificationsSection() {
       {state === 'checking' ? (
         <Skeleton className="h-9" />
       ) : state === 'unsupported' ? (
-        <p className="text-sm text-mid">
+        <p className="text-body text-mid">
           This browser can’t do push notifications. On iOS, add Gather to your Home Screen first.
         </p>
       ) : state === 'blocked' ? (
-        <p role="alert" className="text-sm text-mid">
+        <p role="alert" className="text-body text-mid">
           Notifications are blocked for this site. Re-allow them in your browser’s site settings,
           then come back.
         </p>
       ) : (
         <label className="flex items-center justify-between gap-4">
-          <span className="text-sm text-mid">Notify me when someone @mentions me</span>
+          <span className="text-body text-mid">Notify me when someone @mentions me</span>
           <Switch
             aria-label="Notify me when someone @mentions me"
             checked={state === 'on'}
@@ -341,7 +381,7 @@ function AppearanceSection() {
   return (
     <Section title="Appearance" description="Dark is the home theme; Daylight is a first-class variant.">
       <label className="flex items-center justify-between gap-4">
-        <span className="text-sm text-mid">Daylight theme</span>
+        <span className="text-body text-mid">Daylight theme</span>
         <Switch
           aria-label="Daylight theme"
           checked={theme === 'light'}
@@ -364,25 +404,38 @@ export default function SettingsPage() {
   }, [user, loading, router]);
 
   if (loading || user === null) {
+    // The placeholder mirrors the real composition below rung for rung —
+    // same header, same `gap-section pt-chapter` main, same `gap-4` stack of
+    // panels. It used to carry `gap-6` on the container AND `mt-chapter` /
+    // `mt-section` on the children, so every gap was the sum of two rungs and
+    // nothing landed where the loaded page put it. A placeholder whose rhythm
+    // is not the page's rhythm re-lays the screen out at the moment the data
+    // arrives, which is the one thing a skeleton exists to prevent.
     return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-6">
-        <Skeleton className="h-10 w-48" />
-        <Skeleton className="h-48" />
-        <Skeleton className="h-32" />
-      </main>
+      <div className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col px-6 lg:px-10">
+        <header className="py-6">
+          <Skeleton radius="ctl" className="h-8 w-40" />
+        </header>
+        <main className="flex flex-col gap-8 pt-12 md:gap-section md:pt-chapter">
+          <div className="flex flex-col gap-4">
+            <Skeleton radius="ctl" className="h-3 w-24" />
+            <Skeleton radius="ctl" className="h-11 w-64" />
+          </div>
+          <div className="flex flex-col gap-4">
+            <Skeleton radius="panel" className="h-64" />
+            <Skeleton radius="panel" className="h-40" />
+          </div>
+        </main>
+      </div>
     );
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-6">
-      <header className="flex items-center gap-3">
-        <Link href="/home" className="flex items-center gap-2.5" aria-label="Back to rooms">
-          <Logo size={30} />
+    <div className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col px-6 lg:px-10">
+      <header className="flex items-center gap-4 py-6">
+        <Link href="/home" aria-label="Back to rooms">
+          <Wordmark size={30} />
         </Link>
-        <h1 className="font-display text-xl font-bold">Settings</h1>
-        {user.email === null && (
-          <Badge variant="warn">Guest — add an email to keep this identity</Badge>
-        )}
         <div className="ml-auto">
           <Button
             variant="ghost"
@@ -405,17 +458,36 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <ProfileSection />
-      <NotificationsSection />
-      <AppearanceSection />
-      <SessionsSection />
-      <DataSection />
+      {/* One display setting, and it names the screen (DESIGN.md §3). The
+          section heads below stay at `title` — they name a block inside it. */}
+      {/* Composition rungs halve below `md` (see app/home/page.tsx). */}
+      <main className="flex flex-1 flex-col gap-8 pt-12 md:gap-section md:pt-chapter">
+        <div>
+          <p className="text-caption text-low">Account</p>
+          <h1 className="mt-4 font-display text-headline text-hi md:text-display">Settings</h1>
+          {user.email === null && (
+            <p className="mt-6">
+              <Badge variant="warn">Guest — add an email to keep this identity</Badge>
+            </p>
+          )}
+        </div>
 
-      <nav aria-label="Legal" className="flex gap-4 text-xs text-low">
-        <Link className="transition-colors hover:text-mid" href="/legal/terms">Terms</Link>
-        <Link className="transition-colors hover:text-mid" href="/legal/privacy">Privacy</Link>
-        <Link className="transition-colors hover:text-mid" href="/legal/abuse">Abuse &amp; DMCA</Link>
-      </nav>
-    </main>
+        <div className="flex flex-col gap-4">
+          <ProfileSection />
+          <NotificationsSection />
+          <AppearanceSection />
+          <SessionsSection />
+          <DataSection />
+        </div>
+      </main>
+
+      <footer className="mt-8 flex flex-wrap items-center gap-6 border-t border-hairline py-8 text-label text-low md:mt-section">
+        <nav aria-label="Legal" className="flex gap-6">
+          <Link className="transition-colors hover:text-hi" href="/legal/terms">Terms</Link>
+          <Link className="transition-colors hover:text-hi" href="/legal/privacy">Privacy</Link>
+          <Link className="transition-colors hover:text-hi" href="/legal/abuse">Abuse &amp; DMCA</Link>
+        </nav>
+      </footer>
+    </div>
   );
 }

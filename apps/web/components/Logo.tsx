@@ -1,6 +1,20 @@
 import { cn } from '@/lib/cn';
 
-/** Gather wordmark orb — the aurora play triangle from app/icon.svg. */
+/** Gather brand orb — the aurora play triangle.
+ *
+ *  This is one of the three places the aurora gradient is sanctioned
+ *  (DESIGN.md §2: the primary action, the brand mark, the live indicator), and
+ *  it is the reason the other two mean anything. A screen region carries at
+ *  most one of them, so a header lockup and a primary button in the same
+ *  header is already the budget spent.
+ *
+ *  Every stop is `var(--aurora-*)`, so the mark narrowed with the palette and
+ *  retints with the theme. `app/icon.svg` draws the same mark for the browser
+ *  tab and the PWA, and it has NOT followed: a static asset is fetched outside
+ *  the document, so no custom property reaches it and its stops are still the
+ *  pre-2026-08-19 rainbow, amber and all. The two are no longer the same
+ *  artwork and this file is not the one that is wrong — see the note in the
+ *  handoff. */
 export function Logo({ size = 32, className }: { size?: number; className?: string }) {
   return (
     <svg
@@ -31,5 +45,26 @@ export function Logo({ size = 32, className }: { size?: number; className?: stri
         strokeDasharray="4 18"
       />
     </svg>
+  );
+}
+
+/**
+ * The lockup: mark + name, as one object.
+ *
+ * It was assembled by hand in four places (home, settings, legal, login) and
+ * had already drifted — `text-lg font-bold tracking-tight` in one header,
+ * `text-lg font-bold` in another, and a different gap in each. A wordmark that
+ * is a different size on two consecutive screens is the cheapest way to look
+ * unconsidered, so it is one component with one setting.
+ *
+ * Deliberately NOT a link: every caller wraps it in the `<Link>` that suits its
+ * route, and nesting an anchor inside an anchor is invalid.
+ */
+export function Wordmark({ size = 30, className }: { size?: number; className?: string }) {
+  return (
+    <span className={cn('inline-flex items-center gap-2.5', className)}>
+      <Logo size={size} />
+      <span className="font-display text-title text-hi">Gather</span>
+    </span>
   );
 }

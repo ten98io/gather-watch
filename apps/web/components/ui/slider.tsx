@@ -102,8 +102,17 @@ export function Slider({
       onLostPointerCapture={commit}
       onKeyUp={commit}
       onBlur={commit}
+      // `h-ctl-md`, not a Tailwind step. The track is 4px drawn centred by
+      // `.slider-aurora`, so the element's height is PURE hit area — and a
+      // scrubber is the one control a finger drags rather than taps. At the
+      // flat `h-6` it shipped, that area was 24px on every device: under a
+      // mouse that is the desktop density the system wants, and under a finger
+      // it is half of the 44px §9 makes non-negotiable. The control token is
+      // already the system's answer to exactly that split (32 on
+      // `pointer: fine`, 44 on `pointer: coarse`, DESIGN.md §4) and it costs
+      // nothing visible, because nothing here is drawn at the box's height.
       className={cn(
-        'slider-aurora h-6 w-full cursor-pointer appearance-none bg-transparent',
+        'slider-aurora h-ctl-md w-full cursor-pointer appearance-none bg-transparent',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}

@@ -48,6 +48,7 @@ import {
   motion,
   radii,
   spacing,
+  texture,
   typeRamp,
 } from './scales';
 
@@ -235,23 +236,32 @@ export function emitCssBlock(
 }
 
 /**
- * One elevation level as a `box-shadow` value.
+ * One elevation level as a `box-shadow` value: the hairline ring, then the
+ * soft shadow (DESIGN.md §4).
  *
- * The alpha is a wash of `--ink-black` rather than a theme token on purpose: a
- * shadow is an absence of light and must not invert when the palette does. The
- * `var()` indirection (rather than a literal `oklch(0 0 0 / …)`) keeps every
- * colour in the emitted stylesheet addressable by name, which is the rule the
- * rest of this file follows.
+ * The two layers name different colours on purpose. The shadow is a wash of
+ * `--ink-black` — an absence of light, which must not invert when the palette
+ * does. The ring is a wash of `--hairline`, which MUST invert: the edge that
+ * reads on a near-black ground is a light one, and a black ring on the dark
+ * theme draws nothing at all. Both go through `var()` rather than a literal so
+ * every colour in the emitted stylesheet stays addressable by name.
+ *
+ * A layer at alpha 1 emits the variable itself rather than a `color-mix` with
+ * 100% of it, which is the same colour and one function fewer to read.
  */
 export function formatElevation(name: (typeof ELEVATION_NAMES)[number]): string {
   return elevation[name]
-    .map(
-      (layer) =>
-        `0 ${layer.y}px ${layer.blur}px ${layer.spread}px ` +
-        `color-mix(in oklch, var(${inkCssVarName('inkBlack')}) ${formatNumber(
-          layer.alpha * 100,
-        )}%, transparent)`,
-    )
+    .map((layer) => {
+      const source = layer.wash === 'hairline' ? cssVarName('hairline') : inkCssVarName('inkBlack');
+      const color =
+        layer.alpha === 1
+          ? `var(${source})`
+          : `color-mix(in oklch, var(${source}) ${formatNumber(layer.alpha * 100)}%, transparent)`;
+      // `0` rather than `0px` where a length is zero: the ring is the shape
+      // `0 0 0 1px`, and spelling it `0 0px 0px 1px` reads as an accident.
+      const len = (value: number): string => (value === 0 ? '0' : `${value}px`);
+      return `0 ${len(layer.y)} ${len(layer.blur)} ${len(layer.spread)} ${color}`;
+    })
     .join(', ');
 }
 
@@ -304,6 +314,15 @@ export function emitCssScaleVariables(options: CssEmitOptions = {}): string {
       value: stack.map((f) => (f.includes(' ') ? `'${f}'` : f)).join(', '),
     });
   }
+  // Grain (DESIGN.md §4). A `background-image` plus the tile it repeats on, so
+  // a consumer writes two properties and never re-derives the noise. The data
+  // URI is self-contained by requirement, not by preference: the extension
+  // overlay is injected into a page whose CSP it does not control.
+  declarations.push({ property: '--grain', value: texture.grain });
+  declarations.push({
+    property: '--grain-size',
+    value: `${texture.grainTilePx}px ${texture.grainTilePx}px`,
+  });
   return renderDeclarations(declarations, options.indent ?? '  ', options.includeComments ?? true);
 }
 

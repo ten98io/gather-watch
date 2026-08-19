@@ -61,13 +61,18 @@ export function GifPicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-label="Pick a GIF" className="max-w-lg">
         <DialogTitle>Send a GIF</DialogTitle>
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search GIFs…"
-          aria-label="Search GIFs"
-          autoFocus
-        />
+        <p className="mt-1 text-label text-low">
+          {query.trim().length > 0 ? `Results for “${query.trim()}”` : 'Trending right now'}
+        </p>
+        <div className="mt-4">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search GIFs…"
+            aria-label="Search GIFs"
+            autoFocus
+          />
+        </div>
         <div className="mt-3 grid max-h-80 grid-cols-3 gap-2 overflow-y-auto">
           {loading &&
             Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="aspect-video" />)}
@@ -76,7 +81,12 @@ export function GifPicker({
               <button
                 key={gif.id}
                 type="button"
-                className="overflow-hidden rounded-ctl transition-transform hover:scale-[1.03] focus-visible:ring-2 focus-visible:ring-ring"
+                /* A colour change, not a transform. `hover:scale-*` on a tile in
+                   a tight grid pushes it under its neighbours and re-rasterises
+                   the image every frame; a ring says "this one" without moving
+                   anything. The accent is a ring here, which is the one thing
+                   it is allowed to be on both themes (DESIGN.md §2). */
+                className="overflow-hidden rounded-card ring-1 ring-hairline transition-colors duration-150 hover:ring-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => {
                   onPick(gif);
                   onOpenChange(false);
@@ -91,9 +101,12 @@ export function GifPicker({
               </button>
             ))}
           {!loading && searched && results.length === 0 && (
-            <p className="col-span-3 py-8 text-center text-sm text-low">
-              No GIFs — the GIF provider may not be configured on this server.
-            </p>
+            <div className="col-span-3 flex flex-col items-center gap-2 py-12 text-center">
+              <p className="text-title text-hi">No GIFs came back</p>
+              <p className="max-w-xs text-label text-low">
+                Try another search — or this server has no GIF provider configured.
+              </p>
+            </div>
           )}
         </div>
       </DialogContent>

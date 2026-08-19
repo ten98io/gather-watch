@@ -2,9 +2,10 @@
  * Gather mobile theme — the React Native adapter over @gather/design.
  *
  * Owns: the names apps/mobile imports (`palette`, `paletteLight`, `type`,
- * `radii`, `spacing`, `motion`, `layout`, `auroraGradient`, `glow`, `theme`),
- * and the two type steps the design package deliberately does not carry
- * (`type.bodyStrong`, `type.mono`) because they are RN-shaped, not system-level.
+ * `radii`, `spacing`, `motion`, `layout`, `auroraGradient`, `glow`,
+ * `elevation`, `texture`, `theme`), and the two type steps the design package
+ * deliberately does not carry (`type.bodyStrong`, `type.mono`) because they are
+ * RN-shaped, not system-level.
  *
  * Deliberately NOT: any colour, radius, spacing, duration or type value. Every
  * number below is imported from @gather/design, which authors them once in
@@ -16,13 +17,16 @@
  *  - gradients only from the three aurora hues (aurora1 → aurora2 → aurora3,
  *    135°) and only for primary actions / brand moments;
  *  - body text never sits on a gradient;
- *  - elevation is glow, not shadow — use `glow`, never a `shadowOffset`;
+ *  - glow is a SIGNATURE moment (DESIGN.md §5) and nothing else. Chrome that
+ *    merely floats takes `elevation.e1/e2/e3`, which is a 1px hairline BORDER
+ *    plus one soft shadow — spend the view's `borderWidth`/`borderColor` on it
+ *    or the surface ships with a shadow and no edge;
  *  - hit targets ≥ 44px: `layout.tap` (was `layout.minHit`; the design system
  *    reconciled mobile's name with web's).
  */
 
 import type { RnTypeStep } from '@gather/design';
-import { layout, motion, radii, rnThemes, spacing } from '@gather/design';
+import { layout, motion, radii, rnThemes, spacing, texture } from '@gather/design';
 
 /**
  * WCAG maths used to live in this file. It now lives in @gather/design, where a
@@ -31,7 +35,7 @@ import { layout, motion, radii, rnThemes, spacing } from '@gather/design';
  */
 export { contrastRatio, relativeLuminance } from '@gather/design';
 
-export { layout, motion, radii, spacing };
+export { layout, motion, radii, spacing, texture };
 
 /**
  * The dark palette — primary theme. Now includes the opaque elevation ladder
@@ -41,7 +45,8 @@ export { layout, motion, radii, spacing };
  */
 export const palette = rnThemes.dark.palette;
 
-/** DESIGN.md §2 light ("Daylight") variant — first-class, chroma −15% aurora. */
+/** DESIGN.md §2 light ("Daylight") variant — first-class: cooler neutrals, the
+ *  aurora one step darker and ~20% less chroma so it survives on paper. */
 export const paletteLight = rnThemes.light.palette;
 
 export type Palette = typeof palette;
@@ -66,12 +71,18 @@ export interface MobileTypeStep extends RnTypeStep {
  * still exists but now means what DESIGN.md says it means — 11px/500 uppercase
  * — so leaving the old call sites spelled `caption` would have been a trap.
  *
+ * `headline` (28) is new: the ramp's display end grew (DESIGN.md §3) and the
+ * jump from `title` 20 to `display` was too wide to bridge without inventing a
+ * size. On RN `display` is 32 and `hero` 36 — the package resizes both, because
+ * the 44/88px web settings are display type for a desktop, not for a phone.
+ *
  * `fontFamily.*[0]` is the bundled face; until expo-font loads it RN falls back
  * to the platform default (see README's font milestone).
  */
 export const type = {
   hero: ramp.hero,
   display: ramp.display,
+  headline: ramp.headline,
   title: ramp.title,
   body: ramp.body,
   label: ramp.label,
@@ -90,8 +101,19 @@ export const type = {
 /** Aurora gradient stops for expo-linear-gradient (135° ≙ {0,0} → {1,1}). */
 export const auroraGradient = rnThemes.dark.auroraGradient;
 
-/** Glow, not shadow — DESIGN.md §4. Use on raised elements only. */
+/** Glow is a signature moment (DESIGN.md §5) — never a way to say "raised". */
 export const glow = rnThemes.dark.glow;
+
+/**
+ * "This floats": a 1px hairline plus one soft shadow, per level (DESIGN.md §4).
+ *
+ * Theme-relative, unlike `glow`, because the hairline is: the edge that reads on
+ * a near-black ground is a light one. Spread it across `borderWidth` /
+ * `borderColor` / `shadow*` — dropping the border keeps the shadow and loses the
+ * edge, which is the half that makes a surface look drawn rather than blurred.
+ */
+export const elevation = rnThemes.dark.elevation;
+export const elevationLight = rnThemes.light.elevation;
 
 export const theme = {
   dark: palette,
@@ -103,6 +125,8 @@ export const theme = {
   layout,
   auroraGradient,
   glow,
+  elevation,
+  texture,
 } as const;
 
 export type Theme = typeof theme;

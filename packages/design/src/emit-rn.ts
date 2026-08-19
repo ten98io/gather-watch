@@ -15,6 +15,7 @@
  */
 
 import type { ColorTokenName, FillTokenName, ThemeName } from './tokens';
+import type { ShadowLayer } from './scales';
 import type {
   ControlSize,
   ControlSizeName,
@@ -24,6 +25,7 @@ import type {
   Motion,
   RadiusName,
   SpacingName,
+  Texture,
   TypeStepName,
 } from './scales';
 import {
@@ -44,6 +46,7 @@ import {
   motion,
   radii,
   spacing,
+  texture,
   typeRamp,
 } from './scales';
 
@@ -90,13 +93,22 @@ export interface RnGlow {
 }
 
 /**
- * A neutral drop shadow for one elevation level, in RN's shape.
+ * One elevation level in RN's shape: a border and a shadow, because that is
+ * what the two authored layers ARE on this platform.
  *
- * RN has no multi-layer shadow and no spread, so the two authored layers are
- * folded into one: the ambient layer decides the offset and radius (it is what
- * you actually see), and the alphas are combined the way source-over does.
+ * The hairline ring is a `0 0 0 1px` box-shadow on web and RN has no such
+ * thing — but it has `borderWidth`/`borderColor`, which draws exactly the same
+ * 1px ring. So the ring becomes a border rather than being dropped, which is
+ * what "hairline-first" costs on RN: a view taking an elevation has to spend
+ * its border on it.
+ *
+ * RN also has no spread, so the negative spread of the soft layer is folded
+ * into a smaller radius.
  */
 export interface RnElevation {
+  /** Apply as `borderWidth` + `borderColor`. Always 1 — a ring is 1px or absent. */
+  readonly hairlineWidth: number;
+  readonly hairlineColor: string;
   readonly shadowColor: string;
   readonly shadowOpacity: number;
   readonly shadowRadius: number;
@@ -122,6 +134,14 @@ export interface RnTheme {
   readonly motion: Motion;
   readonly layout: Layout;
   readonly fontFamily: FontFamily;
+  /**
+   * Grain (DESIGN.md §4). Carried rather than rendered: `<Image>` will not
+   * decode an SVG data URI without react-native-svg, which mobile does not
+   * bundle. It is here so that when the dependency lands the value is already
+   * the one web and the overlay use, rather than a second noise authored to
+   * match by eye.
+   */
+  readonly texture: Texture;
 }
 
 /** Resolve every token for one theme into an RN colour string. */
@@ -149,26 +169,27 @@ export function emitRnInkOnFill(theme: ThemeName): RnInkOnFill {
 }
 
 /**
- * The type ramp in RN units. `maxFontSize` and `lineHeightRatio` are dropped:
- * RN has no viewport unit, so a fluid step renders at its floor. Anything that
- * wants the hero to grow on a tablet reads `typeRamp.hero.maxFontSize` from
- * src/scales.ts directly.
+ * The type ramp in RN units.
+ *
+ * `maxFontSize` is the WEB fluid ceiling and NEVER applies here — body stays 16
+ * on RN even though the web widens it to 18 on a wide viewport. A step whose
+ * designed RN size differs from the web one says so with `rnFontSize`, either
+ * because the step is fluid and RN has no viewport (hero) or because the web
+ * size is an oversized display setting a phone cannot hold (display 44 → 32).
+ *
+ * Leading is taken as the step's RATIO rather than its px value, so a step that
+ * resizes for RN keeps its proportions. For a step that does not resize this is
+ * exactly the authored `lineHeight` — `round(size × line / size)` — so the
+ * ratio is not a second opinion, only the one that survives a resize.
  */
 export function emitRnTypeRamp(): RnTypeRamp {
   const out = {} as Record<TypeStepName, RnTypeStep>;
   for (const [name, step] of Object.entries(typeRamp) as [TypeStepName, (typeof typeRamp)[TypeStepName]][]) {
-    // RN has no viewport unit, so a fluid step cannot scale: it reads the
-    // floor (`fontSize`), or the explicit `rnFontSize` when the designed RN
-    // size is neither the floor nor the ceiling (hero: 34, the old displayL).
-    // `maxFontSize` is the WEB fluid ceiling and never applies here — body
-    // stays 15 on RN even though the web widens it to 17 at ≥1440px.
     const fontSize = step.rnFontSize ?? step.fontSize;
+    const ratio = step.lineHeightRatio ?? step.lineHeight / step.fontSize;
     const base = {
       fontSize,
-      lineHeight:
-        step.lineHeightRatio === undefined
-          ? step.lineHeight
-          : Math.round(fontSize * step.lineHeightRatio),
+      lineHeight: Math.round(fontSize * ratio),
       fontWeight: String(step.fontWeight) as RnTypeStep['fontWeight'],
       letterSpacing: Number((fontSize * step.letterSpacing).toFixed(3)),
     };
@@ -203,29 +224,34 @@ export function emitRnGlow(theme: ThemeName): RnGlow {
 }
 
 /**
- * The neutral elevation ladder in RN units.
+ * The elevation ladder in RN units.
  *
- * Theme-independent by construction — the ink is the absolute black, exactly as
- * in the CSS emitter, so a shadow does not invert when the palette does.
+ * Takes a theme, which the previous version did not, and the reason is the
+ * hairline: the shadow is a wash of the ABSOLUTE black in both themes (a
+ * shadow does not invert), but the ring is `--hairline`, which does. RN cannot
+ * defer that the way CSS defers it to `var()`, so it is resolved here.
+ *
  * Android's `elevation` is stepped 2/6/12 to match the three levels' apparent
  * distance from the page.
  */
-export function emitRnElevation(): Readonly<Record<ElevationName, RnElevation>> {
+export function emitRnElevation(theme: ThemeName): Readonly<Record<ElevationName, RnElevation>> {
   const androidElevation: Readonly<Record<ElevationName, number>> = { e1: 2, e2: 6, e3: 12 };
+  const palette = emitRnPalette(theme);
   const out = {} as Record<ElevationName, RnElevation>;
   for (const name of ELEVATION_NAMES) {
-    const layers = elevation[name];
-    // The ambient (last) layer is the one a viewer reads as the shadow; the
-    // contact layer only survives as extra opacity, composited source-over.
-    const ambient = layers[layers.length - 1] as (typeof layers)[number];
-    const combined = layers.reduce((acc, layer) => acc + layer.alpha * (1 - acc), 0);
+    // Exactly two layers, in this order, by the shape of `elevation`: the ring
+    // then the soft shadow. The ring is a border on RN; only the shadow is a
+    // shadow.
+    const [ring, soft] = elevation[name] as readonly [ShadowLayer, ShadowLayer];
     out[name] = {
+      hairlineWidth: ring.spread,
+      hairlineColor: palette.hairline,
       shadowColor: INKS.inkBlack.hex,
-      shadowOpacity: Number(combined.toFixed(3)),
+      shadowOpacity: soft.alpha,
       // RN's radius is roughly half the CSS blur, and the negative spread is
       // folded in by shrinking it further.
-      shadowRadius: Math.round((ambient.blur + ambient.spread) / 2),
-      shadowOffset: { width: 0, height: ambient.y },
+      shadowRadius: Math.round((soft.blur + soft.spread) / 2),
+      shadowOffset: { width: 0, height: soft.y },
       elevation: androidElevation[name],
     };
   }
@@ -241,7 +267,7 @@ export function emitRnTheme(theme: ThemeName): RnTheme {
     inkOnGradient: inkOnGradient(theme).hex,
     auroraGradient: emitRnAuroraGradient(theme),
     glow: emitRnGlow(theme),
-    elevation: emitRnElevation(),
+    elevation: emitRnElevation(theme),
     type: emitRnTypeRamp(),
     radii,
     controlSizes,
@@ -249,6 +275,7 @@ export function emitRnTheme(theme: ThemeName): RnTheme {
     motion,
     layout,
     fontFamily,
+    texture,
   };
 }
 

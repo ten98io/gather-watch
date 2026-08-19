@@ -25,72 +25,117 @@ the two ever disagree, `tokens.ts` is right and this section is stale.
 
 ```css
 :root[data-theme="dark"] {
-  --bg-void:        oklch(0.13 0.02 285);   /* near-black indigo */
-  --bg-deep:        oklch(0.17 0.03 290);
-  --surface-glass:  oklch(1 0 0 / 0.05);    /* + blur(20px) saturate(1.3) */
-  --surface-raised: oklch(1 0 0 / 0.08);
-  --border-glass:   oklch(1 0 0 / 0.09);
-  --surface-0:      var(--bg-void);         /* page ground             */
-  --surface-1:      oklch(0.19 0.025 290);  /* rail, cards             */
-  --surface-2:      oklch(0.23 0.028 290);  /* hover, raised card      */
-  --surface-3:      oklch(0.27 0.030 290);  /* active / selected row   */
-  --hairline:       oklch(1 0 0 / 0.06);
+  --bg-void:        oklch(0.115 0.006 265);  /* cinema black            */
+  --bg-deep:        oklch(0.160 0.008 265);
+  --surface-glass:  oklch(1 0 0 / 0.06);     /* + blur(16px) saturate(1.08) */
+  --surface-raised: oklch(1 0 0 / 0.09);
+  --border-glass:   oklch(1 0 0 / 0.10);
+  --surface-0:      var(--bg-void);          /* page ground             */
+  --surface-1:      oklch(0.205 0.009 265);  /* rail, cards             */
+  --surface-2:      oklch(0.245 0.010 265);  /* hover, raised card      */
+  --surface-3:      oklch(0.275 0.011 265);  /* active / selected row   */
+  --hairline:       oklch(1 0 0 / 0.07);
+  --scrim:          oklch(0.05 0.008 265 / 0.72);
   --text-hi:        oklch(0.97 0.005 285);
   --text-mid:       oklch(0.78 0.015 285);
-  --text-low:       oklch(0.65 0.02 285);   /* was 0.58 → 3.53:1 on surface-3 */
-  --aurora-1:       oklch(0.62 0.23 295);   /* electric violet  */
-  --aurora-2:       oklch(0.66 0.26 340);   /* fuchsia          */
-  --aurora-3:       oklch(0.80 0.16 75);    /* solar amber      */
+  --text-low:       oklch(0.65 0.02 285);    /* measured floor          */
+  --aurora-1:       oklch(0.62 0.220 292);   /* electric violet  */
+  --aurora-2:       oklch(0.65 0.215 328);   /* magenta          */
+  --aurora-3:       oklch(0.70 0.170 356);   /* warm rose        */
   --accent:         var(--aurora-1);
   --success:        oklch(0.75 0.17 160);
   --danger:         oklch(0.68 0.21 25);
   --warn:           oklch(0.82 0.16 85);
-  --focus-ring:     oklch(0.72 0.20 295);
+  --focus-ring:     oklch(0.72 0.20 292);
 }
 :root[data-theme="light"] {
-  --bg-void: oklch(0.97 0.006 290);  --bg-deep: oklch(0.94 0.01 290);
-  --surface-glass:  oklch(1 0 0 / 0.65);   --surface-raised: oklch(1 0 0 / 0.8);
-  --border-glass:   oklch(0.30 0.03 285 / 0.14);
+  --bg-void: oklch(0.965 0.004 265);  --bg-deep: oklch(0.925 0.006 265);
+  --surface-glass:  oklch(1 0 0 / 0.70);   --surface-raised: oklch(1 0 0 / 0.85);
+  --border-glass:   oklch(0.28 0.012 265 / 0.16);
   /* ladder mirrored: cards go toward white, hover/active come back down */
-  --surface-1: oklch(0.995 0.003 290);  --surface-2: oklch(0.955 0.008 290);
-  --surface-3: oklch(0.920 0.012 290);
-  --hairline:  oklch(0.30 0.03 285 / 0.12);
-  --text-hi: oklch(0.22 0.02 285);   --text-mid: oklch(0.42 0.02 285);
-  --text-low: oklch(0.50 0.02 285);  /* was 0.55 → 3.83:1 on surface-3 */
-  --aurora-1: oklch(0.59 0.19 295);  --aurora-2: oklch(0.60 0.21 340);
-  --aurora-3: oklch(0.70 0.14 75);   --accent: var(--aurora-1);
+  --surface-1: oklch(0.995 0.002 265);  --surface-2: oklch(0.950 0.005 265);
+  --surface-3: oklch(0.910 0.008 265);
+  --hairline:  oklch(0.28 0.012 265 / 0.14);
+  --scrim:     oklch(0.05 0.008 265 / 0.72);   /* the same wash in both themes */
+  --text-hi: oklch(0.22 0.012 265);  --text-mid: oklch(0.42 0.014 265);
+  --text-low: oklch(0.49 0.014 265); /* was 0.55 → 3.83:1 on surface-3 */
+  --aurora-1: oklch(0.585 0.175 292);  --aurora-2: oklch(0.615 0.175 328);
+  --aurora-3: oklch(0.655 0.145 356);  --accent: var(--aurora-1);
   --success:  oklch(0.55 0.15 160);  --danger:  oklch(0.55 0.19 25);
   --warn:     oklch(0.58 0.14 85);   /* was 0.62 → 2.88:1 on surface-3 */
-  --focus-ring: oklch(0.58 0.18 295);
+  --focus-ring: oklch(0.58 0.18 292);
 }
 ```
 
-Rules: gradients only from the three aurora hues (`135deg, a1 → a2 → a3` for primary
-actions and brand moments). Body text NEVER sits on a gradient. All token pairs must
-pass WCAG AA (4.5:1 text, 3:1 large/UI) — `packages/design/test/palette.test.ts`
-walks the whole surface ladder and fails the build, so this is enforced, not
-remembered. `--text-low` is the measured floor: at its previous value metadata fell
-to 3.53:1 (dark) / 3.83:1 (light) on `--surface-3`, so it moved to 0.65 / 0.50,
-which holds ≥4.68:1 on every step of the ladder.
+**The neutrals went cooler, deeper and genuinely neutral (2026-08-19).** The dark
+ladder was 0.13 / 0.19 / 0.23 / 0.27 at chroma 0.02–0.03 on hue 285–290, and it had
+two problems at once. The chroma was high enough that the "neutrals" were a dark
+violet — a tint on every surface in the product, which is what made the whole room
+read as one flat mauve field. And the void was not actually dark: at 0.13 it sat
+close enough to the rail that a panel did not read as a panel. Chroma is now
+0.006–0.011 (a cast you can feel and not name) on hue 265, and the void drops to
+0.115, which opens the void → rail step from 0.06 to 0.09 of perceptual lightness.
+Daylight took the same move: hue 290 → 265, chroma down, and `--surface-3` 0.92 →
+0.91. **The three dark text tokens did not move** — deepening the surfaces under
+them only bought headroom, and `--text-low` is still the measured floor of the whole
+system.
 
-**The light aurora was lightened 2026-08-18, and the reason is the button.** The
-primary action's fill is the 135° gradient, so *one* ink has to clear all three
-stops. On light the best single ink measured 3.96:1 — under the 4.5:1 text bar.
-Black is the only ink that can win there (light `aurora-3` is amber: 7.69:1 with
-black, 2.73:1 with white), and black gets better as the fill gets lighter. So
-`aurora-1` went 0.55 → 0.59 (black: 3.96 → 4.72:1) and `aurora-2` 0.58 → 0.60
-(4.33 → 4.74:1), each dropping one notch of chroma so the hue does not go neon.
+**`--surface-3` is the rung both themes are pinned by, from opposite directions.**
+On dark it is the lightest surface, so it decides how low `--text-low` may go
+(4.56:1 there; above ≈0.28 it falls under AA). On light it is the darkest surface,
+so it decides how light `--accent` may go (3.43:1 there). Neither can be raised
+without moving the other token with it.
 
-**The stated cost, and it is a rule now:** `--accent` aliases `aurora-1`, and as
-a standalone light colour its worst rung fell 4.17 → 3.49:1 on `--surface-3`.
-That still clears the 3:1 **non-text** bar and no longer clears the 4.5:1 text
-bar — so on light, `--accent` is a fill, a border, a focus ring, a progress bar
-or an active edge, and **never a text colour**. Accented text takes `--text-hi`
-with the accent carried by an adjacent fill or edge instead. (Dark `--accent` is
-unaffected; the rule is written theme-blind so one class cannot be safe in one
-theme and failing in the other.) Light `--ink-on-accent` also flipped white →
-black, 5.31 → 4.72:1, which is why ink is chosen per fill and never per theme
-(§2.1).
+**The aurora was narrowed from 140° to 64° (2026-08-19).** It was violet 295 →
+fuchsia 340 → amber 75: an arc across half the wheel, which is a *rainbow*, and a
+rainbow on a button is decoration rather than identity. It is now violet 292 →
+magenta 328 → warm rose 356, each with a notch less chroma, so the three stops read
+as **one accent with depth in it** instead of three colours agreeing to share a
+surface. Amber did not survive and does not need to: `--warn` is the amber in the
+system, and it means something.
+
+**The gradient has a budget, and it is three.** `linear-gradient(135deg, a1, a2,
+a3)` is allowed on the **primary action**, the **brand mark**, and the **live /
+playing indicator** — and on nothing else, ever. It was on every button in the
+product, which is how a brand asset became wallpaper: an accent that appears
+everywhere carries no information, and the room had no way to say *this one*. A
+screen region contains at most one of the three. Everything that merely wants to be
+tinted uses flat `--accent` (which retints with the artwork, §5.1), and everything
+that merely wants to be visible uses the surface ladder. Body text NEVER sits on a
+gradient.
+
+All token pairs must pass WCAG AA (4.5:1 text, 3:1 large/UI) —
+`packages/design/test/palette.test.ts` walks the whole surface ladder and fails the
+build, so this is enforced, not remembered. `--text-low` is the measured floor: at
+its previous value metadata fell to 3.53:1 (dark) / 3.83:1 (light) on `--surface-3`,
+so it sits at 0.65 / 0.49, holding ≥4.56:1 (dark) and ≥4.82:1 (light) on every step
+of the ladder.
+
+**The light aurora is a band, not a point, and the reason is the button.** The
+primary action's fill is the whole 135° gradient, so *one* ink has to clear all
+three stops, and on light that ink can only be black — which gets better as the fill
+gets **lighter**. `--accent` aliases `--aurora-1` and is also drawn on light
+surfaces as an edge, a ring, a progress fill — which gets better as the fill gets
+**darker**. The two pull opposite ways. `--aurora-1: 0.585` sits in the band both
+allow: black on the gradient floors at 4.68:1 (text bar 4.5) and the accent floors
+at 3.43:1 on `--surface-3` (non-text bar 3).
+
+**The cost is a rule.** On light, `--accent` clears the 3:1 **non-text** bar and not
+the 4.5:1 text bar — so it is a fill, a border, a focus ring, a progress bar or an
+active edge, and **never a text colour**. Accented text takes `--text-hi` with the
+accent carried by an adjacent fill or edge instead. (Dark `--accent` is unaffected;
+the rule is written theme-blind so one class cannot be safe in one theme and failing
+in the other.) Light `--ink-on-accent` is likewise black, not white, which is why
+ink is chosen per fill and never per theme (§2.1).
+
+**`--scrim` is a measured token, not an effect.** It is the wash behind a dialog or
+a sheet, and the one it replaced was faint enough that the page underneath stayed
+fully readable — a dialog that is modal in the DOM and not to a reader.
+`packages/design/test/palette.test.ts` composites *everything the page can show*
+under it and fails if any pair still reaches 3:1, so "faint" cannot ship again. It
+is one absolute near-black at the same alpha in both themes, because what a scrim
+has to suppress is the brightest pixel available and that is a near-white either
+way. Use `.scrim` (`apps/web/app/globals.css`), never a hand-rolled `bg-black/50`.
 
 Three call sites do not follow this yet — known debt, not counterexamples:
 `hover:text-accent` on the glass text buttons in `components/stage/StagePane.tsx`
@@ -118,34 +163,33 @@ and one emitted `--ink-on-<fill>` per fill token (`aurora-1/2/3`, `accent`,
 `success`, `danger`, `warn`), each set to whichever ink measures higher against
 that fill in that theme. A label crossing the whole gradient takes
 **`--ink-on-aurora-gradient`**, which is a *maximin* — the ink whose worst stop is
-best — because picking per stop is how the old button ended up at 1.79:1 against
-`aurora-3`. Today every one of these resolves to `--ink-black` except light
-`--ink-on-danger`, which is `--ink-white`.
+best — because picking per stop is how the old button ended up at 1.79:1 against the
+amber `aurora-3` that preceded the narrowing. Today every one of these resolves to
+`--ink-black` except light `--ink-on-danger`, which is `--ink-white`. The narrowed
+gradient's floor under black is 5.27:1 on dark and 4.68:1 on light.
 
 `--accent` is not a constant: the listen composition rebinds it to the artwork's
 dominant colour at runtime (§5.1). A consumer doing that must recompute the ink at
 the same time — `inkForFill(hex)` from `@gather/design` returns it. `--accent-ink`
 is still emitted for compatibility; **do not use it in new code.**
 
-The aurora gradient is reserved for **three** things: the primary action button, the
-brand mark, and the active/playing indicator. Selected/active states are
-`--surface-3` plus a 3px `--accent` left edge — never a glow. Anything that should
-retint with the music uses `bg-accent`, not `aurora-1`.
+Selected/active states are `--surface-3` plus a 3px `--accent` left edge — never a
+glow. Anything that should retint with the music uses `bg-accent`, not `aurora-1`.
 
-Tailwind bindings: `bg-surface-0/1/2/3`, `border-hairline`, plus the `.surface-1`,
-`.surface-2`, `.surface-3` and `.aurora-gradient` component classes in
-`apps/web/app/globals.css`.
+Tailwind bindings: `bg-surface-0/1/2/3`, `border-hairline`, `bg-scrim`, plus the
+`.surface-1`, `.surface-2`, `.surface-3`, `.scrim`, `.grain` and `.aurora-gradient`
+component classes in `apps/web/app/globals.css`.
 
 ## 3. Typography
 
 - **Display**: Space Grotesk — headings, room names, big timers. The ramp uses
-  600 for `display`/`title` and 700 for `hero`.
+  600 for `display`/`headline`/`title` and 700 for `hero`.
 - **Text**: Inter (variable) — everything else. Tabular numerals for timestamps.
 - **Mono**: JetBrains Mono — invite codes, debug HUD. (Bundled on web only;
   mobile has no `expo-font`, so RN falls back — see apps/mobile/README.md.)
-- Body scales fluidly 15px → 17px on ≥1440px (set on `body` in `globals.css`,
-  which is where the `body` step's `maxFontSize` is spent — the `text-body`
-  utility itself is a flat 15px).
+- Body scales fluidly 16px → 18px across the viewport band (set on `body` in
+  `globals.css`, which is where the `body` step's `maxFontSize` is spent — the
+  `text-body` utility itself is a flat 16px).
 
 The **type ramp** replaces ad-hoc `text-sm`/`text-xs` sizing. Each utility carries
 size, line-height, weight and tracking (defined in `tailwind.config.ts → fontSize`,
@@ -153,26 +197,51 @@ so `font-bold` and `sm:` variants still work on top of it):
 
 | Utility | Size/line | Weight · tracking | Use |
 |---|---|---|---|
-| `text-display` | 32/40 | 600 · −0.02em | Room name, page titles |
-| `text-title` | 20/28 | 600 · −0.01em | Section headers, now-playing title |
-| `text-body` | 15/22 | 400 | Default |
+| `text-hero` | fluid 40→88, ratio 1.04 | 700 · −0.045em | Marketing/auth heroes only, one per page |
+| `text-display` | 44/48 | 600 · −0.035em | **The oversized moment**: now-playing title, signature empty state |
+| `text-headline` | 28/34 | 600 · −0.025em | Room name, page titles, dialog titles |
+| `text-title` | 20/28 | 600 · −0.01em | Section headers, card titles |
+| `text-body` | 16/26 | 400 | Default |
 | `text-label` | 13/18 | 500 | Buttons, meta lines |
-| `text-caption` | 11/14 | 500 · +0.06em, uppercase | Overlines, badges |
-| `text-hero` | fluid 28→56, ratio 1.05 | 700 · −0.02em | Marketing/auth heroes only |
+| `text-caption` | 11/14 | 500 · +0.08em, uppercase | Overlines, badges |
 
-**Leading was retuned 2026-08-18.** `display` was 32/36 — a ratio of 1.125, a poster
-setting, and one of the things that made the product read as a toy at a glance. A
-page title is a document, not a banner: 32/40 is 1.25. `title` took the same
-correction one step down, 20/26 (1.30) → 20/28 (1.40). `caption` tracking went
-+0.04 → +0.06em: 11px uppercase is the one place in the ramp where under-tracking
-reads as cramped rather than tight.
+**The display end was raised 2026-08-19, and it is the single biggest change in this
+pass.** The ramp topped out at `display` 32 with `title` 20 under it — a dashboard
+ramp. Nothing in the product was ever allowed to be *big*, so the room title
+rendered at 14px, the stage's empty state was one 16px line floating in a black
+void, and every element on screen argued for the same attention. A composition
+without a display moment has no hierarchy. `display` is now 44 and unmistakably a
+display setting beside 16px body; `headline` 28 is new and exists so the jump from
+20 to 44 does not get bridged by someone inventing a size; `hero` roughly doubles to
+a fluid 40→88.
 
-`hero` is the only genuinely fluid step, and fluidity is a WEB-ONLY property.
-React Native has no viewport unit, so the step carries an explicit `rnFontSize: 34`
-(`packages/design/src/scales.ts`) — the old `displayL`, chosen over both the 28px
-web floor and the 56px fluid ceiling. `emitRnTypeRamp` reads `rnFontSize ?? fontSize`
-and `maxFontSize` NEVER reaches React Native; without that rule the ceiling was about
-to start leaking into body text too.
+**`title` deliberately did not move.** It is the most-used step in the product and
+every surface below already sits correctly against it; what was missing was
+everything *above* it. `body` went the other way — 15/22 (1.47) → 16/26 (1.63),
+because reading text wants more air, not less.
+
+**Tracking and leading both tighten as the size grows, and never the other way.**
+That is optical, not stylistic: −0.045em on an 88px hero is the setting that makes
+it read as *set* rather than as *typed*, and the same value at 13px is what makes
+small text look squeezed. Leading runs 1.63 at body down to 1.04 at hero.
+`packages/design/test/scales.test.ts` enforces both directions — a flat "≥1.2
+everywhere" rule would be as wrong at the top as the old 32/36 was in the middle.
+`caption` tracking is +0.08em: an 11px uppercase overline is doing structural work
+and needs the air to read as a rule rather than as shouting.
+
+**Which step, when.** `hero` is auth and marketing only. `display` is reserved for
+the *one* thing a screen is about — the now-playing title, the headline of a
+signature empty state — and a screen has at most one. `headline` names the screen
+or the dialog. `title` names a section inside it. Below that is text.
+
+Fluidity is a WEB-ONLY property, and so is the desktop display size. React Native
+has no viewport unit, so `hero` carries an explicit `rnFontSize: 36`
+(`packages/design/src/scales.ts`); `display` carries `rnFontSize: 32` for a
+different reason — 44px is display type for a desktop, not for a 390pt phone.
+`emitRnTypeRamp` reads `rnFontSize ?? fontSize`, scales the leading by the step's
+*ratio* so a resized step keeps its proportions, and `maxFontSize` NEVER reaches
+React Native; without that rule the ceiling was about to start leaking into body
+text too.
 
 Titles are `text-hi`; metadata is `text-low`, **never** `text-mid` — that two-tier
 contrast is what makes lists scan. Numeric readouts use `tabular-nums`.
@@ -185,8 +254,8 @@ The ramp lives in `packages/design/src/scales.ts` and is emitted as
 
 **Glass is now reserved for surfaces that float over moving video**: the transport
 bar, modals/sheets, the theater-mode call overlay, toasts. Those keep `.glass-panel`
-/ `.glass-raised` (`--surface-glass` + `backdrop-filter: blur(20px) saturate(1.3)` +
-1px `--border-glass`). Never stack two glass layers.
+/ `.glass-raised` (`--surface-glass` + `backdrop-filter: blur(16px) saturate(1.08)`
++ 1px `--border-glass`). Never stack two glass layers.
 
 Everything else — rails, cards, rows, popovers over static ground — uses the solid
 **elevation ladder**: `--surface-0` ground, `--surface-1` rail/cards, `--surface-2`
@@ -194,14 +263,28 @@ hover/raised, `--surface-3` active/selected. Surfaces are separated by **backgro
 step, not by border**; a `border-hairline` is allowed only where two same-step
 surfaces meet (rail against stage). Remove every other border.
 
+That rule and the hairline ring in the elevation ladder below are not in conflict,
+because they answer different questions. A resting surface separates by *step* — it
+is part of the page, and a border round it is noise. A surface that has **left** the
+page (a menu, a dialog, a toast) is drawn against content it does not own, so it has
+to state where it ends: that is the ring, and it comes with the elevation rather than
+being written at the call site.
+
 Radii: **6** (`sm` — chips, badges, menu items), **8** (`control` — buttons, inputs,
-selects), **10** (`card` — media rows, cards, popovers), **14** (`panel` — glass
-panels, sheets, dialogs), pill. Retightened 2026-08-18 from 8/12/12/20: a corner is
-only legible relative to the height it is cut into, and this ladder holds every rung
-at 0.18–0.25 of its owner's height (6/28, 8/32, 10/56). `control` and `card` were the
-same value before, so a 32px button and a 56px row were cut identically; separating
-them is what makes a control read as a control. **Radii are only ever tightened here,
-never loosened** — a looser corner is the cheapest way back to looking cartoonish.
+selects), **14** (`card` — media rows, cards, popovers), **20** (`panel` — glass
+panels, sheets, dialogs), **28** (`stage` — the oversized surfaces: now-playing
+artwork, the stage frame, a signature empty state's plate), pill. Tailwind:
+`rounded-sm / -ctl / -card / -panel / -stage / -pill`.
+
+**The ends were committed to 2026-08-19.** 6 / 8 / 10 / 14 was four values inside
+one octave, so a chip, a button, a row and a sheet were all cut roughly the same and
+none of them read as a different *kind* of surface. The small end did not move; the
+large end did. The rule this replaces said "radii are only ever tightened, never
+loosened", which is true of a **control** and false of a large surface: what reads
+as cartoonish is a corner that is a large *fraction* of its owner's height, which is
+why the guard in `packages/design/test/scales.test.ts` is a ratio and not a value.
+`control` stays 8 (0.25 of a 32px button) for exactly that reason; a 28px corner on
+a 480px stage plate is 0.06 of its height — the opposite end of the same rule.
 
 **Control geometry carries desktop density across all three clients.** Web used to
 hard-code `h-9 / h-11 / h-12`, so the default button was 44px tall beside 15px body
@@ -226,19 +309,55 @@ ordinary chrome is a toy tell; it says "look at me" about a context menu.
 - **Glow** stays, and is now *only* for signature moments (§5): the listen hero
   artwork, the playing indicator. `box-shadow: 0 0 40px -12px var(--aurora-1)` at
   15–25% alpha.
-- **Shadow** is how ordinary chrome says "this floats": three neutral, directional
-  ladders, two layers each (one contact, one ambient), with alphas of the **absolute**
-  `--ink-black` so a shadow never inverts with the palette. `--elevation-e1` raised
-  (hovered card, inline popover), `--elevation-e2` floating (dropdowns, tooltips,
-  toasts, the extension overlay panel), `--elevation-e3` modal (dialogs, sheets).
+- **Shadow** is how ordinary chrome says "this floats", and since 2026-08-19 it is
+  **hairline-first**: each level is a crisp `0 0 0 1px` ring plus **one** soft,
+  wide shadow — never a stack of blurs. Stacked blur reads as *soft*, and soft is
+  the opposite of crafted. The edge carries the precision, the shadow carries the
+  distance. `--elevation-e1` raised (hovered card, inline popover, `0 2px 8px -3px`),
+  `--elevation-e2` floating (dropdowns, tooltips, toasts, the extension overlay
+  panel, `0 10px 30px -8px`), `--elevation-e3` modal (dialogs, sheets,
+  `0 24px 64px -16px`).
 
-A grain overlay (2% opacity SVG noise, `--grain`) on the void kills banding.
+  The two layers name **different** colours and this is load-bearing. The shadow is
+  a wash of the absolute `--ink-black` (a shadow is an absence of light and must not
+  invert with the palette); the ring is a wash of `--hairline`, which *must* invert,
+  because the edge that reads on a near-black ground is a light one and a black ring
+  on the dark theme draws nothing at all. Only the shadow climbs — an edge does not
+  get realer as a panel floats higher. On React Native the ring is a `borderWidth` /
+  `borderColor`, since RN has no ring-shaped shadow; spending the view's border on it
+  is what hairline-first costs there.
 
-Spacing is the fixed ramp **4 · 8 · 12 · 16 · 24 · 32 · 48** (Tailwind `1 2 3 4 6 8
-12`, emitted as `--space-{xs,sm,md,lg,xl,xxl,xxxl}`) — no arbitrary values in new
-code. Named layout constants live on the spacing scale too: `row` 56px (media row
-height), `tap` 44px (minimum touch target), `rail` 380px, `edge` 3px (the active-row
-accent edge), `tabBar` 48px (mobile bottom sheet).
+**Grain (`--grain`, `--grain-size`) is the one texture in the system.** The product's
+own line is a private cinema drifting through a nebula and the app had no texture at
+all, which is why it read as glossy rather than crafted. It is inline SVG turbulence
+at **3.5%** — felt, not seen; above ~5% it is a pattern and below ~2% the display's
+own dithering eats it. It is a token, so all three renderers reach the same noise.
+Use it on the void and on **large quiet surfaces**: a stage plate, a full-bleed empty
+state, a sheet. Do **not** use it on rows, controls, chips or anything under ~200px
+(the 160px tile repeats visibly and reads as dirt), never over video, never behind
+text, and never load-bearing — a host page with a strict `img-src` drops the data URI
+and the surface has to still be complete. Web: `.grain`. There are no external
+assets, by requirement: the extension overlay is injected into a page whose CSP it
+does not control.
+
+Spacing is the fixed ramp **4 · 8 · 12 · 16 · 24 · 32 · 48 · 64 · 96 · 128**
+(emitted as `--space-{xs,sm,md,lg,xl,xxl,xxxl,section,chapter,canvas}`; Tailwind
+`p-1 … p-12` for the first seven, plus `p-section` / `p-chapter` / `p-canvas`) — no
+arbitrary values in new code.
+
+**The top three rungs were added 2026-08-19 and they are the whitespace half of the
+re-composition.** The ramp stopped at 48, so every gap in the product came from the
+same four rungs, nothing had more room around it than anything else, and uniform
+spacing reads as uniform importance. Editorial hierarchy is made mostly of
+whitespace. They are named by role because a reader picking between `xxxl` and
+`xxxxl` has no way to guess: **`section` 64** between blocks inside one composition,
+**`chapter` 96** around a display moment or between major regions of a page,
+**`canvas` 128** the breathing room a signature empty state or hero sits in. The
+first seven rungs did not move.
+
+Named layout constants live on the spacing scale too: `row` 56px (media row height),
+`tap` 44px (minimum touch target), `rail` 380px, `edge` 3px (the active-row accent
+edge), `tabBar` 48px (mobile bottom sheet).
 
 ## 5. Signature moments (all five are built; they are the product's soul)
 
@@ -268,8 +387,10 @@ gets the shadow ladder instead (§4).
    `components/stage/StagePane.tsx` + the `sync-pulse` keyframes in `globals.css`;
    skipped entirely under reduced-motion.
 5. **Aurora drift** — the void background hosts an extremely slow (60 s loop,
-   `motion.auroraDriftMs`), GPU-cheap conic aurora at 6% opacity (`.void-aurora`).
-   Off under reduced-motion or Battery Saver.
+   `motion.auroraDriftMs`), GPU-cheap conic aurora at 5% opacity (`.void-aurora`).
+   6% → 5% with the deepened void: the same wash reads stronger against a true
+   black, and this is ambient light, not a smudge. Off under reduced-motion or
+   Battery Saver.
 
 ## 6. Motion
 
@@ -313,10 +434,19 @@ shouting equally. Hover is `brightness-105`, never a glow: a 40px aurora halo un
 `--control-h-{sm,md,lg}`, never a Tailwind step, so the same class is 32px under a
 mouse and 44px under a finger.
 
-Inputs: glass with inner hairline, focus = 2px `--focus-ring` outside. Chat bubbles:
+**One primary per screen region, and it is the only gradient there** (§2). The
+gradient budget is what makes `primary` mean "this is the action"; a second one
+beside it makes both mean "a button". Everything else in the region is `secondary`
+or `ghost`.
+
+Inputs: glass with inner hairline, focus = 2px `--focus-ring` outside. Chrome paints
+an autofilled field with its own light lavender, which no `background-color` rule can
+reach — `globals.css` overrides it with an inset `--surface-2` shadow plus
+`-webkit-text-fill-color`. Do not re-solve that per component. Chat bubbles:
 mine = subtle aurora-1 tint glass, theirs = plain glass; author accent color as a 2px
 leading edge on consecutive-group start; reactions bloom from the bubble corner.
-Toasts bottom-center glass. Skeletons shimmer with aurora at 8%.
+Toasts bottom-center glass. Skeletons shimmer with aurora at 8%. Dialogs and sheets
+sit on `.scrim` (§2) — never a hand-rolled black wash.
 
 Icons come from `components/ui/icons.tsx` only — inline SVG, `currentColor`,
 stroke-width **1.75**, 16px inside buttons, 20px standalone. Emoji are content
@@ -377,6 +507,14 @@ would do; blank grey artwork boxes; `text-mid` for list metadata; two primary
 a hard-coded colour, radius, duration or type size anywhere outside
 `packages/design`; `--accent-ink` in new code; `--accent` as a **text** colour
 (it is a 3:1 non-text colour on light — §2).
+
+And since 2026-08-19: the aurora gradient anywhere outside its three sanctioned
+places (§2) — it is an identity, not a fill; grain on a small surface, over video,
+behind text, or carrying meaning (§4); a stack of blurred shadows where the
+hairline-first ladder belongs; `text-display` more than once on a screen, or on
+anything that is not what the screen is about (§3); a modal scrim written by hand
+instead of `--scrim`; and uniform spacing — a composition where every gap is `lg`
+has told the reader that nothing on it matters more than anything else.
 
 ## 11. Locked decisions (owner, 2026-08-16 — do not relitigate)
 

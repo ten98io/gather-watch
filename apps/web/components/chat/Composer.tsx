@@ -1,14 +1,26 @@
 'use client';
 
 /**
- * Composer — the messaging bar, standard layout (WhatsApp/Telegram/Discord
- * convention): [attach] [GIF] [message pill + emoji] [send ⇄ voice]. Above the
- * row, in order: reply banner, link-unfurl preview, @mention autocomplete,
- * upload progress. Typing signals, emoji popover, GIF picker, attachment
- * upload with progress, voice notes (MediaRecorder), and a debounced
- * link-unfurl preview (server-side, SSRF-guarded). Sends contracts chat.send
- * ClientEvents; nothing optimistic — the server-ordered chat.message event is
- * the single source of truth.
+ * Composer — the messaging surface: a field you write in, with its tools on a
+ * row beneath it. Typing signals, emoji popover, GIF picker, attachment upload
+ * with progress, voice notes (MediaRecorder), and a debounced link-unfurl
+ * preview (server-side, SSRF-guarded). Sends contracts chat.send ClientEvents;
+ * nothing optimistic — the server-ordered chat.message event is the single
+ * source of truth.
+ *
+ * ── Why the row became a plate (2026-08-19) ───────────────────────────────
+ * It was one horizontal line — [attach] [GIF] [pill + emoji] [send] — and four
+ * controls crowded around a 380px rail's worth of field left the writing space
+ * as the smallest thing in the composer. The field now owns the top of a plate
+ * and the four tools sit under it, so the surface reads as somewhere to write
+ * rather than as a toolbar that happens to accept text. Nothing about the flow
+ * moved: typing into an already-focused field is not a step, and Enter still
+ * sends (DESIGN.md §12 — "send a message" stays at 1).
+ *
+ * The plate also absorbs everything that MODIFIES the message you are about to
+ * send — the reply you are answering, the link that will unfurl — because those
+ * are part of the draft. What is merely happening (an upload, a mention
+ * suggestion) stays outside it.
  */
 import { AnimatePresence, motion } from 'framer-motion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -40,10 +52,12 @@ const EMOJI_GRID = [
   '🙏', '💯', '✨', '🥳', '😴', '😭', '😡', '👀',
 ] as const;
 
-/** Auto-grow ceiling: 5 lines × 20px leading + 24px vertical padding. */
-const MAX_TEXTAREA_PX = 5 * 20 + 24;
-/** Anything taller than one line loses the full pill radius (text would clip). */
-const SINGLE_LINE_PX = 48;
+/**
+ * Auto-grow ceiling: five lines at the `body` step's 26px leading, plus the
+ * field's own 16px of vertical padding. Tied to the ramp on purpose — the old
+ * 20px here was `text-sm`'s leading, and it outlived the size it came from.
+ */
+const MAX_TEXTAREA_PX = 5 * 26 + 16;
 
 /** Shorter than this and it was a mis-tap, not a message. */
 const MIN_VOICE_MS = 400;
@@ -67,9 +81,9 @@ export interface Mentionable {
 }
 
 /**
- * Compact emoji panel above the bar. Closes on Escape, on outside pointerdown,
- * and after a pick unless a modifier is held (multi-pick). Constrained to the
- * composer's own width so it never widens the 380px rail.
+ * Compact emoji panel above the plate. Closes on Escape, on outside
+ * pointerdown, and after a pick unless a modifier is held (multi-pick).
+ * Constrained to the composer's own width so it never widens the 380px rail.
  */
 function EmojiPopover({
   open,
@@ -138,16 +152,25 @@ function EmojiPopover({
           ref={panelRef}
           role="dialog"
           aria-label="Emoji picker"
-          className="glass-raised absolute bottom-full left-2 right-2 z-[60] mb-2 p-2 shadow-glow"
+          /* `shadow-e2`, not `shadow-glow`. A picker is chrome that floats, and
+             glow is a signature moment (DESIGN.md §5) — a 40px aurora halo
+             under an emoji grid is the toy tell §4 exists to stop. Solid ladder
+             rather than glass for the same reason: nothing is playing behind
+             the rail. */
+          className="absolute bottom-full left-0 right-0 z-[60] mb-2 rounded-card border border-hairline bg-surface-2 p-2 shadow-e2"
           {...motionProps}
         >
-          <div className="grid grid-cols-8 gap-0.5">
+          <div className="grid grid-cols-8 gap-1">
             {EMOJI_GRID.map((emoji) => (
               <button
                 key={emoji}
                 type="button"
                 aria-label={`Insert ${emoji}`}
-                className="flex h-9 items-center justify-center rounded-ctl text-lg leading-none transition-colors duration-150 hover:bg-glass focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                  'flex h-ctl-md items-center justify-center rounded-ctl text-body leading-none',
+                  'transition-colors duration-150 hover:bg-surface-3',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                )}
                 onClick={(e) => {
                   onPick(emoji);
                   if (!(e.shiftKey || e.metaKey || e.ctrlKey || e.altKey)) onClose(true);
@@ -182,7 +205,6 @@ export function Composer({
   const [gifOpen, setGifOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
-  const [multiline, setMultiline] = useState(false);
   const [unfurl, setUnfurl] = useState<{
     url: string;
     title: string | null;
@@ -416,11 +438,9 @@ export function Composer({
     const el = textareaRef.current;
     if (el === null) return;
     el.style.height = 'auto';
-    const next = Math.min(el.scrollHeight, MAX_TEXTAREA_PX);
-    el.style.height = `${next}px`;
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_PX)}px`;
     el.style.overflowY = el.scrollHeight > MAX_TEXTAREA_PX ? 'auto' : 'hidden';
-    setMultiline(next > SINGLE_LINE_PX);
-  }, [draft, recording]);
+  }, [draft, recording, pendingVoice]);
 
   const closeEmoji = useCallback((restoreFocus: boolean): void => {
     setEmojiOpen(false);
@@ -440,69 +460,23 @@ export function Composer({
 
   const uploading = uploadPct !== null;
   const hasDraft = draft.trim().length > 0;
+  const reviewing = pendingVoice !== null;
 
   return (
-    <div className="border-t border-border-glass bg-deep">
-      {replyTo !== null && (
-        <div className="flex items-center gap-2 border-t border-border-glass bg-glass px-3 py-1.5">
-          <span aria-hidden className="h-6 w-0.5 shrink-0 rounded-full bg-aurora-1" />
-          <span className="min-w-0 flex-1 truncate text-xs text-mid">
-            Replying: {replyTo.deletedAt !== null ? 'Message deleted' : replyTo.body}
-          </span>
-          <button
-            type="button"
-            aria-label="Cancel reply"
-            onClick={onCancelReply}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-ctl text-low transition-colors duration-150 hover:bg-raised hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <XIcon size={14} />
-          </button>
-        </div>
-      )}
-
-      {unfurl !== null && (
-        <div className="mx-2 mt-2 rounded-ctl border border-border-glass bg-glass px-3 py-2">
-          <p className="truncate text-xs text-hi">{unfurl.title ?? unfurl.url}</p>
-          {unfurl.siteName !== null && (
-            <p className="text-[10px] text-low">{unfurl.siteName}</p>
-          )}
-        </div>
-      )}
-
-      {mentionCandidates.length > 0 && (
-        <div
-          role="group"
-          aria-label="Mention suggestions"
-          className="mx-2 mt-2 overflow-hidden rounded-ctl border border-border-glass bg-raised p-1"
-        >
-          {mentionCandidates.map((m) => (
-            <button
-              key={m.userId}
-              type="button"
-              className="block w-full rounded-ctl px-2 py-1.5 text-left text-sm text-hi transition-colors duration-150 hover:bg-glass focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => {
-                setDraft((d) => d.replace(/@[\p{L}\p{N}_-]{0,40}$/u, `@${m.displayName} `));
-                setMentions((prev) => (prev.includes(m.userId) ? prev : [...prev, m.userId]));
-                textareaRef.current?.focus();
-              }}
-            >
-              @{m.displayName}
-            </button>
-          ))}
-        </div>
-      )}
-
+    <div className="border-t border-hairline px-3 pb-3 pt-2">
       {uploading && (
-        <div className="mx-2 mt-2" role="status">
-          <div className="h-1.5 overflow-hidden rounded-full bg-raised">
-            <div className="h-full bg-aurora-1 transition-all" style={{ width: `${uploadPct}%` }} />
+        <div className="mb-2" role="status">
+          <div className="h-1 overflow-hidden rounded-pill bg-surface-3">
+            {/* Flat `bg-accent`: a progress fill is a tint, not the brand mark
+                (DESIGN.md §2 — the gradient's budget is three, and none of them
+                is this). */}
+            <div className="h-full bg-accent transition-all" style={{ width: `${uploadPct}%` }} />
           </div>
-          <p className="mt-1 text-[10px] text-low">Uploading… {uploadPct}%</p>
+          <p className="mt-1 text-caption text-low">Uploading {uploadPct}%</p>
         </div>
       )}
 
-      {/* One standard input row: attach · GIF · field (+emoji) · send/voice. */}
-      <div className="relative flex items-end gap-1 p-2">
+      <div className="relative">
         <EmojiPopover
           open={emojiOpen}
           triggerRef={emojiTriggerRef}
@@ -510,153 +484,231 @@ export function Composer({
           onPick={insertEmoji}
         />
 
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Attach a file"
-          disabled={disabled || uploading || recording}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <PaperclipIcon size={18} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Send a GIF"
-          aria-haspopup="dialog"
-          className="text-[11px] font-semibold tracking-tight"
-          disabled={disabled || uploading || recording}
-          onClick={() => setGifOpen(true)}
-        >
-          GIF
-        </Button>
+        {mentionCandidates.length > 0 && (
+          /* Floated over the log rather than pushed into the flow: a list that
+             grows and shrinks under the caret as you type used to shove the
+             whole composer up and down mid-word. */
+          <div
+            role="group"
+            aria-label="Mention suggestions"
+            className="absolute bottom-full left-0 right-0 z-[60] mb-2 overflow-hidden rounded-card border border-hairline bg-surface-2 p-1 shadow-e2"
+          >
+            {mentionCandidates.map((m) => (
+              <button
+                key={m.userId}
+                type="button"
+                className={cn(
+                  'block w-full rounded-sm px-2 py-1.5 text-left text-label text-hi',
+                  'transition-colors duration-150 hover:bg-surface-3',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                )}
+                onClick={() => {
+                  setDraft((d) => d.replace(/@[\p{L}\p{N}_-]{0,40}$/u, `@${m.displayName} `));
+                  setMentions((prev) => (prev.includes(m.userId) ? prev : [...prev, m.userId]));
+                  textareaRef.current?.focus();
+                }}
+              >
+                @{m.displayName}
+              </button>
+            ))}
+          </div>
+        )}
 
+        {/* The plate. One background step above the rail plus a hairline — the
+            same two things <Input> is made of, so a field is a field wherever
+            it appears. The border is a ternary, not two additive classes:
+            cn() is a plain joiner. */}
         <div
           className={cn(
-            'flex min-w-0 flex-1 items-end border border-border-glass bg-glass transition-colors duration-150',
+            'rounded-card border bg-surface-2 transition-colors duration-150',
             'focus-within:ring-2 focus-within:ring-ring',
-            multiline ? 'rounded-[22px]' : 'rounded-full',
-            recording && 'border-danger',
+            recording ? 'border-danger' : 'border-hairline',
           )}
         >
+          {replyTo !== null && (
+            <div className="flex items-center gap-2 border-b border-hairline px-3 py-2">
+              <span aria-hidden className="h-4 w-edge shrink-0 rounded-pill bg-accent" />
+              <span className="min-w-0 flex-1 truncate text-label text-low">
+                <span className="text-caption text-low">Replying </span>
+                {replyTo.deletedAt !== null ? 'Message deleted' : replyTo.body}
+              </span>
+              <button
+                type="button"
+                aria-label="Cancel reply"
+                onClick={onCancelReply}
+                className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-low',
+                  'transition-colors duration-150 hover:bg-surface-3 hover:text-hi',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                )}
+              >
+                <XIcon size={14} />
+              </button>
+            </div>
+          )}
+
           {pendingVoice !== null ? (
             /* Review before sending. The take is already captured — the only
                ways out are Send and Discard, and neither is the default, so a
                recording is never published by inaction or a stray Enter. */
-            <div className="flex min-h-[44px] flex-1 items-center gap-2 py-1 pl-3 pr-2">
+            <div className="px-3 pt-3">
               <audio
                 src={pendingVoice.url}
                 controls
                 preload="metadata"
                 aria-label={`Voice note, ${Math.round(pendingVoice.durationMs / 1000)} seconds — play it back before sending`}
-                className="h-8 min-w-0 flex-1"
+                className="h-8 w-full"
               />
-              <Button
-                variant="ghost"
-                size="sm"
-                className="shrink-0"
-                onClick={discardPendingVoice}
-                disabled={voiceSending}
-              >
-                Discard
-              </Button>
-              <Button
-                size="sm"
-                className="shrink-0"
-                onClick={sendPendingVoice}
-                disabled={voiceSending}
-              >
-                {voiceSending ? 'Sending…' : 'Send'}
-              </Button>
             </div>
           ) : recording ? (
-            <div role="status" className="flex min-h-[44px] flex-1 items-center gap-2 pl-4 pr-2">
+            <div role="status" className="flex items-center gap-2 px-3 pt-3">
               <span
                 aria-hidden
                 className={cn('h-2 w-2 shrink-0 rounded-full bg-danger', !reduced && 'animate-pulse')}
               />
-              <span className="truncate text-sm text-mid">Recording voice note…</span>
-              <span className="ml-auto shrink-0 tabular-nums text-sm text-low">
-                {Math.floor(elapsedMs / 60_000)}:
-                {String(Math.floor((elapsedMs % 60_000) / 1000)).padStart(2, '0')}
+              <span className="truncate text-body text-hi">Recording a voice note</span>
+              <span className="ml-auto shrink-0 tabular text-label text-low">
+                {formatElapsed(elapsedMs)}
               </span>
-              <Button variant="ghost" size="sm" className="shrink-0" onClick={cancelRecording}>
-                Cancel
-              </Button>
             </div>
           ) : (
-            <>
-              <textarea
-                ref={textareaRef}
-                value={draft}
-                onChange={(e) => {
-                  setDraft(e.target.value);
-                  signalTyping();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-                placeholder={disabled ? 'Chat is restricted' : 'Message…'}
-                disabled={disabled}
-                rows={1}
-                aria-label="Message"
-                autoCorrect="on"
-                autoCapitalize="sentences"
-                spellCheck
-                className="min-w-0 flex-1 resize-none bg-transparent py-3 pl-4 pr-1 text-sm leading-5 text-hi placeholder:text-low focus:outline-none"
-              />
-              <button
-                ref={emojiTriggerRef}
-                type="button"
-                aria-label="Emoji"
-                aria-haspopup="dialog"
-                aria-expanded={emojiOpen}
-                disabled={disabled}
-                onClick={() => {
-                  if (emojiOpen) closeEmoji(true);
-                  else setEmojiOpen(true);
-                }}
-                className={cn(
-                  'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors duration-150',
-                  'disabled:pointer-events-none disabled:opacity-50',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  emojiOpen ? 'text-hi' : 'text-mid hover:text-hi',
-                )}
-              >
-                <SmileIcon size={20} />
-              </button>
-            </>
+            <textarea
+              ref={textareaRef}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                signalTyping();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder={disabled ? 'Chat is restricted' : 'Message the room…'}
+              disabled={disabled}
+              rows={1}
+              aria-label="Message"
+              autoCorrect="on"
+              autoCapitalize="sentences"
+              spellCheck
+              className={cn(
+                // `min-h-tap` and not a height: the effect below drives
+                // `style.height` off scrollHeight, and one line of `body` in
+                // this padding measures 42px — two short of the floor §9 sets
+                // for a target on a phone. min-height constrains an inline
+                // height, so the field starts at 44 and still grows.
+                'block min-h-tap w-full resize-none bg-transparent px-3 pb-1 pt-3',
+                'text-body text-hi placeholder:text-low focus:outline-none',
+                'disabled:cursor-not-allowed disabled:opacity-50',
+              )}
+            />
           )}
-        </div>
 
-        {recording ? (
-          <Button
-            variant="destructive"
-            aria-label="Stop recording"
-            className="shrink-0"
-            onClick={stopRecording}
-          >
-            <StopCircleIcon size={18} />
-            <span className="tabular text-xs font-semibold">{formatElapsed(elapsedMs)}</span>
-          </Button>
-        ) : hasDraft ? (
-          <Button size="icon" aria-label="Send" disabled={disabled} onClick={send}>
-            <SendIcon size={18} />
-          </Button>
-        ) : (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Record voice note"
-            disabled={disabled || uploading}
-            onClick={() => void startRecording()}
-          >
-            <MicIcon size={20} />
-          </Button>
-        )}
+          {unfurl !== null && !reviewing && !recording && (
+            <div className="mx-3 mt-2 rounded-sm bg-surface-3 px-2 py-1.5">
+              <p className="truncate text-label text-hi">{unfurl.title ?? unfurl.url}</p>
+              {unfurl.siteName !== null && (
+                <p className="truncate text-caption text-low">{unfurl.siteName}</p>
+              )}
+            </div>
+          )}
+
+          {/* The tool row. Three modes, and each one is exhaustive: whatever the
+              plate is showing, this row carries the only two things you can do
+              with it. */}
+          <div className="flex items-center gap-1 px-2 pb-2 pt-1">
+            {reviewing ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={discardPendingVoice} disabled={voiceSending}>
+                  Discard
+                </Button>
+                <Button size="sm" className="ml-auto" onClick={sendPendingVoice} disabled={voiceSending}>
+                  {voiceSending ? 'Sending…' : 'Send'}
+                </Button>
+              </>
+            ) : recording ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={cancelRecording}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  aria-label="Stop recording"
+                  className="ml-auto"
+                  onClick={stopRecording}
+                >
+                  <StopCircleIcon size={18} />
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Attach a file"
+                  disabled={disabled || uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <PaperclipIcon size={18} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Send a GIF"
+                  aria-haspopup="dialog"
+                  className="text-caption"
+                  disabled={disabled || uploading}
+                  onClick={() => setGifOpen(true)}
+                >
+                  GIF
+                </Button>
+                <Button
+                  ref={emojiTriggerRef}
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Emoji"
+                  aria-haspopup="dialog"
+                  aria-expanded={emojiOpen}
+                  disabled={disabled}
+                  className={emojiOpen ? 'bg-surface-3' : ''}
+                  onClick={() => {
+                    if (emojiOpen) closeEmoji(true);
+                    else setEmojiOpen(true);
+                  }}
+                >
+                  <SmileIcon size={18} />
+                </Button>
+                {hasDraft ? (
+                  /* The room's ONE aurora action (DESIGN.md §2, §8). Everything
+                     else in the composer is ghost, which is what lets this one
+                     mean "this is the action". */
+                  <Button
+                    size="icon"
+                    aria-label="Send"
+                    className="ml-auto"
+                    disabled={disabled}
+                    onClick={send}
+                  >
+                    <SendIcon size={18} />
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Record voice note"
+                    className="ml-auto"
+                    disabled={disabled || uploading}
+                    onClick={() => void startRecording()}
+                  >
+                    <MicIcon size={18} />
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       <input

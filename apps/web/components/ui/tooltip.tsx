@@ -52,7 +52,13 @@ export function Tooltip({ content, children, align = 'center', className }: Tool
           // glass layers, which is exactly what `glass-raised` here did. A
           // solid step plus neutral elevation also means the label's contrast
           // does not depend on the frame of video behind it.
-          'rounded-sm border border-hairline bg-surface-3 px-2 py-1 text-label text-hi shadow-e2',
+          //
+          // No `border-hairline`: since the ladder went hairline-first, every
+          // `shadow-e*` OPENS with `0 0 0 1px var(--hairline)` (§4), so a border
+          // beside it draws the same edge a second time — one ring outside the
+          // box and one border inside it, at nearly double the alpha where they
+          // meet, plus a 1px layout shift the shadow does not cost.
+          'rounded-sm bg-surface-3 px-2 py-1 text-label text-hi shadow-e2',
           'opacity-0 transition-opacity duration-150 [transition-delay:0ms]',
           'group-hover:opacity-100 group-hover:[transition-delay:300ms]',
           'group-focus-within:opacity-100 group-focus-within:[transition-delay:0ms]',

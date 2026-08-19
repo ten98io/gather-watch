@@ -13,9 +13,11 @@
  *     unmounts while you are in the room, so collapsing the rail, opening the
  *     mobile sheet or flipping theater mode can no longer drop you out of a
  *     call (they used to: the dock unmounted, and its cleanup left the call).
- *   • <CallDock> is the rail surface: tiles on top, one compact control bar
- *     under them. When nobody is in the call it collapses to a single slim
- *     "Start a call" row so it costs the rail almost nothing.
+ *   • <CallDock> is the rail surface: orbs (or tiles, once a camera is on) with
+ *     one compact control bar under them. When nobody is in the call it is an
+ *     invitation instead — a `title` line, one sentence, and the region's only
+ *     aurora action — because starting a call is the primary social act of the
+ *     product and it used to be a 13px text button ranked under an invite chip.
  *   • <CallOverlay> is the same session rendered small over the stage, for
  *     theater mode and mobile. It sits top-right — never over the middle of
  *     the picture — and can be hidden and restored, remembered per session.
@@ -71,6 +73,7 @@ import { Button } from '@/components/ui/button';
 import {
   MicIcon,
   MicOffIcon,
+  MonitorIcon,
   PhoneOffIcon,
   UsersIcon,
   VideoIcon,
@@ -1093,6 +1096,94 @@ function TrackVideo({ track, mirror }: { track: MediaStreamTrack; mirror: boolea
   );
 }
 
+/** One person's state in words — the tile's accessible label, and the orb's. */
+function statusOf(p: CallParticipant): string {
+  const base = p.camOn ? (p.micOn ? 'mic on' : 'muted') : p.micOn ? 'camera off' : 'camera off, muted';
+  // A tile is the only place a broken link is visible per person; the toast
+  // says it once for the call, this says which tile it happened to.
+  return p.linkTrouble ? `${base}, reconnecting` : base;
+}
+
+/**
+ * The chip that survives being drawn over arbitrary moving picture: the
+ * measured `--scrim` wash and the absolute white ink. Neither is theme
+ * relative on purpose — what is behind a call tile is a camera feed, and a
+ * caption that inverted with the app's palette would be legible in one theme
+ * and gone in the other.
+ */
+const OVER_VIDEO = 'bg-scrim text-[var(--ink-white)]';
+
+/**
+ * Presence orb (DESIGN.md §5.2) — the face, the person's own accent as its
+ * edge, and the speaking ring measured from live audio.
+ *
+ * The halo is a SIBLING of the avatar, never a class on it: `pulse-ring` runs
+ * 0.9 → 1.8 scale and 0.6 → 0 opacity, so whatever wears it expands and
+ * vanishes. The halo is the thing that may do that; a face is not.
+ *
+ * Two rings, and the second one is not decoration. Under
+ * `prefers-reduced-motion` globals.css collapses every animation to one 0.01ms
+ * iteration, which leaves the halo parked at opacity 0 — so the still ring is
+ * what says "speaking" for a reader who has asked the room to stop moving.
+ */
+function PresenceOrb({ participant, size }: { participant: CallParticipant; size: number }) {
+  return (
+    <span className="relative inline-flex shrink-0" style={{ width: size, height: size }}>
+      {participant.speaking && (
+        <>
+          <span
+            aria-hidden
+            // The still ring carries the one glow this file is allowed. §4
+            // permits glow on signature moments and nothing else, and §5.2 —
+            // the presence orb with a ring measured from real audio — is one
+            // of the five. It is also what makes the speaking state read at a
+            // glance at the sizes this orb is actually drawn (32–64px), where
+            // a 2px ring on its own is a hairline; and it survives
+            // reduced-motion, where the halo below does not.
+            className="pointer-events-none absolute -inset-1 rounded-full shadow-glow ring-2 ring-accent"
+          />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 animate-pulse-ring rounded-full ring-2 ring-accent"
+          />
+        </>
+      )}
+      <Avatar
+        name={participant.name}
+        src={participant.avatarUrl}
+        accentColor={participant.accentColor}
+        size={size}
+        // Every caller wraps this in a <figure> that is already labelled with
+        // the name and the state; an orb that announced the name again would
+        // make every tile read out twice.
+        decorative
+      />
+    </span>
+  );
+}
+
+/**
+ * The marker that overhangs an orb: muted, sharing, or the camera invitation.
+ *
+ * `surface-3`, and it has to be the TOP rung. The marker sits half on the
+ * avatar and half on whatever is behind it, and behind it is the rail — which
+ * IS `surface-1`, so the step this used to take made the plate invisible
+ * against the one surface it most needed to separate from.
+ */
+function OrbMarker({ children, tone }: { children: ReactNode; tone: 'quiet' | 'danger' }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'absolute -bottom-0.5 -right-0.5 grid h-5 w-5 place-items-center rounded-full bg-surface-3',
+        tone === 'danger' ? 'text-danger' : 'text-low',
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 function CallTile({
   participant,
   compact = false,
@@ -1103,31 +1194,24 @@ function CallTile({
   onTurnOnCamera?: (() => void) | undefined;
 }) {
   const { name, micOn, camOn, sharing, speaking, videoTrack, isMe, linkTrouble } = participant;
-  const base = camOn ? (micOn ? 'mic on' : 'muted') : micOn ? 'camera off' : 'camera off, muted';
-  // The tile is the only place a broken link is visible per person; the toast
-  // says it once for the call, this says which tile it happened to.
-  const status = linkTrouble ? `${base}, reconnecting` : base;
   return (
     <figure
       className={cn(
         'relative flex aspect-video items-center justify-center overflow-hidden rounded-card bg-surface-2',
         speaking && 'ring-2 ring-accent',
       )}
-      aria-label={`${name} — ${status}`}
+      aria-label={`${name} — ${statusOf(participant)}`}
     >
       {videoTrack !== null ? (
         <TrackVideo track={videoTrack} mirror={isMe} />
       ) : (
-        <Avatar
-          name={name}
-          src={participant.avatarUrl}
-          accentColor={participant.accentColor}
-          size={compact ? 32 : 44}
-        />
+        <PresenceOrb participant={participant} size={compact ? 32 : 44} />
       )}
 
       {isMe && !camOn && onTurnOnCamera !== undefined && !compact && (
         <div className="absolute inset-x-0 bottom-0 flex justify-center pb-2">
+          {/* D2 wants this prominent, and once you are in the call this region
+              has no other gradient — the join affordance it replaces is gone. */}
           <Button size="sm" onClick={onTurnOnCamera} aria-label="Turn on camera">
             <VideoIcon size={16} aria-hidden />
             Turn on camera
@@ -1140,7 +1224,11 @@ function CallTile({
           80px tile is unreadable and the type ramp has nothing smaller that
           isn't uppercase. */}
       <figcaption
-        className="pointer-events-none absolute left-1 top-1 flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded-full bg-black/55 px-1.5 py-0.5 text-label text-white"
+        className={cn(
+          'pointer-events-none absolute left-1 top-1 flex max-w-[calc(100%-0.5rem)] items-center',
+          'gap-1 rounded-full px-1.5 py-0.5 text-label',
+          OVER_VIDEO,
+        )}
         title={name}
       >
         {micOn ? (
@@ -1152,13 +1240,24 @@ function CallTile({
       </figcaption>
 
       {sharing && !compact && (
-        <span className="pointer-events-none absolute right-1 top-1 rounded-full bg-black/55 px-2 py-0.5 text-caption text-white">
+        <span
+          className={cn(
+            'pointer-events-none absolute right-1 top-1 rounded-full px-2 py-0.5 text-caption',
+            OVER_VIDEO,
+          )}
+        >
           Sharing
         </span>
       )}
 
       {linkTrouble && (
-        <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded-full bg-black/55 px-2 py-0.5 text-center text-caption text-white">
+        <span
+          className={cn(
+            'pointer-events-none absolute inset-x-1 bottom-1 truncate rounded-full px-2 py-0.5',
+            'text-center text-caption',
+            OVER_VIDEO,
+          )}
+        >
           Reconnecting…
         </span>
       )}
@@ -1166,7 +1265,80 @@ function CallTile({
   );
 }
 
-function TileGrid({
+/**
+ * The call as it looks almost all of the time: cameras are OFF by default
+ * (D2), so a grid of 16:9 rectangles is a grid of empty boxes with a small
+ * face in the middle of each. Orbs are the people — the same faces at twice
+ * the size, named, in a cluster rather than a table.
+ */
+function OrbCluster({
+  participants,
+  compact,
+  onTurnOnCamera,
+}: {
+  participants: CallParticipant[];
+  compact: boolean;
+  onTurnOnCamera?: (() => void) | undefined;
+}) {
+  const size = compact ? 36 : 64;
+  return (
+    <ul
+      role="list"
+      className={cn('flex list-none flex-wrap justify-center', compact ? 'gap-3' : 'gap-4')}
+    >
+      {participants.map((p) => {
+        const offersCamera = p.isMe && !p.camOn && onTurnOnCamera !== undefined && !compact;
+        return (
+          <li key={p.userId} className={cn('flex flex-col items-center gap-2', !offersCamera && 'w-20')}>
+            <figure
+              className="flex flex-col items-center gap-2"
+              aria-label={`${p.name} — ${statusOf(p)}`}
+            >
+              <span className="relative">
+                <PresenceOrb participant={p} size={size} />
+                {!p.micOn && (
+                  <OrbMarker tone="danger">
+                    <MicOffIcon size={12} />
+                  </OrbMarker>
+                )}
+                {p.micOn && p.sharing && (
+                  <OrbMarker tone="quiet">
+                    <MonitorIcon size={12} />
+                  </OrbMarker>
+                )}
+              </span>
+              {!compact &&
+                (offersCamera ? (
+                  // D2's affordance, on my own tile. It takes the caption slot
+                  // rather than sitting beside my name: "You" is the least
+                  // informative word on this surface, and the invitation is the
+                  // most useful one.
+                  <Button size="sm" onClick={onTurnOnCamera} aria-label="Turn on camera">
+                    <VideoIcon size={16} aria-hidden />
+                    Turn on camera
+                  </Button>
+                ) : (
+                  <figcaption className="w-full truncate text-center text-label text-hi">
+                    {p.name}
+                  </figcaption>
+                ))}
+            </figure>
+            {p.linkTrouble && !compact && (
+              <p className="w-full truncate text-center text-caption text-low">Reconnecting…</p>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * One rule for both surfaces: the moment anybody publishes a camera the call
+ * becomes a picture and takes the tile grid; until then it is a room full of
+ * people and takes the orbs.
+ */
+function CallTiles({
   participants,
   compact = false,
   onTurnOnCamera,
@@ -1175,6 +1347,15 @@ function TileGrid({
   compact?: boolean;
   onTurnOnCamera?: (() => void) | undefined;
 }) {
+  if (!participants.some((p) => p.videoTrack !== null)) {
+    return (
+      <OrbCluster
+        participants={participants}
+        compact={compact}
+        onTurnOnCamera={onTurnOnCamera}
+      />
+    );
+  }
   return (
     <ul
       role="list"
@@ -1287,8 +1468,20 @@ function JoinButton({ label = 'Join call' }: { label?: string }) {
    ──────────────────────────────────────────────────────────────────────────── */
 
 /**
- * The call surface at the top of the right rail. Slim single row when the room
- * is not calling; tiles + one control bar once anyone is.
+ * The call surface at the top of the right rail. An invitation when the room
+ * is not calling; orbs (or tiles, once a camera is on) plus one control bar
+ * the moment anyone is.
+ *
+ * ── Why the idle state grew (2026-08-19) ──────────────────────────────────
+ * Starting a call is the primary social action of the product and it was a
+ * 13px text button in a rail header, ranked below the invite chip beside it.
+ * It is now the only aurora gradient in this region, on a `title` line, with
+ * one sentence of what it does — a block that says "this is the thing you came
+ * here to do" instead of a row that says "here is a setting".
+ *
+ * It stays ONE interaction (§12: join the call, budget 1). Nothing about this
+ * composition adds a step; the click that used to be on a whole-row button is
+ * on a button.
  */
 export function CallDock({ roomId, className }: { roomId: RoomId; className?: string }) {
   const call = useCallSession();
@@ -1297,51 +1490,75 @@ export function CallDock({ roomId, className }: { roomId: RoomId; className?: st
   const lossNote = deviceLossNote(call);
 
   if (empty) {
-    // One slim row — the call costs the rail nothing until someone calls.
     return (
-      <section aria-label="Call" data-room={roomId} className={cn('p-2', className)}>
-        <button
-          type="button"
+      <section
+        aria-label="Call"
+        data-room={roomId}
+        // `p-4` where the working state below takes `p-3`: an invitation is
+        // given room, a surface you are operating is given density. Two rungs
+        // of the same ramp saying two different things is the point (§4).
+        className={cn('flex items-center gap-3 p-4', className)}
+      >
+        <span
+          aria-hidden
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-ctl bg-surface-2 text-low"
+        >
+          <UsersIcon size={20} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-display text-title text-hi">Start a call</p>
+          <p className="truncate text-label text-low">
+            Talk while you watch · {call.relayLabel}
+          </p>
+        </div>
+        <Button
+          className="shrink-0"
           onClick={call.join}
           disabled={call.capReached || phase === 'joining'}
           aria-label="Start a call"
-          className="flex min-h-tap w-full items-center gap-3 rounded-ctl px-2 text-left transition-colors duration-150 hover:bg-surface-2 disabled:opacity-50"
         >
-          <VideoIcon size={20} aria-hidden className="shrink-0 text-low" />
-          <span className="min-w-0 flex-1 truncate text-label text-hi">
-            {phase === 'joining' ? 'Joining…' : 'Start a call'}
-          </span>
-          <span className="shrink-0 text-caption text-low">{call.relayLabel}</span>
-        </button>
+          {phase === 'joining' ? 'Joining…' : 'Start'}
+        </Button>
       </section>
     );
   }
 
   return (
-    <section
-      aria-label="Call"
-      data-room={roomId}
-      className={cn('flex flex-col gap-2 p-3', className)}
-    >
-      <TileGrid
-        participants={participants}
-        onTurnOnCamera={call.cameraAvailable ? call.toggleCamera : undefined}
-      />
+    <section aria-label="Call" data-room={roomId} className={cn('flex flex-col p-3', className)}>
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="min-w-0 truncate text-caption text-low">
+          <span className="tabular-nums">{participants.length}</span> in call
+        </p>
+        <p className="shrink-0 text-caption text-low">{call.relayLabel}</p>
+      </div>
+      <div className="mt-3">
+        <CallTiles
+          participants={participants}
+          onTurnOnCamera={call.cameraAvailable ? call.toggleCamera : undefined}
+        />
+      </div>
+      {/* D2 forbids a silent empty call region, and a call of one is the
+          quietest this surface ever gets: your own orb, and no way to tell
+          whether the room is failing to connect anyone or nobody has come. */}
+      {participants.length === 1 && (
+        <p className="mt-3 text-center text-label text-low">
+          Nobody else has joined yet — they can hop in whenever.
+        </p>
+      )}
       {/* The icons cannot carry this: the whole defect is that a dead track
           looks exactly like a live one. Say it in words. */}
       {lossNote !== null && (
-        <p role="alert" className="text-label text-danger">
+        <p role="alert" className="mt-3 text-label text-danger">
           {lossNote}
         </p>
       )}
-      <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-caption text-low">
-          {participants.length} in call · {call.relayLabel}
-        </span>
+      {/* Wider than the gaps above it: the controls are a separate block from
+          the people, not the last row of them. */}
+      <div className="mt-4 flex items-center justify-center gap-2">
         {phase === 'in-call' ? <ControlBar /> : <JoinButton />}
       </div>
       {call.capReached && phase !== 'in-call' && (
-        <p className="text-label text-low">
+        <p className="mt-2 text-center text-label text-low">
           Up to {call.publisherCap} people can be on camera or mic in one room.
         </p>
       )}
@@ -1455,7 +1672,7 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
       {/* No on-tile camera button here: the compact control bar below already
           owns mic/camera/leave, and two camera affordances in a 176px overlay
           would be one too many. */}
-      <TileGrid participants={shown} compact />
+      <CallTiles participants={shown} compact />
       {overflow > 0 && <p className="text-label text-low">+{overflow} more in the call</p>}
       {/* Theater and mobile see this surface and no other, so the device-loss
           sentence has to live here too. */}

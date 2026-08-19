@@ -32,57 +32,124 @@ export interface TypeStep {
   readonly maxFontSize?: number;
   /** Unitless line-height, authoritative over `lineHeight` on fluid steps. */
   readonly lineHeightRatio?: number;
-  /** px override for React Native when neither the floor nor the fluid
-   *  ceiling is the designed RN size (hero: 28 is the small-web floor, 56 the
-   *  large-web ceiling, 34 the RN step — the old displayL). */
+  /** px override for React Native when the web size is not the designed RN
+   *  one — either because the step is fluid and RN has no viewport (hero: 40
+   *  web floor, 88 web ceiling, 36 on a phone), or because the web size is an
+   *  oversized display setting a 390pt screen cannot hold (display: 44 → 32).
+   *  `emitRnTypeRamp` scales the leading with it, so a step keeps its ratio. */
   readonly rnFontSize?: number;
 }
 
-export type TypeStepName = 'display' | 'title' | 'body' | 'label' | 'caption' | 'hero';
+export type TypeStepName =
+  | 'hero'
+  | 'display'
+  | 'headline'
+  | 'title'
+  | 'body'
+  | 'label'
+  | 'caption';
 
 /**
  * The type ramp. Replaces ad-hoc `text-sm`/`text-xs` sizing; each step carries
  * size, line-height, weight and tracking together.
  *
- * Reconciled against apps/mobile/src/theme.ts, which had a different ramp
- * entirely (displayL/displayM/bodyStrong/mono at 34/28/16/14px, title at
- * weight 500, caption at 13px). DESIGN.md §3's table is the ramp; mobile's was
- * a pre-redesign shape. `mono` is not a step — it is a family, see `fontFamily`.
+ * ── Why the display end moved again (2026-08-19) ──────────────────────────
+ * The ramp topped out at `display` 32 with `title` 20 under it, and that is a
+ * dashboard ramp: the room title rendered at 14px, section heads at 20, and
+ * nothing in the product was ever allowed to be BIG. A composition with no
+ * display moment has no hierarchy — every element argues for the same
+ * attention, which is exactly what the room read as.
+ *
+ * So the top of the ramp is now three steps rather than two, and it is
+ * genuinely oversized:
+ *
+ *   hero      fluid 40→88   auth / marketing only, one per page
+ *   display   44            the oversized moment — now-playing, empty states
+ *   headline  28            room name, page + dialog titles
+ *   title     20            section heads, card titles  (UNCHANGED)
+ *
+ * `title` deliberately did not move: it is the most-used step in the product
+ * and every surface below already sits correctly against it. What was missing
+ * was everything ABOVE it.
+ *
+ * Tracking tightens as size grows and never the other way (see the guard in
+ * test/scales.test.ts). Large type set at default tracking is the other half
+ * of "timid"; -0.045em on an 88px hero is the setting the reference aesthetic
+ * actually uses. Below 17px tracking is 0 or positive — negative tracking on
+ * small text is what makes it look squeezed.
+ *
+ * Leading tightens as size grows for the same optical reason. `body` went the
+ * other way, 15/22 (1.47) → 16/26 (1.63): reading text wants MORE air, not
+ * less, and 16px is the floor a body face should sit at on a desktop.
  */
 export const typeRamp: Readonly<Record<TypeStepName, TypeStep>> = {
-  // LEADING RETUNED (2026-08-18): 32/36 is 1.125 — a poster setting, and one of
-  // the things that made the product read as a toy at a glance. A page title is
-  // a document, not a banner; 32/40 is 1.25.
-  display: { fontSize: 32, lineHeight: 40, fontWeight: 600, letterSpacing: -0.02 },
-  // Same correction one step down: 20/26 (1.30) → 20/28 (1.40).
-  title: { fontSize: 20, lineHeight: 28, fontWeight: 600, letterSpacing: -0.01 },
-  // Web additionally scales the <body> font-size 15→17px at ≥1440px; that is
-  // this step's `maxFontSize`. RN has no viewport unit and uses 15.
-  body: { fontSize: 15, lineHeight: 22, fontWeight: 400, letterSpacing: 0, maxFontSize: 17 },
-  label: { fontSize: 13, lineHeight: 18, fontWeight: 500, letterSpacing: 0 },
-  // Tracking 0.04 → 0.06em: 11px uppercase is the one place in the ramp where
-  // under-tracking reads as cramped rather than tight.
-  caption: { fontSize: 11, lineHeight: 14, fontWeight: 500, letterSpacing: 0.06, uppercase: true },
-  // Marketing/auth heroes only — the one genuinely fluid step in the system.
+  // The one genuinely fluid step. RN has no viewport unit, so it carries an
+  // explicit `rnFontSize`; `maxFontSize` is the WEB ceiling and never leaks.
   hero: {
-    fontSize: 28,
-    lineHeight: 29,
+    fontSize: 40,
+    lineHeight: 42,
     fontWeight: 700,
-    letterSpacing: -0.02,
-    maxFontSize: 56,
-    lineHeightRatio: 1.05,
-    rnFontSize: 34,
+    letterSpacing: -0.045,
+    maxFontSize: 88,
+    lineHeightRatio: 1.04,
+    rnFontSize: 36,
   },
+  // The display moment. 44/48 is 1.09 — poster leading, and correct here for
+  // the same reason it was wrong at 32px: the leading a size wants is optical.
+  // RN takes 32: 44px of title on a 390pt phone is not oversized, it is broken.
+  display: {
+    fontSize: 44,
+    lineHeight: 48,
+    fontWeight: 600,
+    letterSpacing: -0.035,
+    rnFontSize: 32,
+  },
+  headline: { fontSize: 28, lineHeight: 34, fontWeight: 600, letterSpacing: -0.025 },
+  title: { fontSize: 20, lineHeight: 28, fontWeight: 600, letterSpacing: -0.01 },
+  // Web additionally scales the <body> font-size 16→18px on wide viewports;
+  // that is this step's `maxFontSize`. RN has no viewport unit and uses 16.
+  body: { fontSize: 16, lineHeight: 26, fontWeight: 400, letterSpacing: 0, maxFontSize: 18 },
+  label: { fontSize: 13, lineHeight: 18, fontWeight: 500, letterSpacing: 0 },
+  // Tracking 0.06 → 0.08em. An 11px uppercase overline is the one place in the
+  // ramp where the type is doing structural work, and it needs the air to read
+  // as a rule rather than as shouting.
+  caption: { fontSize: 11, lineHeight: 14, fontWeight: 500, letterSpacing: 0.08, uppercase: true },
 };
 
-export type SpacingName = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'xxl' | 'xxxl';
+export type SpacingName =
+  | 'xs'
+  | 'sm'
+  | 'md'
+  | 'lg'
+  | 'xl'
+  | 'xxl'
+  | 'xxxl'
+  | 'section'
+  | 'chapter'
+  | 'canvas';
 
 /**
- * The fixed spacing ramp 4 · 8 · 12 · 16 · 24 · 32 · 48 (DESIGN.md §4). No
+ * The spacing ramp: 4 · 8 · 12 · 16 · 24 · 32 · 48 · 64 · 96 · 128. No
  * arbitrary values in new code.
  *
- * Mobile stopped at 32 (`xxl`) and had no 48; web expressed the same ramp as
- * Tailwind's `1 2 3 4 6 8 12`. Union of the two, mobile's key names kept.
+ * ── Why it grew a top end (2026-08-19) ────────────────────────────────────
+ * It stopped at 48, and a ramp that stops at 48 cannot express a composition —
+ * only a component. Every gap in the product therefore came from the same
+ * four rungs, so nothing had more room around it than anything else, and
+ * uniform spacing reads as uniform importance. Editorial hierarchy is made
+ * mostly of whitespace, not of type size, and the whitespace has to be
+ * available before a surface can spend it.
+ *
+ * The three new rungs are named by ROLE rather than by another `x`, because
+ * their job is compositional and a reader picking between `xxxl` and `xxxxl`
+ * has no way to guess:
+ *
+ *   section  64   between blocks inside one composition (stage → rail sections)
+ *   chapter  96   around a display moment, between major regions of a page
+ *   canvas  128   the breathing room a signature empty state or hero sits in
+ *
+ * The first seven rungs did NOT move: everything downstream is measured
+ * against them.
  */
 export const spacing: Readonly<Record<SpacingName, number>> = {
   xs: 4,
@@ -92,42 +159,48 @@ export const spacing: Readonly<Record<SpacingName, number>> = {
   xl: 24,
   xxl: 32,
   xxxl: 48,
+  section: 64,
+  chapter: 96,
+  canvas: 128,
 };
 
 /** The ramp as an ordered list, for tests and for generating utility scales. */
-export const SPACING_RAMP: readonly number[] = [4, 8, 12, 16, 24, 32, 48];
+export const SPACING_RAMP: readonly number[] = [4, 8, 12, 16, 24, 32, 48, 64, 96, 128];
 
-export type RadiusName = 'sm' | 'control' | 'card' | 'panel' | 'pill';
+export type RadiusName = 'sm' | 'control' | 'card' | 'panel' | 'stage' | 'pill';
 
 /**
- * Radii: 6 chips, 8 controls, 10 cards/rows, 14 panels/sheets, pill.
+ * Radii: 6 chips, 8 controls, 14 cards/rows, 20 panels/sheets, 28 stage, pill.
  *
- * ── Why these moved again (2026-08-18) ────────────────────────────────────
- * A corner radius is only ever legible RELATIVE to the height of the thing it
- * is cut into. The previous ladder (8 / 12 / 12 / 20) was authored against
- * touch-sized controls, and once `controlSizes` below tightened the desktop
- * button to 32px, a 12px corner was 0.38 of the control's height — the ratio a
- * toy has. This ladder holds every rung between 0.18 and 0.25 of its owner's
- * height, which is the band consumer software actually sits in.
+ * ── Why the large end moved (2026-08-19) ──────────────────────────────────
+ * 6 / 8 / 10 / 14 was the timid middle: every rung close enough to its
+ * neighbour that no surface read as a different KIND of thing. A radius ladder
+ * only says anything when its ends are far apart — controls crisp, large
+ * surfaces genuinely soft — so the ends are now committed to and the small end
+ * is unchanged.
  *
- *   sm      6   chips, badges in rows, menu items       6/28  = 0.21
- *   control 8   buttons, inputs, selects, icon buttons  8/32  = 0.25
- *   card    10  media rows, cards, popovers             10/56 = 0.18
- *   panel   14  glass panels, sheets, dialogs
+ *   sm      6   chips, badges in rows, menu items         6/28  = 0.21
+ *   control 8   buttons, inputs, selects, icon buttons    8/32  = 0.25
+ *   card   14   media rows, cards, popovers              14/56  = 0.25
+ *   panel  20   glass panels, sheets, dialogs
+ *   stage  28   the oversized surfaces — now-playing artwork, the stage frame,
+ *               a signature empty state's plate
  *
- * `control` and `card` were the SAME value before, so a 32px button and a 56px
- * row were cut identically; separating them is what makes a control read as a
- * control. Radii are only ever tightened here — never loosened — because a
- * looser corner is the single cheapest way back to looking cartoonish.
- *
- * DISAGREEMENT RESOLVED (kept from the earlier reconciliation): mobile still
- * carried the pre-redesign card 16 and panel 24, and lost.
+ * ── The rule this replaces, and why it was wrong ──────────────────────────
+ * The previous note here said "radii are only ever tightened, never loosened",
+ * on the reasoning that a looser corner is the cheapest way back to looking
+ * cartoonish. That is true of a CONTROL and false of a large surface: what
+ * reads as cartoonish is a corner that is a large FRACTION of its owner's
+ * height, which is why the guard in test/scales.test.ts is a ratio and not a
+ * value. `control` stays 8 for exactly that reason. A 28px corner on a 480px
+ * stage plate is 0.06 of its height — the opposite end of the same rule.
  */
 export const radii: Readonly<Record<RadiusName, number>> = {
   sm: 6,
   control: 8,
-  card: 10,
-  panel: 14,
+  card: 14,
+  panel: 20,
+  stage: 28,
   pill: 999,
 };
 
@@ -189,58 +262,129 @@ export const CONTROL_SIZE_NAMES: readonly ControlSizeName[] = ['sm', 'md', 'lg']
 
 export type ElevationName = 'e1' | 'e2' | 'e3';
 
+/** The colour a shadow layer is a wash of. Not a free choice — see `elevation`. */
+export type ShadowWash = 'ink' | 'hairline';
+
 /** One shadow layer. `x` is always 0 — light in this system comes from above. */
 export interface ShadowLayer {
   /** px, downward offset. */
   readonly y: number;
-  /** px, blur radius. */
+  /** px, blur radius. 0 on the hairline ring. */
   readonly blur: number;
-  /** px, spread. Negative — it is what keeps a shadow from haloing. */
+  /** px. Positive on the hairline ring (it IS the ring); negative on a blurred
+   *  layer, where it is what keeps the shadow from haloing. */
   readonly spread: number;
-  /** 0–1, alpha of `INKS.inkBlack`. */
+  /** 0–1, alpha of whichever colour `wash` names. */
   readonly alpha: number;
+  /**
+   * `ink` is the ABSOLUTE black (`INKS.inkBlack`), never a theme token: a
+   * shadow is an absence of light and must not invert with the palette.
+   * `hairline` is `--hairline`, which is theme-relative BY DESIGN — the crisp
+   * edge that reads on a near-black ground is a light one and on paper a dark
+   * one, and a black ring on the dark theme is simply invisible.
+   */
+  readonly wash: ShadowWash;
 }
 
 /**
- * The elevation ladder — three neutral, directional shadows.
+ * The elevation ladder — a crisp 1px hairline ring plus one soft shadow.
  *
- * ── Why this exists at all ────────────────────────────────────────────────
- * DESIGN.md §4 says "elevation is glow, not shadow", and the product took that
- * literally everywhere: a 40px aurora glow sat under the dropdown menu, the
- * dialog, the toast, the extension's floating panel, AND under a SECONDARY
- * button on hover. A coloured glow under ordinary chrome is a toy tell — it
- * says "look at me" about a context menu. Glow is still in the system and is
- * still the right answer for a signature moment (the listen-room hero artwork,
- * the playing indicator); it is no longer the answer for "this thing floats".
+ * ── Why this shape (2026-08-19) ───────────────────────────────────────────
+ * It used to be two blurred layers per level, a contact shadow under an
+ * ambient one. That is how depth was drawn when surfaces were opaque and
+ * screens were 1x: stacked blur reads as SOFT, and soft is the opposite of
+ * crafted. What the current tier of consumer software actually does is define
+ * the edge exactly — one hairline, one device pixel, no blur — and then let a
+ * single wide, quiet shadow say how far off the page the thing is. The edge
+ * carries the precision; the shadow carries the distance.
  *
- * Two layers each, because one layer cannot be both a contact shadow (short,
- * tight, says the edge is real) and an ambient one (long, soft, says how far
- * off the ground it is). Alphas are of the ABSOLUTE black ink, not of a theme
- * token: a shadow is an absence of light, and it must not invert with the
- * palette. In the dark theme these land quietly on a near-black ground, which
- * is correct — dark UIs separate by the surface ladder and use shadow only to
- * confirm an edge.
+ * So each level is exactly two layers and they are not interchangeable:
+ *
+ *   layer 0   `0 0 0 1px --hairline`   the ring. Same at every level: an edge
+ *                                      is either real or it is not; it does
+ *                                      not get realer as a panel floats higher.
+ *   layer 1   `0 Ypx Bpx -Spx ink`     the distance. This is the only thing
+ *                                      that climbs.
+ *
+ * ── Why the ring is theme-relative and the shadow is not ──────────────────
+ * They answer different questions. "Where does this surface end" is a question
+ * about the palette (light edge on dark, dark edge on paper). "How far off the
+ * page is it" is a question about light, and light does not invert.
+ *
+ * Glow is still in the system and is still the right answer for a signature
+ * moment (DESIGN.md §5); it is not the answer for "this thing floats".
  */
 export const elevation: Readonly<Record<ElevationName, readonly ShadowLayer[]>> = {
   /** Resting raised: a hovered card, an inline popover, a raised row. */
   e1: [
-    { y: 1, blur: 2, spread: -1, alpha: 0.16 },
-    { y: 2, blur: 6, spread: -2, alpha: 0.1 },
+    { y: 0, blur: 0, spread: 1, alpha: 1, wash: 'hairline' },
+    { y: 2, blur: 8, spread: -3, alpha: 0.16, wash: 'ink' },
   ],
   /** Floating: dropdown menus, tooltips, toasts, the extension overlay panel. */
   e2: [
-    { y: 4, blur: 10, spread: -4, alpha: 0.2 },
-    { y: 12, blur: 24, spread: -10, alpha: 0.12 },
+    { y: 0, blur: 0, spread: 1, alpha: 1, wash: 'hairline' },
+    { y: 10, blur: 30, spread: -8, alpha: 0.24, wash: 'ink' },
   ],
   /** Modal: dialogs and sheets — the only things allowed to look this far off the page. */
   e3: [
-    { y: 8, blur: 20, spread: -8, alpha: 0.24 },
-    { y: 28, blur: 56, spread: -20, alpha: 0.16 },
+    { y: 0, blur: 0, spread: 1, alpha: 1, wash: 'hairline' },
+    { y: 24, blur: 64, spread: -16, alpha: 0.3, wash: 'ink' },
   ],
 };
 
 /** Emission order, nearest the page first. */
 export const ELEVATION_NAMES: readonly ElevationName[] = ['e1', 'e2', 'e3'];
+
+/**
+ * Grain — the one texture in the system, and the reason the product can read
+ * as crafted rather than as glossy.
+ *
+ * ── Why it is a token and not a stylesheet detail ─────────────────────────
+ * It was two percent of noise hand-written into apps/web/app/globals.css and
+ * available to nothing else, so the extension overlay and mobile had no
+ * texture at all and the web app had it only on <body>. A value that only one
+ * of three renderers can reach is the same drift `tokens.ts` exists to stop.
+ *
+ * ── Why an inline SVG and not an asset ────────────────────────────────────
+ * The extension overlay is injected into a page it does not control and the
+ * web app ships a CSP; neither may fetch an external image. `feTurbulence` is
+ * generated by the renderer from the string below, so there is no request.
+ *
+ * ── Where it may be used ──────────────────────────────────────────────────
+ * The void, and large quiet surfaces (a stage plate, a full-bleed empty state,
+ * a sheet). NOT on rows, controls, chips or anything under 200px — at that
+ * size the tile repeats visibly and reads as dirt. Never over video, never
+ * over text, and it must never carry information: a host page with a strict
+ * `img-src` will drop the data URI and the surface has to still be complete.
+ *
+ * 3.5% is the band where grain is FELT and not SEEN. Above ~5% it is a
+ * pattern; below ~2% it does not survive the display's own dithering.
+ */
+const GRAIN_TILE_PX = 160;
+const GRAIN_OPACITY = 0.035;
+
+/** `%23` is `#` — the URI is not quoted for us, so the fragment must be escaped. */
+const grainDataUri = (tile: number, opacity: number): string =>
+  'url("data:image/svg+xml,' +
+  `%3Csvg xmlns='http://www.w3.org/2000/svg' width='${tile}' height='${tile}'%3E` +
+  "%3Cfilter id='g'%3E" +
+  "%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'" +
+  " stitchTiles='stitch'/%3E" +
+  "%3CfeColorMatrix type='saturate' values='0'/%3E" +
+  '%3C/filter%3E' +
+  `%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='${opacity}'/%3E` +
+  '%3C/svg%3E")';
+
+export const texture = {
+  /** px. `stitchTiles` makes the noise seamless at exactly this size. */
+  grainTilePx: GRAIN_TILE_PX,
+  /** Baked into the SVG, so `--grain` is one value and not two to compose. */
+  grainOpacity: GRAIN_OPACITY,
+  /** A ready `background-image` value. Emitted as `--grain`. */
+  grain: grainDataUri(GRAIN_TILE_PX, GRAIN_OPACITY),
+} as const;
+
+export type Texture = typeof texture;
 
 /** Spring parameters shared by Framer Motion (web) and Reanimated (mobile). */
 export interface Spring {

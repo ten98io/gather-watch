@@ -1,13 +1,22 @@
 /**
  * <NowPlaying> — what is playing, as content rather than chrome (DESIGN.md §4).
  *
- * `hero` is the listen-room centrepiece: large artwork, title, provider,
- * progress. `compact` is the same information in a 48px row for watch rooms and
- * mini-players. Purely presentational — the progress bar reports position, it
- * does not seek; transport controls come in through `actions`.
+ * `hero` is the listen composition's centrepiece: oversized artwork, a provider
+ * overline, the title at the display step, progress. `compact` is the same
+ * information in a 48px row for watch rooms and mini-players. Purely
+ * presentational — the progress bar reports position, it does not seek;
+ * transport controls come in through `actions`.
  *
  * The fill uses `bg-accent`, so a listen room that rebinds `--accent` to the
  * artwork's dominant colour (lib/artwork-color.ts) retints it for free.
+ *
+ * ── The one display setting on the screen ────────────────────────────────
+ * `hero` spends `text-display` (DESIGN.md §3), and a screen gets exactly one.
+ * That is affordable here because the hero is the answer to "what is this
+ * screen about" — the room is playing this track — and because the only
+ * surface that mounts it is the listen composition, which is the whole stage
+ * when it is up. `compact` deliberately does NOT take the step: it is a row,
+ * and two display settings on one screen is the failure §10 names.
  */
 import type { ReactNode } from 'react';
 import { Artwork } from '@/components/ui/artwork';
@@ -102,24 +111,46 @@ export function NowPlaying({
 }: NowPlayingProps) {
   const position = positionMs ?? null;
   const duration = durationMs ?? null;
-  const metaLine =
-    meta ??
-    (provider !== null && provider !== undefined && provider.length > 0 ? provider : null);
+  const providerLine =
+    provider !== null && provider !== undefined && provider.length > 0 ? provider : null;
 
   if (variant === 'hero') {
     return (
-      <section className={cn('flex w-full flex-col items-center gap-4', className)}>
-        <Artwork
-          src={artworkUrl ?? null}
-          alt={title}
-          kind={kind}
-          size="full"
-          rounded="panel"
-          className="shadow-glow-lg"
-        />
-        <div className="flex w-full flex-col items-center gap-1 text-center">
-          <h2 className="line-clamp-2 text-title text-hi">{title}</h2>
-          {metaLine !== null && <p className="truncate text-label text-low">{metaLine}</p>}
+      <section className={cn('flex w-full flex-col items-center gap-6', className)}>
+        {/* ── The artwork is capped; the section is not ─────────────────────
+            `size="full"` means the cover fills its container, and a square's
+            HEIGHT follows its width — so the only thing stopping an oversized
+            cover from pushing the transport off a short stage is a cap on the
+            box it fills. It lives here and not on the caller's column because
+            the two want different widths: the cover has to stay inside the
+            stage, while the title and whatever transport sits under it want the
+            whole measure. Capping the column instead is what squeezed a
+            ten-control transport bar into 384px and wrapped it onto three rows.
+            24rem is the ceiling on a tall display; 38vh is what actually binds
+            on a laptop, and in fullscreen — where the stage IS the viewport —
+            it is exactly right.
+
+            `stage`, the 28px rung — DESIGN.md §4 names now-playing artwork as
+            one of the two surfaces it exists for. Glow is allowed here and
+            almost nowhere else: this is signature moment §5.1. */}
+        <div className="w-full max-w-[min(24rem,38vh)]">
+          <Artwork
+            src={artworkUrl ?? null}
+            alt={title}
+            kind={kind}
+            size="full"
+            rounded="stage"
+            className="shadow-glow-lg"
+          />
+        </div>
+        {/* Overline and title are ONE unit and sit tight together; the gap that
+            says "a new thing starts here" is the one above, not between them. */}
+        <div className="flex w-full flex-col items-center gap-2 text-center">
+          {providerLine !== null && <p className="text-caption text-low">{providerLine}</p>}
+          <h2 className="line-clamp-2 text-headline text-hi md:text-display">{title}</h2>
+          {meta !== undefined && meta !== null && (
+            <p className="truncate text-label text-low">{meta}</p>
+          )}
         </div>
         {showProgress && <Progress positionMs={position} durationMs={duration} showTimes />}
         {actions !== undefined && (
@@ -129,6 +160,7 @@ export function NowPlaying({
     );
   }
 
+  const metaLine = meta ?? providerLine;
   return (
     <section className={cn('flex w-full items-center gap-3', className)}>
       <Artwork src={artworkUrl ?? null} alt={title} kind={kind} size={48} />

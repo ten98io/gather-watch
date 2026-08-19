@@ -95,3 +95,49 @@ describe('a failure toast', () => {
     expect(document.body.textContent).toContain(sentence);
   });
 });
+
+/**
+ * The second half of "does the failure reach the person": can they READ it.
+ *
+ * The sentence used to be painted `text-success` / `text-danger`. Those are
+ * `STANDALONE_UI_TOKENS` in @gather/design — measured against the 3:1 NON-text
+ * bar — and on the light theme `--success` lands at 4.41:1 on the toast's
+ * glass over the void and 4.29:1 over `--bg-deep`, under the 4.5:1 text bar.
+ * The one line the toast exists to deliver was the one line below AA.
+ *
+ * `packages/design/test/palette.test.ts` cannot catch this: it walks token
+ * PAIRS and never reads a Tailwind class string, so a token used in the wrong
+ * ROLE is invisible to it. That is what these two pin, and it is why they
+ * assert on class names — the role a colour is playing is a fact about the
+ * markup, and jsdom computes no stylesheet to ask instead.
+ */
+describe('severity is a mark, not an ink', () => {
+  it('paints every sentence in --text-hi, whatever the kind', () => {
+    push('error', 'A failing sentence');
+    push('success', 'A cheerful sentence');
+    push('default', 'A neutral sentence');
+
+    for (const text of ['A failing sentence', 'A cheerful sentence', 'A neutral sentence']) {
+      const line = [...cardFor(text).querySelectorAll('span')].find(
+        (el) => el.textContent === text,
+      );
+      expect(line, `no line element for ${text}`).toBeDefined();
+      expect(line?.className).toContain('text-hi');
+      expect(line?.className).not.toContain('text-success');
+      expect(line?.className).not.toContain('text-danger');
+    }
+  });
+
+  it('carries the severity on a non-text dot instead — and only where there is severity', () => {
+    push('error', 'Something broke');
+    push('success', 'Something worked');
+    push('default', 'Something happened');
+
+    expect(cardFor('Something broke').querySelector('.bg-danger')).not.toBeNull();
+    expect(cardFor('Something worked').querySelector('.bg-success')).not.toBeNull();
+    // A plain confirmation has no severity to state; a neutral dot on every
+    // toast would be furniture.
+    expect(cardFor('Something happened').querySelector('.bg-danger')).toBeNull();
+    expect(cardFor('Something happened').querySelector('.bg-success')).toBeNull();
+  });
+});

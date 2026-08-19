@@ -49,14 +49,29 @@ export const toast = Object.assign(
   },
 );
 
-const kindClasses: Record<ToastKind, string> = {
-  default: 'text-hi',
-  success: 'text-success',
-  error: 'text-danger',
+/**
+ * Severity is a MARK, not an ink.
+ *
+ * The sentence used to be painted `text-success` / `text-danger`, and on the
+ * light theme that put the one line the toast exists to deliver under AA:
+ * `--success` measures 4.41:1 on the toast's glass over the void and 4.29:1
+ * over `--bg-deep`, against a 4.5:1 text bar. These are `STANDALONE_UI_TOKENS`
+ * — held to the 3:1 NON-text bar — so the fix is the same one DESIGN.md §2
+ * gives for `--accent`: the text takes `--text-hi` and the colour moves to an
+ * adjacent non-text element. An 8px dot is that element.
+ *
+ * `null` for `default`: a plain confirmation has no severity to state, and a
+ * neutral dot on every toast would be furniture.
+ */
+const kindDot: Record<ToastKind, string | null> = {
+  default: null,
+  success: 'bg-success',
+  error: 'bg-danger',
 };
 
 function ToastCard({ item }: { item: ToastItem }) {
   const dismiss = useToastStore((s) => s.dismiss);
+  const dot = kindDot[item.kind];
   useEffect(() => {
     const handle = window.setTimeout(() => {
       dismiss(item.id);
@@ -82,7 +97,10 @@ function ToastCard({ item }: { item: ToastItem }) {
       role={item.kind === 'error' ? 'alert' : 'status'}
       aria-live={item.kind === 'error' ? 'assertive' : 'polite'}
     >
-      <span className={cn('text-body', kindClasses[item.kind])}>{item.message}</span>
+      {dot !== null && (
+        <span aria-hidden className={cn('h-2 w-2 shrink-0 rounded-full', dot)} />
+      )}
+      <span className="text-body text-hi">{item.message}</span>
       {/* Icon, not `✕`. DESIGN.md §8 is explicit — icons come from
           components/ui/icons.tsx and emoji are content, never controls — and a
           glyph rendered as a control is not only off-system, it inherits the

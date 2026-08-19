@@ -6,9 +6,19 @@
  * casting are LOCAL output concerns and stay local. Auto-hide is owned by the
  * StagePane chrome wrapper (DESIGN.md §7: 3 s of stillness).
  *
- * Layout is a single ~50px row so the bar never eats the stage; every control
- * carries a Tooltip whose text doubles as its aria-label (DESIGN.md §9 keyboard
- * map is surfaced in the hints).
+ * Layout is a single row so the bar never eats the stage; every control carries
+ * a Tooltip whose text doubles as its aria-label (DESIGN.md §9 keyboard map is
+ * surfaced in the hints).
+ *
+ * ── The one place glass is genuinely right, and the one place it is not ──
+ * This bar floats over moving picture, which is the whole of what §4 reserves
+ * `.glass-raised` for. What it is NOT is the stage's primary action: play/pause
+ * here is `secondary`, deliberately. The gradient's budget is three
+ * product-wide and a screen region gets ONE (§2), and on the stage that one is
+ * the centre ring — the oversized "start together" moment in StagePane's
+ * shield. A gradient blob in a transport bar spends the budget on the control
+ * a viewer is least likely to need explained, and leaves the room with no way
+ * to say *this one*.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PlaybackState } from '@gather/contracts';
@@ -52,10 +62,12 @@ const RATES = [0.75, 1, 1.25, 1.5, 2] as const;
  *  frozen `0:00` reads as a real playhead, which is the lie this replaces. */
 const UNKNOWN_TIME = '--:--';
 
-/** `size="sm"` is 36px and pads for a text label; icon controls are 32px squares.
- *  `!` is required because `cn` only joins — Tailwind's own source order would
- *  otherwise let the size class win. */
-const ICON_BTN = '!h-8 !w-8 shrink-0 !p-0';
+/** Every glyph control in the bar is `size="icon"` — a square on the control
+ *  token, 32px under a mouse and 44px under a finger. It replaces a hand-rolled
+ *  `!h-8 !w-8 !p-0`, which was a fixed 32px touch target and three `!important`
+ *  overrides written because `cn` only joins. Nothing here needs to fight the
+ *  size class any more; only `shrink-0` is left, and it conflicts with nothing. */
+const ICON_BTN = 'shrink-0';
 
 /** Names for the cast sentence a provider item shows. 'embed' never reaches
  *  this bar (StagePane withholds the transport there), but the fallback keeps
@@ -259,21 +271,28 @@ export function PlayerControls({
     else connection.syncPlay(pos);
   };
 
+  // `rounded-card` (14) rather than the control rung: at ~48px tall the bar is
+  // an object floating on the picture, and 14/48 is the same 0.25 proportion §4
+  // measures a card by. Padding and gap come off the ramp — the 10/6 this had
+  // were not on it.
   return (
-    <div className="glass-raised flex flex-wrap items-center gap-1.5 rounded-ctl px-2.5 py-1.5">
+    <div className="glass-raised flex flex-wrap items-center gap-2 rounded-card px-3 py-2">
       <Tooltip content={playback.playing ? 'Pause (Space)' : 'Play (Space)'} align="start">
         <Button
-          variant="primary"
-          size="sm"
+          variant="secondary"
+          size="icon"
           disabled={!enabled || (adapter === null && !driving)}
           onClick={togglePlay}
           className={ICON_BTN}
         >
-          {playback.playing ? <PauseIcon size={14} /> : <PlayIcon size={14} />}
+          {playback.playing ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
         </Button>
       </Tooltip>
 
-      <span className="hidden w-12 shrink-0 text-right font-mono text-xs text-mid tabular-nums sm:inline">
+      {/* Two tiers, and which is which matters: the playhead is the number a
+          viewer actually reads, the length is reference. `text-mid` for the
+          first was the flat middle §3 warns about. */}
+      <span className="hidden w-12 shrink-0 text-right font-mono text-label text-hi tabular-nums sm:inline">
         {drivenStale ? UNKNOWN_TIME : formatMs(positionMs)}
       </span>
       {/* basis-24 (not flex-1) so wrapping actually triggers on a narrow stage:
@@ -304,15 +323,14 @@ export function PlayerControls({
               if (!enabled) return;
               connection.syncSeek(Math.round(ms));
             }}
-            className="h-8"
           />
         </Tooltip>
       )}
-      <span className="w-12 shrink-0 font-mono text-xs text-low tabular-nums">
+      <span className="w-12 shrink-0 font-mono text-label text-low tabular-nums">
         {driving && lengthMs <= 0 ? UNKNOWN_TIME : formatMs(lengthMs)}
       </span>
 
-      <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-border-glass" />
+      <span aria-hidden className="mx-1 h-6 w-px shrink-0 bg-border-glass" />
 
       {/* Output is LOCAL, and while the extension drives there is no local
           output: the sound is in another tab and the protocol carries no
@@ -326,7 +344,7 @@ export function PlayerControls({
       >
         <Button
           variant="ghost"
-          size="sm"
+          size="icon"
           disabled={driving}
           onClick={() => {
             const next = !muted;
@@ -362,13 +380,19 @@ export function PlayerControls({
       <Tooltip content="Playback speed">
         <Button
           variant="ghost"
-          size="sm"
+          // `md`, so the rate chip stands exactly as tall as the glyph squares
+          // beside it. `sm` is a rung shorter and the bar reads as ragged.
+          size="md"
           disabled={!enabled}
           onClick={() => {
             const idx = RATES.indexOf(playback.rate as (typeof RATES)[number]);
             connection.syncRate(RATES[(idx + 1) % RATES.length] ?? 1);
           }}
-          className="!h-8 shrink-0 !px-2 font-mono text-xs tabular-nums"
+          // `min-w-ctl-md` for the same reason `size="icon"` carries `w-ctl-md`
+          // next door: "1×" inside `px-ctl-x-md` is 40px wide, and the control
+          // tokens only raise the HEIGHT on a coarse pointer, so the one
+          // control in the bar that is not a square was the one under 44px.
+          className="min-w-ctl-md shrink-0 font-mono tabular-nums"
         >
           {playback.rate}×
         </Button>
@@ -378,7 +402,7 @@ export function PlayerControls({
         <Tooltip content="Subtitles (C)" align="end">
           <Button
             variant={captionsOn ? 'secondary' : 'ghost'}
-            size="sm"
+            size="icon"
             aria-pressed={captionsOn}
             onClick={onToggleCaptions}
             className={ICON_BTN}
@@ -391,7 +415,7 @@ export function PlayerControls({
         <Tooltip content="Picture-in-picture" align="end">
           <Button
             variant="ghost"
-            size="sm"
+            size="icon"
             onClick={() => {
               void (nativeEl as HTMLVideoElement).requestPictureInPicture?.().catch(() => {
                 toast.error('Picture-in-picture is unavailable right now');
@@ -410,7 +434,7 @@ export function PlayerControls({
         <Tooltip content={castExplain} align="end">
           <Button
             variant="ghost"
-            size="sm"
+            size="icon"
             onClick={() => toast(castExplain)}
             className={ICON_BTN}
           >
@@ -423,7 +447,7 @@ export function PlayerControls({
             <Tooltip content="AirPlay" align="end">
               <Button
                 variant="ghost"
-                size="sm"
+                size="icon"
                 onClick={() => showAirPlayPicker(nativeEl)}
                 className={ICON_BTN}
               >
@@ -435,7 +459,7 @@ export function PlayerControls({
             <Tooltip content="Cast to TV" align="end">
               <Button
                 variant="ghost"
-                size="sm"
+                size="icon"
                 onClick={() => {
                   void promptRemotePlayback(nativeEl).catch((err: unknown) => {
                     toast.error(describeError(err, 'Casting is unavailable right now'));
@@ -458,7 +482,7 @@ export function PlayerControls({
         <Tooltip content={fullscreenActive ? 'Exit fullscreen (F)' : 'Fullscreen (F)'} align="end">
           <Button
             variant={fullscreenActive ? 'secondary' : 'ghost'}
-            size="sm"
+            size="icon"
             aria-pressed={fullscreenActive}
             onClick={onToggleFullscreen}
             className={ICON_BTN}

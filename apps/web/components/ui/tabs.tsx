@@ -3,7 +3,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
-import { Badge } from './badge';
 
 interface TabsContextValue {
   value: string;
@@ -49,6 +48,10 @@ export function useTabPanelActive(): boolean {
  * never by the tab bar; the panel supplies the tab name, so no pane has to
  * hard-code one. Safe to call outside <Tabs>: it simply does nothing, and the
  * pane stays renderable on its own.
+ *
+ * This route is only live while the panel is mounted. A count that must be
+ * right before its tab has ever been opened is passed to {@link TabsTrigger}
+ * as `badge` instead, and wins over anything published here.
  */
 export function useTabBadge(count: number): void {
   const setBadge = useContext(TabsContext)?.setBadge;
@@ -94,11 +97,70 @@ export function Tabs({ value, onValueChange, children, className }: TabsProps) {
   );
 }
 
-export function TabsList({ children, className }: { children: ReactNode; className?: string }) {
+/**
+ * A count on a tab, and on whatever stands in for the whole tab bar when there
+ * is no room for one (the room shell's mobile sheet opener).
+ *
+ * Deliberately NOT `<Badge variant="aurora">`, which is what it was. The aurora
+ * gradient has a budget of three product-wide — the primary action, the brand
+ * mark, the live indicator (DESIGN.md §2) — and an unread digit is none of
+ * them; spending it here is how the gradient stopped meaning "this one". Flat
+ * `--accent` is what "tinted" looks like, and it retints with the artwork for
+ * free. The ink is measured against that fill and never against the theme
+ * (§2.1), so it stays legible when a listen room rebinds `--accent`.
+ *
+ * Renders nothing at 0, so a quiet tab's accessible name is just its own name.
+ */
+export function UnreadCount({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <>
+      <span
+        aria-hidden
+        className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-pill bg-accent px-1 text-caption tabular-nums text-[var(--ink-on-accent)]"
+      >
+        {count > 99 ? '99+' : count}
+      </span>
+      {/* The digit alone says nothing out loud. Putting the words in the
+          control's own content keeps its accessible name as "Chat 3 unread" —
+          an aria-label here would replace the control's identity with a count. */}
+      <span className="sr-only">{count} unread</span>
+    </>
+  );
+}
+
+/**
+ * The tab bar.
+ *
+ * It was a segmented control — a pill of `--surface-glass` with the selected
+ * segment raised in glass and lit by `shadow-glow`. Three things wrong with
+ * that at once: glass is reserved for surfaces floating over moving video and
+ * the rail is not one (§4), glow is reserved for signature moments and a tab is
+ * not one (§5), and a segmented control is a FORM WIDGET — it says "pick a
+ * value", when what these three do is move you between places. So it is a
+ * masthead nav now: section names on the type ramp, sitting on the rail's one
+ * hairline, with the active one carried by the accent edge §2 already spells
+ * out for a selected row.
+ *
+ * `aria-label` is declared rather than spread from rest props on purpose: it
+ * was being passed at the call site and silently dropped (TypeScript does not
+ * check hyphenated JSX attributes against a component's props), so the tablist
+ * had no accessible name at all.
+ */
+export function TabsList({
+  children,
+  className,
+  'aria-label': ariaLabel,
+}: {
+  children: ReactNode;
+  className?: string;
+  'aria-label'?: string;
+}) {
   return (
     <div
       role="tablist"
-      className={cn('flex shrink-0 gap-1 rounded-ctl bg-glass p-1', className)}
+      aria-label={ariaLabel}
+      className={cn('flex shrink-0 items-end gap-6 border-b border-hairline', className)}
     >
       {children}
     </div>
@@ -108,15 +170,27 @@ export function TabsList({ children, className }: { children: ReactNode; classNa
 export function TabsTrigger({
   value,
   children,
+  badge,
   className,
 }: {
   value: string;
   children: ReactNode;
+  /**
+   * Count to draw on this trigger, overriding anything the panel published
+   * with {@link useTabBadge}.
+   *
+   * The published route only works while the panel exists, and a panel does
+   * not exist until its tab is first selected ({@link TabsContent} mounts
+   * lazily) — so the pane that owns the count is exactly the pane that is not
+   * there to publish it. A count that has to be right BEFORE its tab is first
+   * opened comes from whatever outlives every panel, and is passed in here.
+   */
+  badge?: number;
   className?: string;
 }) {
   const tabs = useTabs();
   const selected = tabs.value === value;
-  const badge = tabs.badges[value] ?? 0;
+  const count = badge ?? tabs.badges[value] ?? 0;
   return (
     <button
       type="button"
@@ -127,24 +201,24 @@ export function TabsTrigger({
         tabs.onValueChange(value);
       }}
       className={cn(
-        'h-9 flex-1 rounded-[10px] px-3 text-sm font-medium transition-all duration-200',
-        selected ? 'glass-raised text-hi shadow-glow' : 'text-low hover:text-mid',
-        badge > 0 ? 'inline-flex items-center justify-center gap-1.5' : '',
+        // -mb-px lands the active edge ON the list's hairline rather than
+        // beside it; the offset IS that hairline's width.
+        'relative -mb-px inline-flex min-h-tap items-center gap-2 pb-3 pt-2',
+        'font-display text-title transition-colors duration-150',
+        // Mutually exclusive: cn() is a plain joiner, so a selected trigger
+        // that also kept `text-low` would take whichever colour Tailwind
+        // happened to emit second.
+        selected ? 'text-hi' : 'text-low hover:text-mid',
         className,
       )}
     >
       {children}
-      {badge > 0 && (
-        <>
-          <Badge variant="aurora" aria-hidden className="shrink-0">
-            {badge > 99 ? '99+' : badge}
-          </Badge>
-          {/* The digit alone says nothing out loud. Putting the words in the
-              button's own content keeps the accessible name as "Chat 3 unread"
-              — an aria-label here would replace the tab's identity with a
-              count. */}
-          <span className="sr-only">{badge} unread</span>
-        </>
+      <UnreadCount count={count} />
+      {/* The active edge (DESIGN.md §2): flat `--accent` at `layout.edge`,
+          never a glow. On the light theme the accent is a 3:1 non-text colour,
+          which is exactly what an edge is allowed to be. */}
+      {selected && (
+        <span aria-hidden className="absolute inset-x-0 bottom-0 h-edge rounded-pill bg-accent" />
       )}
     </button>
   );

@@ -41,6 +41,7 @@ export type ColorTokenName =
   | 'surface2'
   | 'surface3'
   | 'hairline'
+  | 'scrim'
   | 'textHi'
   | 'textMid'
   | 'textLow'
@@ -107,82 +108,149 @@ const alias = (of: ColorTokenName, note?: string): AliasToken =>
 
 /** Pure white in OKLCH — the base of every light wash. */
 const WHITE: Oklch = { l: 1, c: 0, h: 0 };
-/** The ink the light theme's hairlines are a wash of. */
-const LIGHT_HAIRLINE_INK: Oklch = { l: 0.3, c: 0.03, h: 285 };
+/** The ink the light theme's hairlines are a wash of. Cooled with the neutrals. */
+const LIGHT_HAIRLINE_INK: Oklch = { l: 0.28, c: 0.012, h: 265 };
 
+/**
+ * The ink every scrim is a wash of. Not `bgVoid` and not `INK_BLACK`: a scrim
+ * sits over arbitrary content in both themes and has to darken it the same way
+ * in each, so it is one absolute near-black rather than a palette value that
+ * would invert with the theme and stop obscuring anything on light.
+ */
+const SCRIM_INK: Oklch = { l: 0.05, c: 0.008, h: 265 };
+
+/**
+ * ── The neutrals (2026-08-19) ─────────────────────────────────────────────
+ * The dark ladder was 0.13 / 0.19 / 0.23 / 0.27 at chroma 0.02–0.03 on hue
+ * 285–290, and it had two problems at once. The chroma was high enough that
+ * the "neutrals" were a dark violet — a tint on every surface in the product,
+ * which is what made the whole thing read as one flat mauve field. And the
+ * void was not actually dark: at 0.13 it sat close enough to the rail that a
+ * panel did not read as a panel, it read as a slightly different grey.
+ *
+ * Both are fixed by the same move. Chroma comes down to 0.006–0.011 (a cast
+ * you can feel and not name) on hue 265, which is cool without being blue; and
+ * the void drops to 0.115 — a true cinema black — which opens the void → rail
+ * step from 0.06 to 0.09 of perceptual lightness. The rungs above it keep
+ * roughly even 0.03–0.04 steps so hover and active stay subtle.
+ *
+ * The three TEXT tokens deliberately did not move. They are already near
+ * neutral, and deepening the surfaces under them only bought headroom:
+ * `textLow` — the measured floor of the whole system — went from 4.68:1 to
+ * 4.56:1 at its worst rung only because `surface3` rose with the ladder, and
+ * every other pair improved.
+ */
 const dark: Readonly<Record<ColorTokenName, ColorToken>> = {
-  bgVoid: solid(0.13, 0.02, 285, 'near-black indigo'),
-  bgDeep: solid(0.17, 0.03, 290),
-  surfaceGlass: overlay(WHITE, 0.05, 'glass panels also carry blur(20px) saturate(1.3)'),
-  surfaceRaised: overlay(WHITE, 0.08),
-  borderGlass: overlay(WHITE, 0.09),
+  bgVoid: solid(0.115, 0.006, 265, 'cinema black'),
+  bgDeep: solid(0.16, 0.008, 265),
+  surfaceGlass: overlay(WHITE, 0.06, 'glass panels also carry blur(16px) saturate(1.08)'),
+  surfaceRaised: overlay(WHITE, 0.09),
+  borderGlass: overlay(WHITE, 0.1),
   // Elevation ladder (DESIGN.md §4): solid steps, NOT glass. Surfaces are
   // separated by background step; a hairline is allowed only where two
   // same-step surfaces meet.
   surface0: alias('bgVoid', 'page ground'),
-  surface1: solid(0.19, 0.025, 290, 'rail, cards'),
-  surface2: solid(0.23, 0.028, 290, 'hover, raised card'),
-  surface3: solid(0.27, 0.03, 290, 'active / selected row'),
-  hairline: overlay(WHITE, 0.06),
+  surface1: solid(0.205, 0.009, 265, 'rail, cards'),
+  surface2: solid(0.245, 0.01, 265, 'hover, raised card'),
+  surface3: solid(
+    0.275,
+    0.011,
+    265,
+    'active / selected row. --text-low holds 4.56:1 here and falls under AA above ~0.28',
+  ),
+  // Carries the elevation ladder's 1px ring as well as a same-step divider,
+  // so it is a touch stronger than the 0.06 it was: at 0.06 a ring on the
+  // deepened void was a suggestion rather than an edge.
+  hairline: overlay(WHITE, 0.07),
+  // Behind dialogs and sheets. 0.72 is not decoration: at the 0.5 the product
+  // shipped, the page under a dialog stayed fully readable, so the dialog was
+  // not modal in any sense a reader could see. test/palette.test.ts measures
+  // what survives behind it.
+  scrim: overlay(SCRIM_INK, 0.72),
   textHi: solid(0.97, 0.005, 285),
   textMid: solid(0.78, 0.015, 285),
   textLow: solid(
     0.65,
     0.02,
     285,
-    'measured floor: 0.58 fell to 3.53:1 on --surface-3; 0.65 holds >=4.68:1 across the ladder',
+    'measured floor: 0.58 fell to 3.53:1 on --surface-3; 0.65 holds >=4.56:1 across the ladder',
   ),
-  aurora1: solid(0.62, 0.23, 295, 'electric violet'),
-  aurora2: solid(0.66, 0.26, 340, 'fuchsia'),
-  aurora3: solid(0.8, 0.16, 75, 'solar amber'),
+  // ── The aurora, narrowed (2026-08-19) ──────────────────────────────────
+  // It was violet 295 → fuchsia 340 → amber 75: a 140-degree arc through the
+  // wheel, which is a RAINBOW, and a rainbow on a primary button is decoration
+  // rather than identity. Narrowed to 64 degrees — violet, magenta, warm rose —
+  // so the three stops read as one accent with depth in it instead of as three
+  // colours agreeing to share a button. Chroma comes down a notch with the
+  // narrowing (0.23/0.26/0.16 → 0.22/0.215/0.17) because a tight hue arc at
+  // full chroma goes neon; the gradient should look lit, not printed.
+  //
+  // Amber did not survive the narrowing and does not need to: `warn` is the
+  // amber in the system, and it means something.
+  aurora1: solid(0.62, 0.22, 292, 'electric violet'),
+  aurora2: solid(0.65, 0.215, 328, 'magenta'),
+  aurora3: solid(0.7, 0.17, 356, 'warm rose'),
   accent: alias('aurora1', 'listen rooms rebind this to the artwork colour at runtime'),
   accentInk: solid(0.98, 0.01, 295, 'ink on aurora gradients'),
   success: solid(0.75, 0.17, 160),
   danger: solid(0.68, 0.21, 25),
   warn: solid(0.82, 0.16, 85),
-  focusRing: solid(0.72, 0.2, 295),
+  focusRing: solid(0.72, 0.2, 292),
 };
 
+/**
+ * Daylight, rebalanced the same way: the paper ground goes a touch deeper and
+ * cooler (hue 290 → 265, chroma 0.006–0.012 → 0.002–0.008) so the light theme
+ * is a neutral paper rather than a lilac one, and the ladder's ends spread —
+ * `surface3` 0.92 → 0.91 against a `surface1` that is still all but white.
+ *
+ * Light's own constraint runs the other way from dark's: text gets EASIER as
+ * the ground deepens and `--accent` gets harder, because the accent is a
+ * mid-tone and the darkest light surface is the one it has least contrast
+ * against. `surface3` is therefore the rung that decides how far the light
+ * ladder may go, and 0.91 holds `--accent` at 3.43:1 — clear of the 3:1
+ * non-text bar it is held to, and nowhere near the 4.5:1 text bar it is
+ * forbidden from claiming (§2).
+ */
 const light: Readonly<Record<ColorTokenName, ColorToken>> = {
-  bgVoid: solid(0.97, 0.006, 290),
-  bgDeep: solid(0.94, 0.01, 290),
-  surfaceGlass: overlay(WHITE, 0.65),
-  surfaceRaised: overlay(WHITE, 0.8),
-  borderGlass: overlay(LIGHT_HAIRLINE_INK, 0.14),
+  bgVoid: solid(0.965, 0.004, 265),
+  bgDeep: solid(0.925, 0.006, 265),
+  surfaceGlass: overlay(WHITE, 0.7),
+  surfaceRaised: overlay(WHITE, 0.85),
+  borderGlass: overlay(LIGHT_HAIRLINE_INK, 0.16),
   // Ladder mirrored: the ground is tinted paper, elevation moves toward white
   // for cards and back down for hover/active — the inverse of the dark steps.
   surface0: alias('bgVoid', 'page ground'),
-  surface1: solid(0.995, 0.003, 290, 'rail, cards'),
-  surface2: solid(0.955, 0.008, 290, 'hover, raised card'),
-  surface3: solid(0.92, 0.012, 290, 'active / selected row'),
-  hairline: overlay(LIGHT_HAIRLINE_INK, 0.12),
-  textHi: solid(0.22, 0.02, 285),
-  textMid: solid(0.42, 0.02, 285),
+  surface1: solid(0.995, 0.002, 265, 'rail, cards'),
+  surface2: solid(0.95, 0.005, 265, 'hover, raised card'),
+  surface3: solid(0.91, 0.008, 265, 'active / selected row; the rung --accent is measured on'),
+  hairline: overlay(LIGHT_HAIRLINE_INK, 0.14),
+  scrim: overlay(SCRIM_INK, 0.72, 'same wash as dark — the brightest pixel behind it is the same'),
+  textHi: solid(0.22, 0.012, 265),
+  textMid: solid(0.42, 0.014, 265),
   textLow: solid(
-    0.5,
-    0.02,
-    285,
-    'measured floor: 0.55 fell to 3.83:1 on --surface-3; 0.50 holds >=4.72:1 across the ladder',
+    0.49,
+    0.014,
+    265,
+    'measured floor: 0.55 fell to 3.83:1 on --surface-3; 0.49 holds >=4.82:1 across the ladder',
   ),
-  // Aurora hues persist — chroma dialed down ~15% for WCAG AA on light.
+  // The same 64-degree arc as dark, one step darker and ~20% less chroma so it
+  // survives on paper.
   //
-  // LIGHTNESS RAISED (2026-08-18), and this is the fix for the failure the
-  // guard test used to merely RECORD: the primary button's fill is the 135°
-  // aurora gradient, so one ink has to clear all three stops, and on light the
-  // best single ink measured 3.96:1 — under the 4.5:1 text bar. Black is the
-  // ink that can win here (light `aurora3` is amber at 7.69:1 with black and
-  // 2.73:1 with white, so white can never serve the gradient), and black gets
-  // better as the fill gets LIGHTER. aurora1 0.55→0.59 takes black from 3.96 to
-  // 4.72:1; aurora2 0.58→0.60 takes it from 4.33 to 4.74:1. Chroma comes down
-  // one notch with each so the hue does not go neon as it lightens.
+  // The tension recorded here in 2026-08-18 has not gone away, only moved:
+  // the primary button's fill is the whole gradient, so ONE ink has to clear
+  // all three stops, and on light that ink can only be black — which gets
+  // better as the fill gets LIGHTER. `--accent` aliases `aurora1` and is also
+  // drawn on light surfaces as an edge, a ring, a progress fill — which gets
+  // better as the fill gets DARKER. The two pull opposite ways and the answer
+  // is a band, not a point. 0.585 sits in it: black on the gradient floors at
+  // 4.68:1 (text bar 4.5) and the accent floors at 3.43:1 on `surface3`
+  // (non-text bar 3).
   //
-  // The cost, stated: `accent` aliases `aurora1`, and as a standalone UI colour
-  // its worst rung on the light ladder falls 4.17 → 3.49:1 (`surface3`), still
-  // clear of the 3:1 non-text bar. And light `--ink-on-accent` flips white →
-  // black, 5.31 → 4.72:1, still clear of the 4.5:1 text bar.
-  aurora1: solid(0.59, 0.19, 295, 'electric violet'),
-  aurora2: solid(0.6, 0.21, 340, 'fuchsia'),
-  aurora3: solid(0.7, 0.14, 75, 'solar amber'),
+  // **The cost is still a rule.** On light, `--accent` is a fill, a border, a
+  // focus ring, a progress bar or an active edge, and NEVER a text colour.
+  aurora1: solid(0.585, 0.175, 292, 'electric violet'),
+  aurora2: solid(0.615, 0.175, 328, 'magenta'),
+  aurora3: solid(0.655, 0.145, 356, 'warm rose'),
   accent: alias('aurora1', 'listen rooms rebind this to the artwork colour at runtime'),
   accentInk: solid(0.98, 0.01, 295, 'ink on aurora gradients'),
   success: solid(0.55, 0.15, 160),
@@ -191,9 +259,9 @@ const light: Readonly<Record<ColorTokenName, ColorToken>> = {
     0.58,
     0.14,
     85,
-    'measured floor: 0.62 fell to 2.88:1 on --surface-3, under the 3:1 non-text bar; 0.58 holds >=3.42:1',
+    'measured floor: 0.62 fell to 2.88:1 on --surface-3, under the 3:1 non-text bar; 0.58 holds >=3.33:1',
   ),
-  focusRing: solid(0.58, 0.18, 295),
+  focusRing: solid(0.58, 0.18, 292),
 };
 
 /** The palette. Both themes carry the same key set — the type enforces it. */
@@ -215,6 +283,7 @@ export const COLOR_TOKEN_NAMES: readonly ColorTokenName[] = [
   'surface2',
   'surface3',
   'hairline',
+  'scrim',
   'textHi',
   'textMid',
   'textLow',
@@ -292,9 +361,9 @@ export const TEXT_TOKENS: readonly ColorTokenName[] = ['textHi', 'textMid', 'tex
  * the focus ring, the accent edge — and so are held to WCAG_AA_NON_TEXT.
  *
  * `aurora2` and `aurora3` are absent by rule, not by convenience: DESIGN.md §2
- * reserves them for the 135° gradient (primary button, brand mark, playing
- * indicator) and they never appear as a standalone fill. `aurora1` IS here,
- * because `--accent` aliases it and the accent is used alone.
+ * reserves them for the 135° gradient (the primary action, the brand mark, the
+ * live indicator) and they never appear as a standalone fill. `aurora1` IS
+ * here, because `--accent` aliases it and the accent is used alone.
  */
 export const STANDALONE_UI_TOKENS: readonly ColorTokenName[] = [
   'accent',
@@ -311,7 +380,7 @@ export const STANDALONE_UI_TOKENS: readonly ColorTokenName[] = [
  *
  * `aurora2` and `aurora3` are here even though `STANDALONE_UI_TOKENS` excludes
  * them: they never appear as a fill on their own, but they are two of the three
- * stops of the 135° gradient (DESIGN.md §2) that IS the primary button's fill,
+ * stops of the 135° gradient (DESIGN.md §2) that IS the primary action's fill,
  * so a label crosses them.
  */
 export type FillTokenName =
@@ -348,10 +417,10 @@ export const FILL_TOKENS: readonly FillTokenName[] = [
  * so no palette tuning can flip one out from under a fill.
  *
  * They are NOT derived from the near-black/near-white already in the palette,
- * because those do not reach: on light `success` (#008758), dark `bgVoid`
- * measures 4.42:1 and `accentInk` 4.29:1, so max(near-black, near-white) is
- * still an AA failure. Pure black clears it at 4.61:1. The endpoints are also
- * the only pair of values in the system that nothing else can move.
+ * because those do not reach: on light `success` (#008758) the best near-black
+ * in the palette lands under AA where pure black clears it at 4.61:1. The
+ * endpoints are also the only pair of values in the system that nothing else
+ * can move.
  */
 const INK_BLACK: Oklch = { l: 0, c: 0, h: 0 };
 const INK_WHITE: Oklch = { l: 1, c: 0, h: 0 };
@@ -411,8 +480,10 @@ export function inkOn(theme: ThemeName, fill: FillTokenName): Ink {
 
 /**
  * The three stops of the 135° aurora gradient (DESIGN.md §2), in gradient
- * order. The primary button, the brand mark and the playing indicator are all
- * painted with exactly this and nothing else.
+ * order. The primary action, the brand mark and the live indicator are all
+ * painted with exactly this and nothing else — and, since 2026-08-19, they are
+ * the ONLY things that are. The gradient stopped meaning anything when it was
+ * the fill of every button on the screen.
  */
 export const AURORA_GRADIENT_STOPS: readonly FillTokenName[] = ['aurora1', 'aurora2', 'aurora3'];
 
@@ -423,7 +494,8 @@ export const AURORA_GRADIENT_STOPS: readonly FillTokenName[] = ['aurora1', 'auro
  * stops, so the ink that matters is the one whose WORST stop is best — a
  * maximin, not a per-colour choice. Picking per stop is exactly how the
  * shipped button ended up with `--accent-ink` (a near-white in both themes) on
- * dark's vivid fills at a floor of 1.79:1 against `aurora3`.
+ * dark's vivid fills at a floor of 2.74:1 across the narrowed gradient — and
+ * 1.79:1 against the amber `aurora3` that preceded it.
  *
  * Ties go to `inkBlack`, matching `inkForFill`, so the two stay consistent.
  */

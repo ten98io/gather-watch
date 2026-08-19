@@ -36,7 +36,15 @@ export function Switch({ checked, onCheckedChange, disabled, className, ...aria 
         onCheckedChange(!checked);
       }}
       className={cn(
-        'inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors duration-150',
+        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors duration-150',
+        // The TRACK is 44×24; the TARGET has to be 44×44 (DESIGN.md §9, and
+        // `layout.tap` is the number). Growing the element itself would grow
+        // the fill with it — a 44px-tall pill is a different control — so the
+        // extra 20px is a transparent pseudo-element centred on the track. It
+        // paints nothing and belongs to the button, so a press anywhere in it
+        // is a press on the switch.
+        'before:absolute before:inset-x-0 before:top-1/2 before:h-tap',
+        "before:-translate-y-1/2 before:content-['']",
         checked ? 'bg-accent' : 'border border-hairline bg-surface-3',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,
