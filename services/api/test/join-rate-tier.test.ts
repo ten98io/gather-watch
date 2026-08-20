@@ -43,7 +43,7 @@ describe('POST /rooms/join sits on the auth rate tier', () => {
       method: 'PATCH',
       url: `/rooms/${roomId}/password`,
       headers: { authorization: `Bearer ${account.accessToken}` },
-      payload: { password: 'the-real-one' },
+      payload: { password: 'fixture-room-passphrase' },
     });
 
     const guess = (): Promise<{ statusCode: number }> =>
@@ -51,7 +51,7 @@ describe('POST /rooms/join sits on the auth rate tier', () => {
         method: 'POST',
         url: '/rooms/join',
         headers: { authorization: `Bearer ${account.accessToken}` },
-        payload: { inviteCode: 'not-a-real-code', password: 'guess' },
+        payload: { inviteCode: 'not-a-real-code', password: 'fixture-wrong-guess' },
       });
 
     const codes: number[] = [];
