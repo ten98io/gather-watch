@@ -26,11 +26,26 @@ import { DEFAULT_API_URL, DEFAULT_WEB_ORIGINS, originOfUrl } from './config';
 /** Which artifact is being produced. Set by the npm script, not by hand. */
 export type BuildMode = 'dev' | 'prod';
 
+/**
+ * The live deployment, and therefore the PROD DEFAULTS (owner decision,
+ * 2026-08-20: gather.watch is deployed and canonical — `build:prod` alone
+ * must produce the artifact that talks to it). This is not the old silent-
+ * localhost defect coming back: that artifact was built by the DEV script,
+ * said nothing, and worked for one machine. A defaulted prod build runs
+ * every shippable check (https, non-loopback, manifest subset), prints the
+ * origin in the banner and BUILD.txt, and works for everyone. Env still
+ * overrides both, for any other deployment.
+ */
+export const PROD_DEFAULT_API_URL = 'https://api.gather.watch';
+export const PROD_DEFAULT_WEB_ORIGINS: readonly string[] = [
+  'https://gather.watch',
+  'https://www.gather.watch',
+];
+
 /** Copy-pasteable, and the only command that produces a shippable artifact. */
 export const PROD_BUILD_COMMAND = [
-  'GATHER_API_URL=https://<api-domain> \\',
-  '  GATHER_WEB_ORIGINS=https://gather.watch,https://www.gather.watch \\',
-  '  pnpm --filter ./apps/extension build:prod',
+  'pnpm --filter ./apps/extension build:prod',
+  '# (GATHER_API_URL / GATHER_WEB_ORIGINS override the gather.watch defaults)',
 ].join('\n');
 
 /**
@@ -221,15 +236,11 @@ export function resolveBuildTarget(env: Record<string, string | undefined>): Bui
   const mode: BuildMode = rawMode === 'prod' ? 'prod' : 'dev';
 
   const rawApi = (env['GATHER_API_URL'] ?? '').trim();
-  if (rawApi === '' && mode === 'prod') {
-    throw new Error(
-      'A production build must name the API origin: MV3 inlines it at build ' +
-        'time and the bundle can never read it later. There is no default — ' +
-        'a localhost artifact installs cleanly and then fails every call.\n\n' +
-        `${PROD_BUILD_COMMAND}\n`,
-    );
-  }
-  const apiUrl = rawApi === '' ? DEFAULT_API_URL : trimUrl(rawApi);
+  // Unset resolves per mode: dev keeps localhost (local API development),
+  // prod keeps the live deployment — see PROD_DEFAULT_API_URL for why a
+  // default here is safe where the dev script's silent localhost was not.
+  const apiUrl =
+    rawApi !== '' ? trimUrl(rawApi) : mode === 'prod' ? PROD_DEFAULT_API_URL : DEFAULT_API_URL;
   if (originOfUrl(apiUrl) === null) {
     throw new Error(
       `GATHER_API_URL must be an http(s) URL (got "${rawApi}"). ` +
@@ -253,13 +264,23 @@ export function resolveBuildTarget(env: Record<string, string | undefined>): Bui
   }
 
   const parsedOrigins = parseWebOriginsStrict(env['GATHER_WEB_ORIGINS'] ?? '');
+  // Unset web origins resolve per mode too: prod inlines exactly the live
+  // pair (what every shipped artifact has carried), dev inlines nothing and
+  // lets config.ts's runtime built-ins stand (they include the localhost
+  // entries local development needs).
+  const resolvedOrigins =
+    parsedOrigins.length > 0
+      ? parsedOrigins
+      : mode === 'prod'
+        ? [...PROD_DEFAULT_WEB_ORIGINS]
+        : [];
   return {
     mode,
     apiUrl,
     // Re-joined from the PARSED list, so what gets inlined is already
     // normalised and config.ts's runtime parse is a formality.
-    webOrigins: parsedOrigins.join(','),
-    effectiveWebOrigins: parsedOrigins.length > 0 ? parsedOrigins : DEFAULT_WEB_ORIGINS,
+    webOrigins: resolvedOrigins.join(','),
+    effectiveWebOrigins: resolvedOrigins.length > 0 ? resolvedOrigins : DEFAULT_WEB_ORIGINS,
     loopback,
   };
 }

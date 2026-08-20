@@ -30,21 +30,37 @@ const PROD = { GATHER_BUILD: 'prod', GATHER_API_URL: 'https://api.gather.watch' 
  * cleanly and then fails every call it ever makes.
  */
 describe('a production build cannot be a localhost build by accident', () => {
-  it('refuses to guess an API origin — there is no production default', () => {
-    expect(() => resolveBuildTarget({ GATHER_BUILD: 'prod' })).toThrow(
-      /must name the API origin/i,
-    );
+  /**
+   * Owner decision 2026-08-20: gather.watch is deployed and canonical, so
+   * `build:prod` ALONE produces the live artifact — the defaults below are
+   * the deployment, not a guess. Every shippable check still runs against
+   * them, and the banner/BUILD.txt still name the origin. (The defect this
+   * file exists for was the DEV script's silent localhost — a defaulted
+   * PROD build is its opposite: loud, checked, works for everyone.)
+   */
+  it('defaults to the live deployment: api.gather.watch and the gather.watch origins', () => {
+    const target = resolveBuildTarget({ GATHER_BUILD: 'prod' });
+    expect(target.mode).toBe('prod');
+    expect(target.apiUrl).toBe('https://api.gather.watch');
+    expect(target.loopback).toBe(false);
+    expect(target.effectiveWebOrigins).toEqual([
+      'https://gather.watch',
+      'https://www.gather.watch',
+    ]);
+    // Inlined, not left to the runtime fallback: the artifact must carry the
+    // live pair even though nothing was passed on the command line.
+    expect(target.webOrigins).toBe('https://gather.watch,https://www.gather.watch');
+    expect(buildLabel(target)).toBe('PRODUCTION BUILD');
   });
 
-  it('names the exact command that fixes it, in the error itself', () => {
-    let message = '';
-    try {
-      resolveBuildTarget({ GATHER_BUILD: 'prod' });
-    } catch (err) {
-      message = err instanceof Error ? err.message : String(err);
-    }
-    expect(message).toContain('build:prod');
-    expect(message).toContain('GATHER_API_URL=');
+  it('still lets env name a different deployment, and checks it', () => {
+    const target = resolveBuildTarget({
+      GATHER_BUILD: 'prod',
+      GATHER_API_URL: 'https://api.other.example',
+      GATHER_WEB_ORIGINS: 'https://other.example',
+    });
+    expect(target.apiUrl).toBe('https://api.other.example');
+    expect(target.effectiveWebOrigins).toEqual(['https://other.example']);
   });
 
   it('refuses a loopback origin, however it is spelt', () => {
@@ -205,11 +221,17 @@ describe('the web-origin allowlist is actually wired to the build', () => {
     expect(parseWebOrigins(target.webOrigins)).toEqual([...target.effectiveWebOrigins]);
   });
 
-  it('falls back to the built-in list when unset', () => {
-    const target = resolveBuildTarget(PROD);
+  it('unset resolves per mode: prod inlines the live pair, dev leaves the runtime built-ins', () => {
+    const prod = resolveBuildTarget(PROD);
+    expect(prod.webOrigins).toBe('https://gather.watch,https://www.gather.watch');
+    expect(prod.effectiveWebOrigins).toEqual([
+      'https://gather.watch',
+      'https://www.gather.watch',
+    ]);
 
-    expect(target.webOrigins).toBe('');
-    expect(target.effectiveWebOrigins).toEqual(DEFAULT_WEB_ORIGINS);
+    const dev = resolveBuildTarget({});
+    expect(dev.webOrigins).toBe('');
+    expect(dev.effectiveWebOrigins).toEqual(DEFAULT_WEB_ORIGINS);
   });
 
   it('fails the build on a typo instead of dropping it', () => {

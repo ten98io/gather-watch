@@ -684,16 +684,19 @@ stale:
   runtime env):
 
   ```bash
-  GATHER_API_URL=https://<api-domain> \
-    GATHER_WEB_ORIGINS=https://gather.watch,https://www.gather.watch \
-    pnpm --filter ./apps/extension build:prod
+  pnpm --filter ./apps/extension build:prod
   ```
 
-  then chrome://extensions → Load unpacked → `apps/extension/dist`.
-  `GATHER_WEB_ORIGINS` must stay a subset of the manifest's
-  `externally_connectable.matches`; the build checks that for you and names the
-  offending origin. Chrome 137+ ignores `--load-extension`; there is no
-  automated install path for a real profile, by Chrome's design.
+  The LIVE deployment is the prod default (owner decision 2026-08-20):
+  api https://api.gather.watch, web origins gather.watch + www. Env
+  (`GATHER_API_URL` / `GATHER_WEB_ORIGINS`) overrides for other
+  deployments; every check (https, non-loopback, manifest subset) runs
+  either way. Then chrome://extensions → Load unpacked →
+  `apps/extension/dist`. `GATHER_WEB_ORIGINS` must stay a subset of the
+  manifest's `externally_connectable.matches`; the build checks that for
+  you and names the offending origin. Chrome 137+ ignores
+  `--load-extension`; there is no automated install path for a real
+  profile, by Chrome's design.
 - The web app finds the extension without configuration (content script
   announces its id on Gather origins); `NEXT_PUBLIC_GATHER_EXTENSION_ID` only
   pins it.

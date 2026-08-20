@@ -137,15 +137,19 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
 ### The one that goes into a real browser
 
 ```bash
-GATHER_API_URL=https://<api-domain> \
-  GATHER_WEB_ORIGINS=https://gather.watch,https://www.gather.watch \
-  pnpm --filter ./apps/extension build:prod
+pnpm --filter ./apps/extension build:prod
 ```
 
-`build:prod` has **no default origin to fall back on**. It refuses to run
-without `GATHER_API_URL`, refuses a loopback host, refuses a non-https one,
-and refuses a web origin the manifest does not admit — before it emits a
-single byte. The message names the fix each time.
+That is the whole command: **the live deployment is the prod default**
+(owner decision, 2026-08-20 — gather.watch is deployed and canonical, so
+the defaults are `https://api.gather.watch` and the gather.watch web
+origins, inlined and printed in the banner and `BUILD.txt`). For any OTHER
+deployment, `GATHER_API_URL` / `GATHER_WEB_ORIGINS` override the defaults —
+and whatever the origin came from, `build:prod` still refuses a loopback
+host, a non-https one, and a web origin the manifest does not admit, before
+it emits a single byte. The old defect cannot recur through this default:
+that artifact came from the DEV script, silently, and worked for one
+machine — this one is checked, labeled, and works for everyone.
 
 Then Chrome → `chrome://extensions` → Developer mode → **Load unpacked** →
 select `apps/extension/dist`. Open the site you want to watch, click the

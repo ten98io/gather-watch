@@ -219,7 +219,9 @@ runs" below; steps 4–5 stay frozen until one run records all-PASS.
 
 - [ ] `git pull`; record the HEAD hash and Chrome version.
 - [ ] Build the PROD artifact:
-      `GATHER_API_URL=https://api.gather.watch GATHER_WEB_ORIGINS=https://gather.watch,https://www.gather.watch pnpm --filter ./apps/extension build:prod`
+      `pnpm --filter ./apps/extension build:prod`
+      (gather.watch is the built-in prod default since 2026-08-20; env
+      overrides exist for other deployments)
 - [ ] `cat apps/extension/dist/BUILD.txt` — must say **PRODUCTION BUILD**. DEV
       or UNVERIFIED: stop, wrong artifact.
 - [ ] chrome://extensions → remove any old copy → Load unpacked →
