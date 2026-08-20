@@ -293,3 +293,79 @@ describe('remote track roles', () => {
     expect(announcedRoles(bob.mesh).get(alice.userId)).toBeUndefined();
   });
 });
+
+/**
+ * READ ACCESSORS FOR THE SAME FACTS.
+ *
+ * The web app tunes the share-audio m-section's Opus params in SDP it relays
+ * (apps/web/lib/call-mesh.ts), and finding that section means asking the mesh
+ * two questions it already knows the answers to: which stream id do WE
+ * publish a role on, and which stream ids have REMOTES announced for it. Both
+ * are pure reads — asking must never mint a stream or announce anything.
+ */
+describe('role stream accessors', () => {
+  it('answers the local stream id for a published role, null before and beside it', async () => {
+    const world = makeWorld();
+    const alice = world.add('alice', 'alice', { streamIds: ['s-tab'] });
+    const bob = world.add('bob', 'bob', { streamIds: ['b-1'] });
+
+    // Nothing published yet: nothing minted — and asking must not mint.
+    expect(alice.mesh.localRoleStreamId('share-audio')).toBeNull();
+
+    alice.mesh.setLocalTrack('share-audio', track('alice-tab-audio', 'audio'));
+    alice.mesh.syncPeers([bob.userId]);
+    bob.mesh.syncPeers([alice.userId]);
+    await world.clock.advance(500);
+
+    expect(alice.mesh.localRoleStreamId('share-audio')).toBe('s-tab');
+    // A role that never published minted nothing, and still answers null.
+    expect(alice.mesh.localRoleStreamId('mic')).toBeNull();
+  });
+
+  it('answers null for a mesh that publishes bare', async () => {
+    const world = makeWorld();
+    // No streamIds: no factory at all, every role publishes with no stream.
+    const alice = world.add('alice', 'alice');
+    const bob = world.add('bob', 'bob', { streamIds: ['b-1'] });
+
+    alice.mesh.setLocalTrack('share-audio', track('alice-tab-audio', 'audio'));
+    alice.mesh.syncPeers([bob.userId]);
+    bob.mesh.syncPeers([alice.userId]);
+    await world.clock.advance(500);
+
+    expect(alice.mesh.localRoleStreamId('share-audio')).toBeNull();
+  });
+
+  it('collects announced stream ids for one role across identities', async () => {
+    const world = makeWorld();
+    const alice = world.add('alice', 'alice', { streamIds: ['a-tab'] });
+    const carol = world.add('carol', 'carol', { streamIds: ['c-tab'] });
+    const bob = world.add('bob', 'bob', { streamIds: ['b-1'] });
+
+    alice.mesh.setLocalTrack('share-audio', track('alice-tab-audio', 'audio'));
+    carol.mesh.setLocalTrack('share-audio', track('carol-tab-audio', 'audio'));
+    alice.mesh.syncPeers([bob.userId]);
+    carol.mesh.syncPeers([bob.userId]);
+    bob.mesh.syncPeers([alice.userId, carol.userId]);
+    await world.clock.advance(500);
+
+    expect(bob.mesh.announcedRoleStreamIds('share-audio')).toEqual(new Set(['a-tab', 'c-tab']));
+    // The role FILTERS: nobody announced a mic stream, so nothing answers.
+    expect(bob.mesh.announcedRoleStreamIds('mic')).toEqual(new Set());
+  });
+
+  it('stops answering for an identity that left', async () => {
+    const world = makeWorld();
+    const alice = world.add('alice', 'alice', { streamIds: ['a-tab'] });
+    const bob = world.add('bob', 'bob', { streamIds: ['b-1'] });
+
+    alice.mesh.setLocalTrack('share-audio', track('alice-tab-audio', 'audio'));
+    alice.mesh.syncPeers([bob.userId]);
+    bob.mesh.syncPeers([alice.userId]);
+    await world.clock.advance(500);
+    expect(bob.mesh.announcedRoleStreamIds('share-audio')).toEqual(new Set(['a-tab']));
+
+    bob.mesh.syncPeers([]);
+    expect(bob.mesh.announcedRoleStreamIds('share-audio')).toEqual(new Set());
+  });
+});

@@ -32,9 +32,11 @@
 import { MeshManager, TurnCredentialManager } from '@gather/p2p';
 import type {
   IceServerLike,
+  InboundSignal,
   MediaStreamLike,
   MeshConnectionState,
   MeshLinkState,
+  OutboundSignal,
   RtcPeerConnectionLike,
   TrackRole,
 } from '@gather/p2p';
@@ -176,6 +178,162 @@ function declaredRelay(res: unknown): boolean | null {
   return typeof flag === 'boolean' ? flag : null;
 }
 
+/* ── share-audio Opus tuning ──────────────────────────────────────────────────
+ *
+ * A screen share's soundtrack used to cross the mesh as default Opus — the
+ * VOICE tuning: one channel at roughly 32 kbps, enough to hear that a film is
+ * playing and not to hear the film. The extension's share path fixed exactly
+ * this (apps/extension/src/offscreen.ts, preferStereoOpus), but its offscreen
+ * peer connection carries ONLY share audio, so it may tune every audio
+ * m-section it sees. Here the MICROPHONE rides the same SDP, and the mic must
+ * stay voice-tuned: speech wants Opus's mono-plus-inbandfec mode, and a mic
+ * pushed to stereo music settings spends music bitrate per receiver on channel
+ * width a mono capture does not have. So this tuning touches ONLY the
+ * m-sections that carry share audio, and every other section — the mic's
+ * above all — must cross byte-identical.
+ */
+
+/**
+ * Ceiling for the share's SOUNDTRACK (bits per second), written into the Opus
+ * fmtp of the share-audio m-sections. Same figure as the extension share
+ * path: 128 kbps stereo is the usual transparent-enough music setting and
+ * costs a fraction of the video beside it.
+ */
+export const SHARE_AUDIO_MAX_BITRATE = 128_000;
+
+/** Written into every share-audio Opus fmtp. `stereo` is what we can RECEIVE,
+ *  `sprop-stereo` what we SEND; both are stated because one SDP answers the
+ *  other. */
+const OPUS_PARAMS = `stereo=1;sprop-stereo=1;maxaveragebitrate=${String(SHARE_AUDIO_MAX_BITRATE)}`;
+
+/** Ours replace any the far end already stated; everything else is kept. */
+const OPUS_PARAM_NAMES = /^(stereo|sprop-stereo|maxaveragebitrate)=/i;
+
+function withOpusParams(params: string): string {
+  const kept = params
+    .split(';')
+    .map((param) => param.trim())
+    .filter((param) => param.length > 0 && !OPUS_PARAM_NAMES.test(param));
+  return [...kept, OPUS_PARAMS].join(';');
+}
+
+/** One share-audio m-section, with the Opus payload types it declares tuned.
+ *  Ported from the extension's tuneAudioSection, rule for rule — including
+ *  the one that matters most: Opus with no fmtp line at all IS the mono
+ *  default, so the line is added rather than skipped. Non-Opus codecs (red,
+ *  G.711…) keep their lines byte-identical. */
+function tuneAudioSection(lines: readonly string[]): string[] {
+  const opus = new Set<string>();
+  for (const line of lines) {
+    const rtpmap = /^a=rtpmap:(\d+) opus\//i.exec(line);
+    if (rtpmap?.[1] !== undefined) opus.add(rtpmap[1]);
+  }
+  if (opus.size === 0) return [...lines];
+  const out: string[] = [];
+  const tuned = new Set<string>();
+  for (const line of lines) {
+    const fmtp = /^a=fmtp:(\d+) (.*)$/.exec(line);
+    const pt = fmtp?.[1];
+    if (pt === undefined || fmtp?.[2] === undefined || !opus.has(pt)) {
+      out.push(line);
+      continue;
+    }
+    tuned.add(pt);
+    out.push(`a=fmtp:${pt} ${withOpusParams(fmtp[2])}`);
+  }
+  for (const pt of opus) {
+    if (!tuned.has(pt)) out.push(`a=fmtp:${pt} ${OPUS_PARAMS}`);
+  }
+  return out;
+}
+
+/** The stream id an m-section publishes on (`a=msid:<streamId> <trackId>`),
+ *  or null — an answer's recvonly section typically carries none. */
+function msidOf(lines: readonly string[]): string | null {
+  for (const line of lines) {
+    const msid = /^a=msid:(\S+)/.exec(line);
+    if (msid?.[1] !== undefined) return msid[1];
+  }
+  return null;
+}
+
+/** The section's `a=mid` value, or null for SDP too old to carry one. */
+function midOf(lines: readonly string[]): string | null {
+  for (const line of lines) {
+    if (line.startsWith('a=mid:')) return line.slice('a=mid:'.length);
+  }
+  return null;
+}
+
+/** Whether one audio m-section carries SHARE audio: named by an `a=msid`
+ *  whose stream id is known to carry the role, or by a mid an earlier
+ *  description in this same negotiation already established. */
+function isShareAudioSection(
+  lines: readonly string[],
+  shareStreamIds: ReadonlySet<string>,
+  shareMids: ReadonlySet<string>,
+): boolean {
+  const msid = msidOf(lines);
+  if (msid !== null && shareStreamIds.has(msid)) return true;
+  const mid = midOf(lines);
+  return mid !== null && shareMids.has(mid);
+}
+
+/**
+ * Negotiate the SHARE's sound as stereo music, leaving everything else alone.
+ *
+ * `shareStreamIds` is which stream ids carry the 'share-audio' role — ours
+ * when we are the host, the announced ones when a peer is (the mesh's role
+ * announcements are exactly the id→role facts an `a=msid` can be matched
+ * against). A matched section's mid is added to `shareMids`, and a section
+ * whose mid is already there is tuned even without an msid: an ANSWER's
+ * share-audio section is typically recvonly and names no stream, but keeps
+ * the mid its offer established — and the answer cannot be skipped, because
+ * Opus `stereo=1` in a description means "I want to RECEIVE stereo", so the
+ * receiver's answer is the very thing that upgrades the sender's encoder.
+ *
+ * A section matching neither is returned byte for byte — the mic's m-line
+ * must cross untouched — and an SDP in which nothing matched is returned
+ * whole, as-is, so the no-share case cannot even re-join line endings.
+ */
+export function tuneShareAudioSdp(
+  sdp: string,
+  shareStreamIds: ReadonlySet<string>,
+  shareMids: Set<string>,
+): string {
+  const out: string[] = [];
+  let section: string[] = [];
+  let audio = false;
+  let tunedAny = false;
+  const flush = (): void => {
+    if (audio && isShareAudioSection(section, shareStreamIds, shareMids)) {
+      const mid = midOf(section);
+      if (mid !== null) shareMids.add(mid);
+      out.push(...tuneAudioSection(section));
+      tunedAny = true;
+      return;
+    }
+    out.push(...section);
+  };
+  for (const line of sdp.split(/\r?\n/)) {
+    if (line.startsWith('m=')) {
+      flush();
+      section = [];
+      audio = line.startsWith('m=audio ');
+    }
+    section.push(line);
+  }
+  flush();
+  if (!tunedAny) return sdp;
+  // CRLF is what SDP is delimited by and what the browser stacks produce.
+  return out.join('\r\n');
+}
+
+/** Connections whose share-audio mids are remembered at once. ConnectionIds
+ *  churn (every reloaded tab derives new ones), so the memory is bounded;
+ *  oldest out first, because the oldest is the likeliest to be a dead pair. */
+const MAX_TUNED_CONNECTIONS = 64;
+
 /**
  * How long someone keeps receiving our camera and microphone after presence
  * stops calling them 'in-call'.
@@ -259,6 +417,11 @@ export class CallMesh {
    *  real answer ("nobody is on the call"), not the absence of one. */
   private audienceApplied = false;
   private audienceHandle: ReturnType<typeof setTimeout> | null = null;
+  /** Share-audio m-section mids, per connectionId (see tuneShareAudioSdp).
+   *  Per CONNECTION because a mid only means anything inside its own
+   *  negotiation: mid '2' can be share audio on one peer's SDP and the mic on
+   *  another's. Bounded (MAX_TUNED_CONNECTIONS). */
+  private readonly shareAudioMids = new Map<string, Set<string>>();
 
   constructor(
     private readonly conn: RoomConnection,
@@ -306,7 +469,11 @@ export class CallMesh {
       mediaStreamFactory: browserMediaStreamFactory,
 
       send: (event) => {
-        conn.rawSocket.send(event.type, event.payload);
+        // The share's soundtrack is negotiated as stereo music at this
+        // boundary — the same one the extension munges — so the negotiator
+        // above never holds a description this layer did not also see.
+        const tuned = this.tuneOutbound(event);
+        conn.rawSocket.send(tuned.type, tuned.payload);
       },
       getIceServers: () => this.turn.iceServers(),
       now: () => Date.now(),
@@ -375,7 +542,11 @@ export class CallMesh {
     for (const type of ['webrtc.offer', 'webrtc.answer', 'webrtc.ice'] as const) {
       this.unsubscribers.push(
         this.conn.on(type, (ev) => {
-          this.mesh.handleSignal(ev);
+          // Inbound descriptions are tuned BEFORE the mesh applies them: the
+          // description this side APPLIES is what configures its own encoder,
+          // so an inbound answer that never mentioned stereo would leave our
+          // share encoder in mono however our offer read.
+          this.mesh.handleSignal(this.tuneInbound(ev));
         }),
       );
     }
@@ -719,9 +890,68 @@ export class CallMesh {
     this.pendingNotes.clear();
     this.publishing.clear();
     this.leftCallAt.clear();
+    this.shareAudioMids.clear();
   }
 
   // ---------- internals ----------
+
+  /**
+   * Tune one outbound signalling event for share audio; ICE carries no SDP
+   * and passes through untouched. BOTH directions cross this pair of
+   * wrappers, deliberately: the description we SEND is what asks the far
+   * encoder for stereo (Opus `stereo=1` means "I want to RECEIVE stereo" —
+   * the receiver's description configures the sender), and the description we
+   * APPLY is what the browser reads to configure our own.
+   */
+  private tuneOutbound(event: OutboundSignal): OutboundSignal {
+    if (event.type === 'webrtc.ice') return event;
+    return {
+      ...event,
+      payload: {
+        ...event.payload,
+        sdp: this.tuneSdp(event.payload.connectionId, event.payload.sdp),
+      },
+    };
+  }
+
+  /** The inbound half of {@link tuneOutbound}. */
+  private tuneInbound(event: InboundSignal): InboundSignal {
+    if (event.type === 'webrtc.ice') return event;
+    return {
+      ...event,
+      payload: {
+        ...event.payload,
+        sdp: this.tuneSdp(event.payload.connectionId, event.payload.sdp),
+      },
+    };
+  }
+
+  /** One description's SDP, tuned. The share-audio stream ids are read fresh
+   *  from the mesh each time — ours when this side hosts, the announced ones
+   *  when a peer does — and the mids matched under this connectionId are
+   *  remembered so the msid-less answer keeps what its offer established. */
+  private tuneSdp(connectionId: string, sdp: string): string {
+    const ids = this.mesh.announcedRoleStreamIds('share-audio');
+    const local = this.mesh.localRoleStreamId('share-audio');
+    if (local !== null) ids.add(local);
+    const held = this.shareAudioMids.get(connectionId);
+    // Nothing to look for and nothing remembered: the common no-share case,
+    // and every hello/role-announcement frame (sdp '') — untouched.
+    if (ids.size === 0 && held === undefined) return sdp;
+    const mids = held ?? new Set<string>();
+    const tuned = tuneShareAudioSdp(sdp, ids, mids);
+    // Only a connection that actually carries share audio earns an entry, so
+    // hello ids and share-less peers cannot grow the map.
+    if (held === undefined && mids.size > 0) {
+      this.shareAudioMids.set(connectionId, mids);
+      while (this.shareAudioMids.size > MAX_TUNED_CONNECTIONS) {
+        const oldest = this.shareAudioMids.keys().next();
+        if (oldest.done === true) break;
+        this.shareAudioMids.delete(oldest.value);
+      }
+    }
+    return tuned;
+  }
 
   /**
    * Record what a credential answer says about a relay.

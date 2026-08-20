@@ -1313,6 +1313,37 @@ export class MeshManager {
     return null;
   }
 
+  /**
+   * The stream id THIS mesh publishes `role` on, or null when none is minted —
+   * the role has never published, no factory was injected, or the factory
+   * could not produce a usable stream. A pure read on purpose: minting stays
+   * in {@link roleStream}, so asking about a role never claims a stream id
+   * for one that does not publish.
+   *
+   * This is the sender-side half of what lets an SDP layer find a role's
+   * m-section: the id answered here is the one that rides in `a=msid`.
+   */
+  localRoleStreamId(role: TrackRole): string | null {
+    return this.roleStreams.get(role)?.id ?? null;
+  }
+
+  /**
+   * Every stream id remote identities have announced for `role`, across
+   * identities — the receiver-side complement of {@link localRoleStreamId}.
+   * A snapshot, not a live view: announcements arrive and are forgotten
+   * (departures, a flooding peer's own budget), so callers read fresh rather
+   * than hold one.
+   */
+  announcedRoleStreamIds(role: TrackRole): Set<string> {
+    const out = new Set<string>();
+    for (const byStream of this.announcedRoles.values()) {
+      for (const [streamId, announced] of byStream) {
+        if (announced === role) out.add(streamId);
+      }
+    }
+    return out;
+  }
+
   /** Bring the connections we hold to one identity in line with how we address
    *  them: one per announced endpoint, or one person-level connection. Adds
    *  before it removes, so a person never momentarily reads as gone. */
