@@ -339,5 +339,43 @@ export function stampManifest(
     ...manifest,
     ...(target.mode === 'prod' ? {} : { name: `${name} (DEV)` }),
     version_name: `${version} — ${target.mode} — ${target.apiUrl}`,
+    host_permissions: stampedHostPermissions(manifest, target),
   };
+}
+
+/**
+ * The ONE host permission every artifact must carry: its own API origin.
+ *
+ * An extension bypasses CORS only for origins it holds host permissions on.
+ * When the manifest went to zero host access (store narrowing), the worker's
+ * `fetch` to the API started carrying a chrome-extension:// Origin the API's
+ * CORS allowlist does not admit — the preflight came back with no
+ * access-control-allow-origin and EVERY call failed as "Failed to fetch":
+ * join, members, room, events. The suite could not see it (fetches are
+ * faked; nothing executes the bundle in a real browser), so the grant is
+ * stamped here, derived from the SAME baked-in origin the calls use — the
+ * two cannot drift apart. Source manifest entries, if any ever appear, are
+ * kept and deduped.
+ */
+function stampedHostPermissions(
+  manifest: Record<string, unknown>,
+  target: BuildTarget,
+): string[] {
+  const existing = Array.isArray(manifest['host_permissions'])
+    ? manifest['host_permissions'].filter((p): p is string => typeof p === 'string')
+    : [];
+  // Match patterns have NO port component — a pattern carrying one is
+  // invalid to Chrome, which would reject the dev artifact's
+  // "http://localhost:4000/*" outright. A portless pattern matches every
+  // port, so the hostname alone is both valid and sufficient.
+  let apiPattern: string[] = [];
+  try {
+    const parsed = new URL(target.apiUrl);
+    apiPattern = [`${parsed.protocol}//${parsed.hostname}/*`];
+  } catch {
+    // resolveBuildTarget already refused an unparseable API URL; belt over
+    // braces so a unit caller with a broken target still gets the source
+    // list back instead of a broken pattern.
+  }
+  return [...new Set([...existing, ...apiPattern])];
 }

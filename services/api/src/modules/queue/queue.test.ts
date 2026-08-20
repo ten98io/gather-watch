@@ -234,6 +234,74 @@ describe('QueueService.add metadata', () => {
     expect(emitted[1]?.type).toBe('queue.state');
   });
 
+  it('a deliberate user title survives resolution; artwork and duration still fill', async () => {
+    const room = makeRoom([]);
+    const { deps } = await makeDeps(room, ['A']);
+    registerMetadataResolver(deps, { resolve: async () => resolved() });
+    const service = new QueueService(deps);
+
+    // Not derivable from the ref: no client computes this, a person wrote it.
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: 'movie night pick #3',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    await service.settleEnrichment();
+
+    expect(room.queue.items[0]?.title).toBe('movie night pick #3');
+    // The fields nobody types are still the resolver's to fill.
+    expect(room.queue.items[0]?.durationMs).toBe(213_000);
+    expect(room.queue.items[0]?.artworkUrl).toBe(
+      'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    );
+  });
+
+  it("replaces the mobile client's 'YouTube · <id>' hint like any placeholder", async () => {
+    const room = makeRoom([]);
+    const { deps } = await makeDeps(room, ['A']);
+    registerMetadataResolver(deps, { resolve: async () => resolved() });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: YT_REF,
+      title: 'YouTube · dQw4w9WgXcQ',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    await service.settleEnrichment();
+
+    expect(room.queue.items[0]?.title).toBe('Rick Astley - Never Gonna Give You Up');
+  });
+
+  it("replaces the web's '<provider> track' hints — 'SoundCloud track' and 'YouTube Music track'", async () => {
+    // Both literals shipped un-matched at first and two providers' resolved
+    // titles were silently discarded; the arms are generated per name now.
+    const room = makeRoom([]);
+    const { deps } = await makeDeps(room, ['A']);
+    registerMetadataResolver(deps, {
+      resolve: async () => ({ ...resolved(), title: 'The Real Track Name' }),
+    });
+    const service = new QueueService(deps);
+
+    await service.add(rid, uid('A'), {
+      mediaRef: { kind: 'soundcloud', url: 'https://soundcloud.com/artist/track' },
+      title: 'SoundCloud track',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    await service.add(rid, uid('A'), {
+      mediaRef: { kind: 'youtube', videoId: 'dQw4w9WgXcQ', music: true },
+      title: 'YouTube Music track',
+      durationMs: null,
+      artworkUrl: null,
+    });
+    await service.settleEnrichment();
+
+    expect(room.queue.items[0]?.title).toBe('The Real Track Name');
+    expect(room.queue.items[1]?.title).toBe('The Real Track Name');
+  });
+
   it('sanitizes the client hint before it is ever stored', async () => {
     const room = makeRoom([]);
     const { deps } = await makeDeps(room, ['A']);

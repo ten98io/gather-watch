@@ -22,15 +22,27 @@ import type { DataChannelLike } from './types';
  * it per link cost a channel on every call and told a reader that emotes were
  * peer-to-peer.
  *
- * The two that remain both have named consumers and a recorded plan, so they
- * stay negotiated even though neither carries traffic today: `'sync'` for the
- * beacon pipeline and `'file'` for chunked file transfer. Both are listed in
- * HANDOFF's orphan inventory.
+ * The two that remain stay negotiated even though neither carries traffic
+ * today: `'file'` has a named consumer (fileshare.ts, ruled Go for 2.4), and
+ * `'sync'` is the wire slot a future beacon transport would use — the
+ * BeaconSender/BeaconFollower machinery itself was deleted with the master
+ * clock (owner-authorized orphan cleanup), leaving only the SyncBeacon frame
+ * and BeaconState shape below.
  */
 export type ChannelLabel = 'sync' | 'file';
 
 /** Fixed pre-negotiated DataChannel ids per label (both peers create the same id). */
 export const CHANNEL_IDS: Record<ChannelLabel, number> = { sync: 0, file: 1 };
+
+/** Playback snapshot a beacon carries (position/rate/playing, no clock).
+ *  The BeaconSender/BeaconFollower machinery was deleted with the master
+ *  clock; this shape survives only because apps/mobile's SyncTransport seam
+ *  type pins it for the future p2p transport arm. */
+export interface BeaconState {
+  positionMs: number;
+  rate: number;
+  playing: boolean;
+}
 
 /** Master-clock beacon broadcast at 1 Hz + on every mutation. */
 export interface SyncBeacon {

@@ -69,8 +69,9 @@ The ones that matter first:
 
 `CF_SFU_APP_ID` / `CF_SFU_API_TOKEN` parse into the config and are read by
 nothing else — the Realtime SFU client lane is not built, so setting them
-changes no behaviour. Same for `ENABLE_MEDIA_PIPELINE`: it survives as a flag
-the admin overview reports, and there is no pipeline left for it to enable.
+changes no behaviour. `ENABLE_MEDIA_PIPELINE` is gone entirely: the config no
+longer parses it, and the admin overview reports the pipeline as absent
+unconditionally, so setting the variable does nothing.
 
 Deploying: see [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.md). Both Railway
 services are repo-connected to GitHub, so **pushing to `main` is the deploy** —

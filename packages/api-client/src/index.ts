@@ -23,5 +23,3 @@ export { RestClient } from './rest';
 export type { RestClientOptions } from './rest';
 export { RoomSocket } from './ws';
 export type { ConnectOptions, ReplayFetch, RoomSocketOptions, SocketStatus } from './ws';
-export { ChunkedUploader, UploadError } from './upload';
-export type { ChunkedUploaderOptions, UploadProgress, UploadSource } from './upload';

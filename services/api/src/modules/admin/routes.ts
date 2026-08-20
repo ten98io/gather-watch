@@ -72,7 +72,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         bus: deps.config.redisUrl === null ? 'memory' : 'redis',
       },
       features: {
-        mediaPipeline: deps.config.enableMediaPipeline,
+        // ENABLE_MEDIA_PIPELINE was removed from config (no pipeline exists to
+        // enable; config-media-pipeline.test.ts pins the absence). The wire
+        // field is pinned false rather than dropped because the contracts
+        // AdminOverviewResponse schema still requires it and the web admin
+        // console renders it — both outside this cleanup's scope.
+        mediaPipeline: false,
         gifs: deps.config.tenorApiKey !== null,
         push: deps.config.vapid.publicKey !== null,
       },

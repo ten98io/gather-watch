@@ -24,8 +24,10 @@
 > - The extension manifest carries real icons (16/32/48/128, generated from
 >   the product mark by `apps/extension/scripts/gen-icons.mjs`) and version
 >   1.0.0, and its permission profile is narrowed for store review
->   (`docs/FEATURE_PLAN.md` 3.2): no install-time host permissions —
->   activeTab + runtime grants instead.
+>   (`docs/FEATURE_PLAN.md` 3.2): the only install-time host permission is
+>   Gather's own API origin (stamped at build — it is what exempts the
+>   worker's API calls from CORS); every SITE is an activeTab or runtime
+>   grant.
 >
 > The deletions remain gated on the original ordering rule — **a real room, a
 > real site, the installed extension, playback verified end to end** — which
@@ -71,7 +73,9 @@ A half-executed migration leaves the product unable to play anything.
   the web-side playback adapters. Note the directory also holds
   `advance.ts`, `ducking.ts`, `extension-driver.ts`, `room-audio.ts` and
   `useSyncEngine.ts`, and **none of those five go** — they are the room, not
-  the player.
+  the player. (Two more files have joined them since this list was written:
+  `live.ts` and `share-audio.ts`; step 4's executor decides their fate against
+  the same rule — room infrastructure stays, player/capture code goes.)
 - The `getDisplayMedia` path in
   `apps/web/components/stage/ScreenShareStage.tsx` (web screen-share),
   replaced by the extension's `desktopCapture`.
@@ -174,7 +178,8 @@ the same day):
   variable through.
 - ~~`apps/extension/public/manifest.json` will need `desktopCapture`~~ —
   done in step 1 (`manifest.json` `permissions` carries it, alongside
-  `tabCapture`, `offscreen`, `storage`, `activeTab`, `scripting`, `alarms`).
+  `tabCapture`, `offscreen`, `storage`, `activeTab`, `scripting`, `alarms` —
+  and, added later for the default-search-engine affordance, `search`).
 - ~~Docs describe a paid tier, a media service, LiveKit or a 4-hour room
   TTL~~ — swept 2026-08-18. One tier, no `services/media`, mesh + Cloudflare
   TURN, `expiresAt: null` forever.

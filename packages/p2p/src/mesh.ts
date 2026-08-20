@@ -379,7 +379,7 @@ function foldLink(seen: MeshLinkState | undefined, next: MeshLinkState): MeshLin
  * per-peer states, and link stats to the app layer.
  */
 export class MeshManager {
-  /** The typed DataChannel fabric shared by beacon/fileshare/emote layers. */
+  /** The typed DataChannel fabric shared by the sync/file channel consumers. */
   readonly fabric: ChannelFabric;
 
   private readonly roomId: RoomId;
@@ -1378,7 +1378,7 @@ export class MeshManager {
     // devices. Both build the channels — they cost one SCTP stream and are what
     // makes `negotiationneeded` fire on a link with no media — but only one is
     // ATTACHED, or the second would close the first's channels out from under
-    // the beacon and file layers. The rest stand by (see `promoteFabric`).
+    // the sync and file consumers. The rest stand by (see `promoteFabric`).
     const ownsFabric = fabricLink && this.fabricOwnerOf(peerId) === undefined;
     try {
       // An empty list here does NOT mean "no ice servers wanted": callers start

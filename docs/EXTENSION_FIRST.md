@@ -277,17 +277,17 @@ tree (2026-08-17) except item 6:
    `chrome.storage.session`; alarms keep-alive re-arms the drive timer.
 5. ~~No Shadow DOM traversal / SPA handling~~ — shadow-root traversal in
    `content.ts`, SPA navigation watch in `spaWatch.ts`.
-6. **Still open:** the provider registry is written down **three** times —
-   `apps/web/lib/providers.ts`, `apps/extension/src/providers.ts`, and the
-   `embed` provider enum in `packages/contracts/src/entities.ts`. The two
-   registries have since converged on the same 17 ids plus a `generic`
-   fallback and the same `capability` vocabulary (`full-sync | approximate |
-   extension | generic`); the extension's is the superset, carrying host
-   regexes, DRM flags, cast descriptors and a derived `tier`
-   (`api | drm | generic`, from `tierFor()`). So the *vocabularies* no longer
-   diverge — the duplication does, and adding a service still means editing
-   more than one place. Unification is `docs/WEB_SLIMMING.md` step 5, gated
-   with the deletions.
+6. ~~The provider registry is written down **three** times~~ — **resolved
+   2026-08-20, ahead of `docs/WEB_SLIMMING.md` step 5.** The registry now has
+   ONE copy: `packages/contracts/src/providers.ts` (the superset — hostname
+   matchers, DRM flags, cast descriptors, per-provider `grantPatterns` for the
+   extension's runtime permission requests, and the derived `tier` via
+   `tierFor()`). `apps/extension/src/providers.ts` is a re-export plus
+   URL-parsing wrappers (contracts is environment-free and matches hostnames
+   only); `apps/web/lib/providers.ts` derives its rows from it; and the
+   `embed` provider enum in `packages/contracts/src/entities.ts` is welded to
+   the registry by test (`packages/contracts/test/providers-registry.test.ts`).
+   A service is added in one place.
 
 ---
 
@@ -297,11 +297,13 @@ tree (2026-08-17) except item 6:
 > *"share my screen actually just starts Mode B, not casting."*
 
 The second point is correct and was a naming bug: **Share screen** starts a
-Mode B re-stream *to room members*. It has nothing to do with sending video
-to a TV. The copy now says so — the dialog is titled "Share your screen with
-the room" (`apps/web/components/stage/ScreenShareStage.tsx`) — and casting is
-a separate, always-visible control. Getting a share onto an actual TV is
-`docs/CAST_RELAY.md`, and it is a different mechanism entirely.
+screen-share re-stream *to room members*. (The quote's "Mode B" was the
+internal name for the screen share, as "Mode A" was for synced-source
+playback; older code comments still use both.) It has nothing to do with
+sending video to a TV. The copy now says so — the dialog is titled "Share
+your screen with the room" (`apps/web/components/stage/ScreenShareStage.tsx`)
+— and casting is a separate, always-visible control. Getting a share onto an
+actual TV is `docs/CAST_RELAY.md`, and it is a different mechanism entirely.
 
 The first point runs into a hard limit that no amount of engineering removes:
 
@@ -311,7 +313,8 @@ The first point runs into a hard limit that no amount of engineering removes:
   silently vanish for YouTube, embeds and DRM.
 - **DRM content cannot be cast by a third party.** Widevine/FairPlay licences
   are bound to the playback session; output protection blacks out mirrored or
-  captured protected surfaces by design. This is the same wall as Mode B.
+  captured protected surfaces by design. This is the same wall the screen
+  share hits.
 - **What *is* achievable**: on sites that have their own cast button
   (YouTube, Netflix, Spotify), the extension can *click that button on the
   user's behalf*. Casting then happens inside the site's own DRM-legal path.

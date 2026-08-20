@@ -6,13 +6,13 @@ no client-side mechanism exists at all, and then only when verified arithmetic
 justifies it. "Defer" and "cut" are legitimate verdicts below, and one of them
 is used.
 
-Scope: this doc decides how the host's **screen share** — internally "Mode B",
-one member's tab/screen re-streamed to the room over the mesh — becomes
+Scope: this doc decides how the host's **screen share** — one member's
+tab/screen re-streamed to the room over the mesh — becomes
 watchable on a TV. Everything else already has its answer: an item that is a
 **real fetchable URL** (a direct `{ kind: 'url' }` or `{ kind: 'hls' }`
 MediaRef) casts device-native today, because the page has a real
 `HTMLMediaElement` for the picker to act on — Default Media Receiver /
-AirPlay via `apps/web/lib/cast.ts`. Synced-source provider content ("Mode A")
+AirPlay via `apps/web/lib/cast.ts`. Synced-source provider content
 casts through the site's own button, which the extension clicks. Provider/DRM
 relay is permanently out of scope (ToS + output protection;
 docs/EXTENSION_FIRST.md Part 3).

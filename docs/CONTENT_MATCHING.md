@@ -9,9 +9,9 @@ ID, a different cut, or different ad load. This doc fixes the design stance.
 **We never move the content — we move the clock.** Every member plays their
 *own* licensed copy, through their *own* authenticated session, from their
 *own* region's CDN, with their *own* DRM license. The room synchronizes only
-the control plane: play/pause/seek/position. This is exactly what Mode A + the
-extension already implement, and it is the same model Teleparty/Prime Watch
-Party use. DRM is never decrypted, proxied, re-streamed, or region-spoofed —
+the control plane: play/pause/seek/position. This is exactly what
+synced-source playback + the extension already implement, and it is the same
+model Teleparty/Prime Watch Party use. DRM is never decrypted, proxied, re-streamed, or region-spoofed —
 that line is legal (DMCA §1201 / EU InfoSoc art. 6), contractual (every
 platform ToS), and technical (EME/CDM output protection blacks out any capture
 of a protected surface).
@@ -59,7 +59,7 @@ playable item for each member — plus a **readiness handshake**.
 5. **Graceful non-participation.** No playable equivalent → the member stays
    fully in the room (call, chat, reactions, queue) and sees the room
    backdrop with "Not available in your region on <platform>" — never a
-   broken player, never a re-stream of a protected surface. (Mode B
+   broken player, never a re-stream of a protected surface. (Screen-share
    re-streaming stays non-DRM-only by design.)
 
 ## Readiness handshake (pre-play, room-visible)
@@ -76,9 +76,9 @@ local equivalent's timeline.
   exclude time-sync rather than silently drift. Percentage-based sync is
   wrong (credits/edit offsets) — do not use it.
 - **Ad-supported tiers**: ad breaks freeze one member's timeline. The member
-  client signals `adBreak` (detectable in Mode A: player state without
-  position progress); the room either pauses everyone (default, small rooms)
-  or lets others continue and hard-reseeks the member after the break.
+  client signals `adBreak` (detectable in synced-source playback: player state
+  without position progress); the room either pauses everyone (default, small
+  rooms) or lets others continue and hard-reseeks the member after the break.
 - **What we will not build**: VPN/geo-spoofing, license proxying, stream
   ripping, capture of EME surfaces. Any of these would also poison the
   legitimate 95% of the product. **VPN is not a fallback for Rung 2 "no" —
@@ -103,14 +103,55 @@ The `{ kind: 'page', url }` path renders an honest stage panel telling the user
 what is needed (the extension) rather than a broken player. That is the extent
 of first-class support for the long tail.
 
+## Owner direction — recorded 2026-08-20
+
+The owner restated the vision in their own words and it confirms this doc's
+stance rather than changing it: *a viewer in a different region who doesn't
+have the content on the same platform should be helped to find the same
+content in their region on a different site — using the person's default
+search engine — or the user finds the content themselves, the extension
+detects the player, and syncs it. We never violate DRM-protected site policy
+or stream the content; we only sync it in real time.*
+
+Mapping, agreed:
+
+- **"User finds it, extension syncs it" already works.** There is
+  deliberately no URL-match gate on the driven tab: the room queues one
+  link, a member opens their *own* copy on any site, and the extension
+  drives whatever player is in front of them against the room clock.
+  Different cuts sit at a fixed offset the learned anchor absorbs;
+  interstitial ads are vetoed rather than fought (2026-08-20). The missing
+  polish is this doc's readiness handshake.
+- **"Find it in their region via their default search engine"** gets a
+  concrete mechanism: `chrome.search.query()` (MV3, `search` permission)
+  runs a query through the user's ACTUAL default engine in a new tab, on a
+  user gesture. The affordance is a **"Find it where you are"** button in
+  the extension (popup first): one click → their engine opens with
+  `<title> (<year>) watch` → they pick the site their region has → the
+  extension adopts that tab and syncs it. User-initiated only — the
+  extension never navigates for anyone (external.ts doctrine), and no URL
+  is ever taken from a page or a peer.
+- **Prerequisite:** knowing the title. **DONE 2026-08-20** — queue inserts
+  background-enrich through the same resolver behind `POST /media/resolve`
+  (FEATURE_PLAN 0.6): real titles past the placeholder guard, artwork, and
+  durations that turn the server's advance guard from pricing into
+  verifying. Budgeted per user to the REST tier; the adder's own duration
+  hint is discarded (it was a lever on the guard).
+- **Build order:** ~~0.6 resolution on insert~~ → ~~the search button~~
+  (both shipped 2026-08-20; the popup's "Find it where you are" asks the
+  user's default engine via `chrome.search.query`) → the readiness
+  handshake (`canPlay | fallbackMatched | unavailable`) → external-ID
+  enrichment + rung-4 cross-platform offers.
+
 ## Status
 
-**Implemented today**: per-member local playback (web Mode A adapters +
+**Implemented today**: per-member local playback (web synced-source adapters +
 the extension driver, which is preferred whenever it is installed), paused
-backdrop, elastic drift-corrected sync, non-DRM-only Mode B. A `MediaRef` is
-already an identity rather than a bare URL for the provider tiers that have one
-(`youtube` videoId, `vimeo` videoId, `embed` provider + url) — the long tail
-falls back to `{ kind: 'page', url }`, which is a URL and nothing more.
+backdrop, elastic drift-corrected sync, non-DRM-only screen share. A
+`MediaRef` is already an identity rather than a bare URL for the provider
+tiers that have one (`youtube` videoId, `vimeo` videoId, `embed` provider +
+url) — the long tail falls back to `{ kind: 'page', url }`, which is a URL
+and nothing more.
 
 **Rung 1 is half-built; rungs 2–4 are not built at all.**
 

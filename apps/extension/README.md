@@ -56,6 +56,13 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
   `docs/EXTENSION_FIRST.md` calls this "Model C" and defines it as injecting
   Gather's **chat/call/queue** UI: three of those four are here, **the call is
   not** (see *Honest limits* — there is no voice in the extension yet).
+- **Find it where you are**: a member whose region can't play the queued item
+  where it was queued gets a popup button that asks **their own default search
+  engine** for the current item's title (`chrome.search.query`, new tab, on
+  the click's own gesture); the user picks whichever site their region has,
+  and the extension adopts that tab and syncs their copy from there. Gather
+  never navigates for anyone and never proxies content — the user's engine,
+  the user's pick, the user's own account on the site they land on.
 - **Cast**: on sites with their own cast control (YouTube, YouTube Music,
   Spotify Connect) the extension presses **that** button for you, so casting
   happens inside the site's own licensed session. Where a site has no such
@@ -189,13 +196,20 @@ into a real profile — by Chrome's design, not an oversight.
 
 ## Permissions, and why each one
 
-**The install grants no host access at all** (FEATURE_PLAN 3.2 — narrowed
-before any store submission). `permissions`: `tabCapture` + `desktopCapture` +
-`offscreen` (Mode B), `storage` (session state survives service-worker death),
-`activeTab` + `scripting` (reach the tab you are on), `alarms` (keepalive).
-`optional_host_permissions: ["<all_urls>"]` — every SITE is a runtime grant
-the user makes, never an install-time demand. No `cookies` permission — the
-extension never reads one.
+**The install grants no host access beyond Gather's own API origin**
+(FEATURE_PLAN 3.2 — narrowed before any store submission). The build stamps
+exactly ONE host permission, the baked-in API origin (`stampManifest` in
+`src/buildTarget.ts`): an extension bypasses CORS only for origins it holds,
+and with zero host access every worker call to the API — join, members,
+room, events — died in preflight as "Failed to fetch", in the real browser
+only, because the suite fakes fetch. `permissions`: `tabCapture` +
+`desktopCapture` + `offscreen` (Mode B), `storage` (session state survives
+service-worker death), `activeTab` + `scripting` (reach the tab you are on),
+`alarms` (keepalive), `search` (the "find it where you are" button asks the
+user's own default engine for the current item's title — never a
+Gather-chosen destination). `optional_host_permissions: ["<all_urls>"]` —
+every SITE is a runtime grant the user makes, never an install-time demand.
+No `cookies` permission — the extension never reads one.
 
 Content pages are reached three ways, in order of durability:
 

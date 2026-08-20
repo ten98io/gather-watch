@@ -38,9 +38,9 @@ import type { Deps } from '../types';
 import {
   getMetadataResolver,
   sanitizeArtworkUrl,
-  sanitizeDurationMs,
   sanitizeTitle,
 } from '../metadata/resolver';
+import { describeMediaRef } from '../metadata/providers';
 import { policyAllows } from '../sync/policy';
 import { recordPlayback } from '../rooms/history';
 import { getRoomsRuntime } from '../rooms/runtime';
@@ -164,6 +164,21 @@ export class QueueService {
   /** In-flight background enrichments; awaited by tests via settleEnrichment. */
   private readonly enriching = new Set<Promise<void>>();
 
+  /**
+   * Per-user budget on enrichment lookups, mirroring the REST tier on
+   * POST /media/resolve (20/min) — it is the IDENTICAL outbound operation,
+   * and the WS door had no budget at all: one socket alternating queue.add /
+   * queue.remove could drive ~15 outbound fetches per second at
+   * attacker-chosen URLs, 45x the ceiling the REST surface deliberately
+   * imposes. Over budget the INSERT still lands — the row just stays
+   * unresolved, exactly as if the lookup had failed. The concurrent cap
+   * bounds sockets a slow third-party host could otherwise hold open.
+   */
+  private static readonly ENRICH_PER_WINDOW = 20;
+  private static readonly ENRICH_WINDOW_MS = 60_000;
+  private static readonly ENRICH_MAX_CONCURRENT = 8;
+  private readonly enrichStartedAt = new Map<string, number[]>();
+
   constructor(private readonly deps: Deps) {}
 
   /** Append a track to the shared queue (policy-gated). Returns as soon as
@@ -179,10 +194,18 @@ export class QueueService {
       id: newId() as QueueItemId,
       mediaRef: input.mediaRef,
       // Client-supplied display data is never trusted verbatim: a title that
-      // is only whitespace/control characters, an http (mixed-content) or
-      // unparseable artwork URL, or an absurd duration is dropped here.
+      // is only whitespace/control characters or an http (mixed-content) /
+      // unparseable artwork URL is dropped here. The duration is DISCARDED
+      // outright, not sanitized: the advance guard VERIFIES endings against
+      // this number, resolution only fills it for providers whose oEmbed
+      // carries one, and a member-chosen 30s on a ten-minute video would both
+      // block every honest sync.duration correction (fill-once refuses
+      // non-null) and let the adder end the track for the whole room at a
+      // price they picked. Every product client sends null anyway — only a
+      // raw WS client can even try. Durations come from the resolver or from
+      // players, never from the add.
       title: sanitizeTitle(input.title) ?? 'Untitled',
-      durationMs: sanitizeDurationMs(input.durationMs),
+      durationMs: null,
       artworkUrl: sanitizeArtworkUrl(input.artworkUrl),
       addedBy: userId,
       votesToSkip: [],
@@ -194,12 +217,16 @@ export class QueueService {
       assertQueueHasRoom(current.queue.items);
       return queueReducer(this.stateOf(current), { type: 'add', item });
     });
-    this.enrichInBackground(roomId, item);
+    this.enrichInBackground(roomId, userId, item);
   }
 
   /** Resolve the item's real metadata off the critical path and patch it in.
    *  Fire-and-forget: the WS handler never waits on a third-party service. */
-  private enrichInBackground(roomId: RoomId, item: QueueItem): void {
+  private enrichInBackground(roomId: RoomId, userId: UserId, item: QueueItem): void {
+    if (!this.enrichAdmitted(userId)) {
+      this.deps.log.debug({ roomId, itemId: item.id, userId }, 'queue enrich skipped: over budget');
+      return;
+    }
     const task = this.enrich(roomId, item)
       .catch((err: unknown) => {
         this.deps.log.debug({ err, roomId, itemId: item.id }, 'queue metadata enrich failed');
@@ -208,6 +235,25 @@ export class QueueService {
         this.enriching.delete(task);
       });
     this.enriching.add(task);
+  }
+
+  /** The budget check — see the constants above. Prunes as it reads, so the
+   *  map never outgrows the set of users active in the last window. */
+  private enrichAdmitted(userId: UserId): boolean {
+    if (this.enriching.size >= QueueService.ENRICH_MAX_CONCURRENT) {
+      return false;
+    }
+    const now = Date.now();
+    const floor = now - QueueService.ENRICH_WINDOW_MS;
+    const recent = (this.enrichStartedAt.get(userId) ?? []).filter((at) => at > floor);
+    if (recent.length >= QueueService.ENRICH_PER_WINDOW) {
+      if (recent.length > 0) this.enrichStartedAt.set(userId, recent);
+      else this.enrichStartedAt.delete(userId);
+      return false;
+    }
+    recent.push(now);
+    this.enrichStartedAt.set(userId, recent);
+    return true;
   }
 
   /** Await every background enrichment started so far (tests only). */
@@ -237,9 +283,19 @@ export class QueueService {
       if (row === undefined) {
         return null;
       }
-      // Resolved values win over the client's hint; anything the lookup could
-      // not determine leaves the stored value alone.
-      const title = resolved.title ?? row.title;
+      // Resolved values fill what the client could not know; anything the
+      // lookup could not determine leaves the stored value alone. The TITLE is
+      // the one field a person may have written on purpose, so it is only
+      // replaced when the stored one is a placeholder — a restatement of the
+      // link (see isPlaceholderTitle). durationMs and artworkUrl have no
+      // deliberate-authorship path (every product caller sends null), and for
+      // durationMs the resolved number must win over any client-sent hint:
+      // the advance guard verifies endings against it, and letting an add's
+      // own claim stand would hand the adder a lever on that guard.
+      const title =
+        resolved.title !== null && isPlaceholderTitle(row.title, row.mediaRef)
+          ? resolved.title
+          : row.title;
       const artworkUrl = resolved.artworkUrl ?? row.artworkUrl;
       const durationMs = resolved.durationMs ?? row.durationMs;
       if (row.title === title && row.artworkUrl === artworkUrl && row.durationMs === durationMs) {
@@ -580,6 +636,92 @@ export class QueueService {
     }
     return true;
   }
+}
+
+/** The URL a MediaRef carries, when it carries one — the string clients
+ *  derive their title hints from. youtube/vimeo refs carry only an id. */
+function refUrl(ref: MediaRef): string | null {
+  switch (ref.kind) {
+    case 'url':
+    case 'soundcloud':
+    case 'hls':
+    case 'page':
+      return ref.url;
+    case 'embed':
+      return ref.embedUrl;
+    case 'youtube':
+    case 'vimeo':
+      return null;
+  }
+}
+
+/**
+ * Is this stored title merely a RESTATEMENT OF THE LINK — something a client
+ * computed from the mediaRef with no human input? Only such titles may be
+ * replaced by a resolved one: a title a person typed deliberately is theirs.
+ *
+ * The rule is exact because the set of hints is: no product surface offers a
+ * title field on add, so everything callers send is URL-derived —
+ *   • web (QueuePane): the provider's display name ('Netflix'), a bare
+ *     hostname ('blog.example.com'), or the '<provider> video' / '<provider>
+ *     track' literals it mints per kind — 'YouTube video', 'SoundCloud
+ *     track', 'YouTube Music track', 'Vimeo video' — plus 'Shared media';
+ *   • mobile (Queue): 'YouTube · <videoId>' or the URL's last path segment;
+ *   • this service's own default: 'Untitled'.
+ * Each bullet has a matching arm below; matching is case-insensitive on the
+ * sanitized title. Anything else is treated as deliberate and kept — the
+ * conservative direction, since a kept hint costs a stale row title while a
+ * stomped human title cannot be recovered. (The 'SoundCloud track' and
+ * 'YouTube Music track' arms were missing at first, and both providers'
+ * resolved titles were silently discarded — the review caught it, so the
+ * arms are now generated per name, never hand-enumerated.)
+ */
+export function isPlaceholderTitle(title: string, mediaRef: MediaRef): boolean {
+  const t = title.trim().toLowerCase();
+  if (t === 'untitled' || t === 'shared media') {
+    return true;
+  }
+  const d = describeMediaRef(mediaRef);
+  // Provider names this ref can honestly go by: the descriptor's, plus the
+  // music-flagged youtube ref's own product name, which the descriptor
+  // flattens to 'YouTube'.
+  const names = [d.name];
+  if (mediaRef.kind === 'youtube' && mediaRef.music === true) {
+    names.push('YouTube Music');
+  }
+  // Per name: the name itself and the web's '<name> video' / '<name> track'
+  // generics; plus the descriptor's own link-derived fallback (a direct
+  // link's filename).
+  const candidates: Array<string | null> = [d.fallbackTitle];
+  for (const name of names) {
+    candidates.push(name, `${name} video`, `${name} track`);
+  }
+  const url = refUrl(mediaRef);
+  if (url !== null) {
+    // The raw URL, its hostname, and its last path segment — both the parsed
+    // form (no query) and the raw split the mobile client actually does.
+    candidates.push(url, url.split('/').pop() ?? null);
+    try {
+      const parsed = new URL(url);
+      candidates.push(
+        parsed.hostname,
+        parsed.pathname.split('/').filter((p) => p.length > 0).pop() ?? null,
+      );
+    } catch {
+      // not parseable — the raw-string candidates above still stand
+    }
+  }
+  if (candidates.some((c) => c !== null && c.trim().toLowerCase() === t)) {
+    return true;
+  }
+  // Mobile's 'YouTube · <id>' style: a hint carrying the item's own provider
+  // id is machine-made. The length floor keeps a short id ('track/1') from
+  // swallowing a real sentence that happens to contain it.
+  return (
+    d.canonicalId !== null &&
+    d.canonicalId.length >= 6 &&
+    t.includes(d.canonicalId.toLowerCase())
+  );
 }
 
 /**

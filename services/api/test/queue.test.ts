@@ -286,12 +286,15 @@ describe('queue module', () => {
     // Both broadcasts are observed from the moment the add is sent.
     const hostFrames = collectOfType(host.sock, 'queue.state', 2);
     const memberFrames = collectOfType(member.sock, 'queue.state', 2);
-    host.sock.send(clientFrame(roomId, 'queue.add', { item: itemInput('Pasted link') }));
+    // 'Shared media' is the web client's generic hint — a PLACEHOLDER, which
+    // is what lets the resolved title replace it (a deliberate title would
+    // survive; see queue/queue.test.ts).
+    host.sock.send(clientFrame(roomId, 'queue.add', { item: itemInput('Shared media') }));
     const [added, enriched] = await hostFrames;
 
     // v1: exactly what the client sent — the add is never blocked on a lookup.
     expect(added?.payload.version).toBe(1);
-    expect(added?.payload.items[0].title).toBe('Pasted link');
+    expect(added?.payload.items[0].title).toBe('Shared media');
     expect(added?.payload.items[0].artworkUrl).toBeNull();
     expect(added?.payload.items[0].durationMs).toBeNull();
 

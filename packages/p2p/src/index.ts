@@ -41,6 +41,9 @@ export type { PerfectNegotiatorOptions } from './negotiation';
 
 export { CHANNEL_IDS, ChannelFabric } from './channels';
 export type {
+  // BeaconState survives the BeaconSender/BeaconFollower deletion because
+  // apps/mobile's SyncTransport seam type pins the shape (see channels.ts).
+  BeaconState,
   ChannelFabricOptions,
   ChannelLabel,
   ChannelMessages,
@@ -48,9 +51,6 @@ export type {
   SyncBeacon,
   SyncChannelMessage,
 } from './channels';
-
-export { BeaconFollower, BeaconSender } from './beacon';
-export type { BeaconFollowerOptions, BeaconSenderOptions, BeaconState } from './beacon';
 
 export { TurnCredentialManager } from './turn';
 export type { TurnCredentialManagerOptions } from './turn';

@@ -10,6 +10,12 @@ ahead, and the category's graveyard proves it. Gather is behind on the fact that
 its own finished server capabilities have no client, and that a first-time visitor cannot
 get into a room without an email round-trip.**
 
+> **STATUS 2026-08-20 — the first half of that sentence is retired.** The six
+> no-client capabilities are wired: report (0.1), moderators (0.2), policies
+> (0.3), leave (0.4), queue-insert resolution (0.6) and the restream gate (0.8)
+> all carry client callers or server gates now — see the dated statuses in §4.
+> The email round-trip stands, as the §7 identity decision, not as a gap.
+
 ---
 
 ## 1. The fork in the road
@@ -73,14 +79,14 @@ Legend: ● shipped · ◐ partial or unreachable · ○ absent
 |---|:---:|:---:|---|
 | **Getting in** ||||
 | Room in one click, no account | ○ | ● | WP: "New Room" → `/watch/nonstop-cake-interpret`. Gather: `rooms/routes.ts:49` is `requireAccount` |
-| Marketing / landing page | ○ | ● | `apps/web/app/page.tsx:9-16` is a redirect gate; there is no public front door |
+| Marketing / landing page | ● | ● | **Shipped 2026-08-20** — `apps/web/app/page.tsx` is now a real front door (hero + three product pillars); the redirect survives only for an already-live session |
 | Guest join by link | ● | ● | `auth/routes.ts:146` — room-scoped, throwaway identity |
-| Guest → account upgrade | ◐ | ● | Route live at `auth/routes.ts:166`, **zero client callers**; two screens promise it |
+| Guest → account upgrade | ◐ | ● | Route live (`auth/routes.ts:148`), **zero client callers** — and as of 2026-08-20 the two screens no longer promise it (settings and join dropped the copy; §7 ruling retires the lane) |
 | Link unfurls in a messenger | ○ | ● | No `openGraph` anywhere in `apps/web/app` — the growth mechanic previews as nothing |
 | **Sources** ||||
 | YouTube / Vimeo / SoundCloud | ● | ● | Full position-API sync |
 | Any https page (long tail) | ● | ◐ | `{kind:'page'}` + the extension's generic driver — WP needs a VBrowser for this |
-| Netflix / Disney+ / Max / Hulu / Prime / Crunchyroll etc. | ● | ◐ | Gather: extension drives each viewer's own player. WP: only inside a VBrowser, and DRM often blocks it there |
+| Netflix / Disney+ / Max / Hulu / Prime / Crunchyroll etc. | ◐ | ◐ | Gather: extension drives each viewer's own player. WP: only inside a VBrowser, and DRM often blocks it there. **Demoted ● → ◐ 2026-08-20 per the §9 amendment**: the real-room login-and-drive pass is scripted (`WEB_SLIMMING.md` §Real-room verification) but has never been run |
 | Spotify / Apple Music / Tidal / Deezer | ● | ○ | `EmbedProvider` — approximate sync, badged as such |
 | Direct file URL / HLS / DASH | ◐ | ● | `{kind:'url'}` works; `{kind:'hls'}` is **unreachable** — it needs an `AssetId` from a deleted upload pipeline |
 | Content search (paste-free) | ○ | ● | WP has a YouTube search box. Gather: pasting a URL is the only way to queue anything, on every client |
@@ -100,14 +106,14 @@ Legend: ● shipped · ◐ partial or unreachable · ○ absent
 | Screen share | ● | ● | Both mesh-based; both cap around 6–8 viewers on the host's uplink |
 | **Subtitles** | ◐ | ● | Gather: in-band only, native adapter only, no file, no language picker, no offset. WP has OpenSubtitles search *by file hash* |
 | Theater mode | ● | ● | |
-| Fullscreen control | ○ | ● | The YouTube adapter *disables* the provider's own button (`lib/player/youtube.ts:139`) and nothing replaces it |
+| Fullscreen control | ● | ● | **Shipped 2026-08-20** — theater and fullscreen are one local immersive mode (`ImmersiveStage.tsx`), with a transport-bar fullscreen control + F shortcut (`StagePane.tsx:146`). YouTube's own button stays disabled, now for a true reason (`lib/player/youtube.ts:144-151`) |
 | Playback history | ● | ○ | `HISTORY_KEEP_PER_ROOM = 200` |
 | **Room control** ||||
-| Host / moderator / member / guest roles | ◐ | ◐ | Four roles exist and are enforced. `POST /rooms/:roomId/members/role` has **no client caller** — moderators cannot be created |
+| Host / moderator / member / guest roles | ● | ◐ | Four roles exist and are enforced. **Wired 2026-08-20** — `PeoplePane.tsx:163,358` promotes/demotes moderators via `POST /members/role` |
 | Kick / ban | ● | ● | Wired in `PeoplePane.tsx:128,141` |
-| Change who can play/queue/chat | ◐ | ● | `PATCH /policies` has **no client caller**. Every room in production is `playbackControl: 'host'` and nobody can change it |
-| Leave a room | ○ | ● | `POST /leave` has **no client caller**; the button is a link to `/home` |
-| Invite rotation / revoke | ○ | ● (password) | Codes are permanent and irrevocable. `auth/service.ts:275` names rotation as the fix for un-bannable guests; it doesn't exist |
+| Change who can play/queue/chat | ● | ● | **Wired 2026-08-20** — room settings panel calls `api.rooms.updatePolicies` (`RoomMenu.tsx:189`), covering the three tiered policies, skip threshold and waitForAll |
+| Leave a room | ● | ● | **Wired 2026-08-20** — `api.rooms.leaveRoom` from the room menu (`RoomMenu.tsx:203`; `room-shell.tsx:383`) |
+| Invite rotation / revoke | ◐ | ● (password) | The built-in code is still permanent and nothing revokes. **2026-08-20:** the server can now mint expiring extra invites (`rooms/service.ts:534-551`; join honours `expiresAt`, `:260-262`) — but with **zero client callers**, so ◐ not ● |
 | Permanent rooms | ● | ◐ | Gather: all rooms, always, free. WP: 1 free, 20 for subscribers |
 | **Reach** ||||
 | Desktop web | ● | ● | |
@@ -118,7 +124,7 @@ Legend: ● shipped · ◐ partial or unreachable · ○ absent
 | Price | Free, one tier | Free + $5/mo | |
 | Self-hostable | ● | ● | `infra/docker-compose.yml` |
 | Product analytics | ○ | ◐ | **Zero.** No analytics, no error tracking, no feature flags, anywhere |
-| Report button | ○ | ◐ | Server route, admin queue and takedown engine all built. `POST /report` has **no client caller**, and `legal/abuse/page.tsx:13-15` publicly promises it |
+| Report button | ● | ◐ | **Wired 2026-08-20** — `ReportDialog.tsx:51` → `POST /report`, reachable from the message context menu (`MessageBubble.tsx:467`), the People pane (`PeoplePane.tsx:428`), room menu and stage; the `legal/abuse` promise is now true |
 | Discord bot | ○ | ● | `/watch` returns a fresh room link — WP's main top-of-funnel |
 
 ---
@@ -155,17 +161,21 @@ Legend: ● shipped · ◐ partial or unreachable · ○ absent
 Six finished, tested server capabilities have **zero client callers**. This is the highest
 value-per-hour work in the repo, and none of it needs a new idea.
 
+*(2026-08-20: no longer true — the phase is essentially done. 0.1–0.4, 0.6 and
+0.8 are wired; 0.7's static half landed; 0.5 is inverted by the §7 ruling and
+0.9 has only its server half. Statuses per row below.)*
+
 | # | Item | Where | Grade |
 |---|---|---|---|
-| 0.1 | **Report button.** Wire `POST /report` into the message context menu and People pane. The entire T&S pipeline — admin queue, takedown engine, tests — is fed by nothing today, and `legal/abuse` promises it publicly. | `packages/api-client/src/rest.ts`, `MessageBubble.tsx`, `PeoplePane.tsx` | S |
-| 0.2 | **Make moderators real.** One api-client method + one menu item. Unlocks the `'mods'` policy tier across kick, ban, pin, policies, rename, theater and waitForAll — an entire authorization layer that is dead in practice. | `rest.ts`, `PeoplePane.tsx` | S |
-| 0.3 | **Room settings panel.** `PATCH /policies` has no caller, so *every room in production* is host-only playback and nobody can change it. | `RoomMenu.tsx` | S |
-| 0.4 | **Leave a room.** The control is a link to `/home`. Combined with rooms never expiring, `/home` is append-only. | `room-shell.tsx:264` | S |
-| 0.5 | **Guest → account upgrade.** Two screens tell guests to add an email; no client calls the live route. Every guest is permanently locked to one room and one browser. This is the funnel. | `settings/page.tsx:384`, `join-client.tsx:191` | S |
-| 0.6 | **Content resolution on queue insert.** `POST /media/resolve` has no caller, which is why queue rows are literally titled "YouTube video" and `durationMs` is always null — the same null that forces the advance guard to *price* a skip at 20s instead of verifying one (HANDOFF open item 4). One wiring job fixes the queue UI **and** closes a correctness hole. | `QueuePane.tsx:366`, `queue/service.ts` | M |
-| 0.7 | **Relayed-share bitrate cap.** The classifier and the applier are written, debounced and tested; no caller passes `capRelayedVideoKbps`. Today a share that falls back to TURN runs at full rate on our bill — $0.186/hr for 5 relayed viewers, `COST_MODEL` risk 1. Pick 300–500 kbps, pass it from both mesh constructors, add one line of UI copy. | `offscreen.ts`, `call-mesh.ts` | S |
-| 0.8 | **Server-gate `restream.start`.** It checks membership and ban only (`restream/service.ts:69-72`) while `contracts/ws.ts:229` claims "(policy-gated)", and `maxPublishers` is enforced *only* in a web button. Route it through `policyAllows` — the predicate every other module already uses — and fix the false comment. | `restream/service.ts`, `contracts/ws.ts:229` | S |
-| 0.9 | **Invite rotation + revoke.** Codes are permanent and irrevocable; a kicked member keeps a working key forever, and rotation is the documented answer to un-bannable guests. Must go through the unique-index insert path. | `rooms/service.ts` | S |
+| 0.1 | ~~**Report button.** Wire `POST /report` into the message context menu and People pane.~~ **DONE 2026-08-20** — `ReportDialog.tsx:51` calls `api.reports.create` (`rest.ts:587-594`), reachable from the message context menu (`MessageBubble.tsx:467-479`), the People pane (`PeoplePane.tsx:428-431`), the room menu and the stage; covered by `apps/web/test/report-controls.test.tsx`. The pipeline is fed and the `legal/abuse` promise is true. | `packages/api-client/src/rest.ts`, `MessageBubble.tsx`, `PeoplePane.tsx` | S |
+| 0.2 | ~~**Make moderators real.** One api-client method + one menu item.~~ **DONE 2026-08-20** — `PeoplePane.tsx:163` posts `/rooms/:id/members/role` (`rest.ts:373`); the row menu toggles moderator (`PeoplePane.tsx:358`). The `'mods'` tier is reachable. | `rest.ts`, `PeoplePane.tsx` | S |
+| 0.3 | ~~**Room settings panel.** `PATCH /policies` has no caller.~~ **DONE 2026-08-20** — `RoomMenu.tsx:189` calls `api.rooms.updatePolicies` (`rest.ts:357`) with per-policy patch builders, the skip-vote threshold and the waitForAll toggle (`RoomMenu.tsx:52,142,351`). | `RoomMenu.tsx` | S |
+| 0.4 | ~~**Leave a room.** The control is a link to `/home`.~~ **DONE 2026-08-20** — `RoomMenu.tsx:203` calls `api.rooms.leaveRoom` (`rest.ts:343`); `room-shell.tsx:383` records that leaving now lives in the room menu. | `RoomMenu.tsx` | S |
+| 0.5 | **Guest → account upgrade.** Two screens tell guests to add an email; no client calls the live route. Every guest is permanently locked to one room and one browser. This is the funnel. *(Ruling inverted — see §7. STATUS 2026-08-20: the route is still live with zero callers, and the two screens no longer promise the upgrade — settings and the join screen both dropped the copy. Cutover status lives in the §7 box.)* | `settings/page.tsx`, `join-client.tsx` | S |
+| 0.6 | ~~**Content resolution on queue insert.**~~ **DONE 2026-08-20** — `QueueService.add` background-enriches every insert through the metadata resolver (`queue/service.ts:198,221-263`): titles are replaced only past the `isPlaceholderTitle` guard (`:630`), the resolved `durationMs` wins over client hints and is pinned against later `sync.duration` reports, and the advance guard now *verifies* resolved rows instead of pricing a 20s skip (`services/api/test/queue-insert-resolution.test.ts`). HANDOFF open item 4 closed. | `QueuePane.tsx:366`, `queue/service.ts` | M |
+| 0.7 | **Relayed-share bitrate cap.** The classifier and the applier are written, debounced and tested; no caller passes `capRelayedVideoKbps`. Today a share that falls back to TURN runs at full rate on our bill — $0.186/hr for 5 relayed viewers, `COST_MODEL` risk 1. Pick 300–500 kbps, pass it from both mesh constructors, add one line of UI copy. *(STATUS 2026-08-20: the static half as written here is DONE — 400 kbps passed from both surfaces (`call-mesh.ts:1172,1189`; `offscreen.ts` `SHARE_RELAYED_VIDEO_CAP_KBPS = 400`) and applied per relayed link in `mesh.ts:1669-1712` (`capFor`/`reconcileCaps`). The superseding dynamic governor of the §7 ruling is still unwired — `BitrateGovernor`/`LinkAdaptor` keep zero mesh callers.)* | `offscreen.ts`, `call-mesh.ts` | S |
+| 0.8 | ~~**Server-gate `restream.start`.**~~ **DONE 2026-08-20** — `restream/service.ts:146` routes through `policyAllows(SHARE_POLICY, member.role)` after membership + ban (`:143`), `maxPublishers` is enforced server-side (`restream/service.ts:25,68`), and the contracts comment "(policy-gated)" (`ws.ts:279`) is now telling the truth (`restream/service.ts:58-61` says so in as many words). | `restream/service.ts`, `contracts/ws.ts` | S |
+| 0.9 | **Invite rotation + revoke.** Codes are permanent and irrevocable; a kicked member keeps a working key forever, and rotation is the documented answer to un-bannable guests. Must go through the unique-index insert path. *(STATUS 2026-08-20: server half only — host/mods can mint extra invites with `expiresAt` through the unique-index path (`rooms/service.ts:534-551`) and join honours expiry (`:260-262`), but there are **zero client callers**, the built-in code is still permanent, nothing revokes an existing code, and the §7-widened user-relations layer is unbuilt.)* | `rooms/service.ts` | S |
 
 ### Phase 1 — The front door (≈3–4 weeks)
 
@@ -175,10 +185,10 @@ exist at all.
 
 | # | Item | Why | Grade |
 |---|---|---|---|
-| 1.1 | **A landing page at `/`.** Today `/` is a redirect gate. There is no page that explains the product, no SEO surface, and no answer to "what is this" for anyone who isn't already signed in. The category's organic search is currently owned by SEO content farms funnelling to competing products — one of which publishes a *false* claim that Scener shut down. | The entire top of funnel | M |
+| 1.1 | **A landing page at `/`.** Today `/` is a redirect gate. There is no page that explains the product, no SEO surface, and no answer to "what is this" for anyone who isn't already signed in. The category's organic search is currently owned by SEO content farms funnelling to competing products — one of which publishes a *false* claim that Scener shut down. *(STATUS 2026-08-20: the landing page is DONE — `apps/web/app/page.tsx` is a real front door, redirecting only live sessions. Of the §7 admin-area ruling, a v1 console is live — `/admin` overview/metrics/reports/rooms/users/usage, checked server-side per request (`admin/routes.ts:34-48`) with a reports queue in `apps/web/app/admin/page.tsx` — but admin is an owner email allowlist (`config.adminEmails`), not a role, and the fresh magic-link step-up and audit log are not built.)* | The entire top of funnel | M |
 | 1.2 | **Instant room, no account.** Let an anonymous visitor create a room and claim it later with an email. This is a policy change to `rooms/routes.ts:49` plus the 0.5 upgrade path, not new machinery. Weigh it against the abuse surface in 1.5. | Matching WatchParty's single biggest funnel advantage | M |
 | 1.3 | **Open Graph metadata + a room preview image.** The invite link is the entire growth mechanic and it currently unfurls as nothing in every messaging app. | Free distribution | S |
-| 1.4 | **Onboarding: explain "everyone plays their own copy".** The core idea is never stated on any screen of any client. Users who don't understand it will read a per-viewer offset as a bug. | Retention | S |
+| 1.4 | ~~**Onboarding: explain "everyone plays their own copy".** The core idea is never stated on any screen of any client.~~ **DONE 2026-08-20** — stated on the landing page pillars (`page.tsx`), in-room on the embed-tier badge ("Everyone plays their own copy… the room keeps you all on the same second", `StagePane.tsx:684`), in the extension-gate copy (`StagePane.tsx:617`), and in the store listing description (`manifest.json`). | Retention | S |
 | 1.5 | **Abuse floor before 1.2 ships.** No CAPTCHA, no disposable-email filter, no per-email send throttle, no room-creation cap, and rate limiting is per-instance in-memory while Redis is already a hard dependency. Move the limiter to Redis first. | Prerequisite | S |
 | 1.6 | **Product analytics + error tracking.** There is none, anywhere. There is currently no instrumented answer to "did the invite convert", "did anyone come back", "did that release break the room". Do not ship Phase 1 blind. | Prerequisite for every decision after this | S |
 
@@ -190,22 +200,22 @@ exist at all.
 | 2.2 | **Subtitles, tier A.** `subtitleUrl` on `QueueItem`, appended as a `<track>`. The toggle and mode-setting loop already exist in `StagePane.tsx` and only ever see in-band tracks. | S | Tier B (OpenSubtitles lookup, incl. by file hash) is a follow-on. State the limits in the UI: it works for real media elements, not embeds. |
 | 2.3 | **Content search in the queue.** Pasting a URL is the only way to add anything, on every client. | M | Builds on 0.6 |
 | 2.4 | **Local-file playback over the mesh.** `packages/p2p/src/fileshare.ts` is a complete, tested chunked transfer with credit-based flow control and seek-window prioritisation, and the `file` DataChannel is already opened pre-negotiated on every peer link. Nothing outside its own test constructs it. | M | Two real problems first: the client assembles the whole file into one `Uint8Array` (a 2 GB movie is 2 GB of JS heap — needs OPFS + MSE), and chunk payloads are base64, a structural 33% inflation that is *worse* than a relayed screen share on a TURN link. Cap it or refuse it on relayed links. |
-| 2.5 | **Fullscreen.** | S | Currently absent from every client, and the YouTube adapter disables the provider's own button. |
+| 2.5 | ~~**Fullscreen.**~~ **DONE 2026-08-20**, as the §7 theater-mode spec: theater and fullscreen are one LOCAL immersive mode (`ImmersiveStage.tsx:6,52`) — fullscreen stage with browser fullscreen as the enhancement (`StagePane.tsx:146` + F shortcut), glass chat sidebar (`ImmersiveStage.tsx:139,198`), call pills docked to a configurable left/right edge (`:73-80,194`). YouTube's own button stays disabled for a now-true reason (`youtube.ts:144-151`). | S | Currently absent from every client, and the YouTube adapter disables the provider's own button. *(both claims retired above)* |
 | 2.6 | **Audio-track selection** (HLS only, per-viewer, never room state). | S | `hls.js` exposes it; `NativeAdapter` already holds the instance. |
 | 2.7 | **Notifications that exist.** `NotifyPort.invite` and `NotifyPort.roomStarted` are fully implemented with zero callers, and the Expo lane is stubbed on both ends so a mobile user who subscribes receives nothing. | S | `roomStarted` needs a server-side per-room cooldown or it is a spam cannon. |
-| 2.8 | **Mobile WebView position bridge.** A mobile-only room on a YouTube item can never report its own ending, so the queue stalls forever (HANDOFF item 6). | M | Highest-value mobile work available; $0 cost. |
-| 2.9 | **Multi-instance vote-skip and wait-for-all.** Both count `hub.localUserIds` — sockets on *this* instance — so the skip threshold silently halves with every replica added. Presence is already mirrored across instances over the bus. | S | Latent today, a real bug the day the API scales. |
+| 2.8 | **Mobile WebView position bridge.** A mobile-only room on a YouTube item can never report its own ending, so the queue stalls forever (HANDOFF item 6). | M | Highest-value mobile work available; $0 cost. *(STATUS 2026-08-20: the bridge is still unbuilt, but the stall is no longer silent — the embed panel says the app cannot see the ending and offers a manual "It's finished — move on" report, and the native player reports endings and durations itself — `apps/mobile/src/components/Stage.tsx:184-231,394`, `sync/advance.ts`.)* |
+| 2.9 | ~~**Multi-instance vote-skip and wait-for-all.** Both count `hub.localUserIds` — sockets on *this* instance — so the skip threshold silently halves with every replica added.~~ **DONE 2026-08-20** via N2 — see the N2 status in §9. | S | Latent today, a real bug the day the API scales. *(fixed — see N2)* |
 
 ### Phase 3 — Distribution (parallel, mostly not engineering)
 
 | # | Item | Note |
 |---|---|---|
 | 3.1 | **Ship the extension to the Chrome Web Store.** *(updated 2026-08-20: the discovery path now exists — `<ExtensionGate>` is mounted in the page-kind stage, `extensionInstallUrl()` bottoms out at the honest `/extension` docs page, the manifest carries real icons and version 1.0.0. What remains is the submission itself: a developer account, the listing assets, and the real-room verification `WEB_SLIMMING.md` now scripts — the DRM claim must be logged before the listing makes it.)* |
-| 3.2 | **Narrow the manifest first.** ***DONE 2026-08-20.*** The install demands no host at all: `host_permissions` is gone, every site is a runtime grant (`optional_host_permissions`), content.js reaches pages via a granted-origins registered script + activeTab injection, and the one declarative content script covers only the Gather origins (the announce). The no-remote-code rule stands: site adapters ship in the bundle (`packages/contracts/src/providers.ts`), never fetched at runtime — a hot-fix fetch is a store-removal offense. |
+| 3.2 | **Narrow the manifest first.** ***DONE 2026-08-20*** *(corrected same day after real-browser testing)*. The install demands exactly ONE host: Gather's own API origin, stamped into `host_permissions` at build (`stampManifest`/`stampedHostPermissions`, `apps/extension/src/buildTarget.ts:332-375`) — an extension bypasses CORS only for origins it holds, and the zero-host build made every worker API call fail as "Failed to fetch" (join, members, room, events; the faked-fetch suite could not see it). Every *site* is a runtime grant (`optional_host_permissions`), content.js reaches pages via a granted-origins registered script + activeTab injection, and the one declarative content script covers only the Gather origins (the announce). The no-remote-code rule stands: site adapters ship in the bundle (`packages/contracts/src/providers.ts`), never fetched at runtime — a hot-fix fetch is a store-removal offense. |
 | 3.3 | **A Discord bot** (`/watch` → room link). WatchParty's Discord server has ~15,400 members and the bot is its main top-of-funnel. Discord Activities carry a 90/10 revenue share if that ever matters. |
 | 3.4 | **DMCA designated agent registration** (~$6, renews every 3 years) + a published repeat-infringer policy. Gather does **not** currently hold §512(c) safe harbour. The engineering half of the pipeline is built; the paperwork half is not. Highest-value, lowest-cost item in the entire assessment. |
-| 3.5 | **Verify admin takedown actually breaks `GET /assets/:assetId/content`.** The route is deliberately unauthenticated (capability URL → presigned GET), and `AssetDoc` is never deleted by room deletion or by GDPR erasure. If the capability URL still resolves after a takedown, the takedown takes nothing down — for DMCA, for erasure, and for CSAM alike. Check this before anything else in this section. |
-| 3.6 | **Fix three legal-copy mismatches.** (a) `legal/abuse` states "Every message, user, room, and upload can be reported from inside the app (**Message → Report**, member list, room menu)" — none of those controls exist (0.1 fixes this, or the copy must). (b) `legal/privacy` says "no telemetry on what you watch", while `sync/service.ts:531-545` writes a per-user, per-title, timestamped `playback.history` row on every track change with no pruning. The code's own comment says it exists for GDPR export and is read only by `compliance/export.ts`, which is a defensible purpose — but it is still stored watch data about a named user, and a privacy policy that says the opposite is the wrong place to leave that unstated. (c) Terms say uploads count against a storage limit; only a flat per-file `ATTACHMENT_MAX_MB = 200` exists. These are the pages a regulator or an app-store reviewer reads first. |
+| 3.5 | ~~**Verify admin takedown actually breaks `GET /assets/:assetId/content`.**~~ **DONE 2026-08-20** via N4 — a takedown 404s the content route and clears the object, an asset takedown revokes the asset it names, and a revoked asset cannot be resurrected by replaying upload completion (`services/api/test/asset-revocation.test.ts:166,190,265`). Room deletion and GDPR erasure now revoke assets too (`rooms/routes.ts:230-236`; `compliance/erasure.ts:98-109` — "Assets are REVOKED, not orphaned"). |
+| 3.6 | **Fix three legal-copy mismatches.** (a) `legal/abuse` states "Every message, user, room, and upload can be reported from inside the app (**Message → Report**, member list, room menu)" — none of those controls exist (0.1 fixes this, or the copy must). *(RESOLVED 2026-08-20 by 0.1 landing — the controls exist and the sentence is true.)* (b) `legal/privacy` says "no telemetry on what you watch", while `sync/service.ts:531-545` writes a per-user, per-title, timestamped `playback.history` row on every track change with no pruning. The code's own comment says it exists for GDPR export and is read only by `compliance/export.ts`, which is a defensible purpose — but it is still stored watch data about a named user, and a privacy policy that says the opposite is the wrong place to leave that unstated. *(STILL OPEN 2026-08-20 — the sentence stands at `legal/privacy/page.tsx:31` and the write now lives at `sync/service.ts:617-635`.)* (c) Terms say uploads count against a storage limit; only a flat per-file `ATTACHMENT_MAX_MB = 200` exists. *(STILL OPEN 2026-08-20 — `legal/terms/page.tsx:29-31` vs `chat/attachments.ts:32`.)* These are the pages a regulator or an app-store reviewer reads first. |
 | 3.7 | **Verticals with existing intent**, in priority order: long-distance couples (Teleparty leads its own store listing with it), anime/Crunchyroll (no first-party watch party exists, and the search term is entirely captured by SEO farms), listening parties, and body-doubling/study rooms (Focusmate charges $8/mo for essentially this, 6M+ sessions completed). |
 
 ---
@@ -254,8 +264,9 @@ same `NOT_FOUND`. The wire carries `hasPassword`, never the hash. `DESIGN.md` §
 budgets a password-gated join at 3. `joinPolicy` was never built and does not exist.
 
 **Public room discovery.** Not yet. The cost of discovery is moderation, and Gather has
-almost none: no slowmode, no per-user chat mute, no auto-moderation, and (until 0.1) no
-report button. A hand-curated featured list costs nothing and reverses nothing.
+almost none: no slowmode, no per-user chat mute, no auto-moderation, and (until 0.1 —
+which landed 2026-08-20, so this one now exists) no report button. A hand-curated
+featured list costs nothing and reverses nothing.
 
 **Recording the room's content.** Recording your *own* screen share via `MediaRecorder` is
 fine and client-side. Recording Mode A content is blacked out by output protection.
@@ -326,6 +337,17 @@ friction — "reopen the invite after signing in" — mostly disappears.
 > intent and this box as the reason it has not happened — do not delete the
 > guest lane until the deep-link lands and the quota is confirmed, or every
 > invite in circulation breaks at once.
+>
+> **UPDATE 2026-08-20 — the deep-link now exists.** An invite survives the
+> sign-in round-trip: the join screen hands `?next=/join/<code>` to `/login`
+> (`join-client.tsx:198`), which validates it through `safeAfterSignIn` and
+> honours it directly or via storage across the magic-link hop
+> (`login/page.tsx`, `lib/after-signin.ts`, `auth/verify/page.tsx:54`).
+> The screens that promised guest→account upgrade no longer do (settings and
+> join both dropped the copy), while `POST /auth/guest` is still live and
+> still unflagged (`auth/routes.ts:125`) and the popup guest join remains a
+> first-class path. Remaining cutover blockers: the feature flag and the
+> email-quota confirmation.
 
 ### Phase 0 rulings
 
@@ -471,6 +493,13 @@ same finished-but-unwired pattern as the rest of Phase 0:
 
 What is missing, in build order:
 
+*(STATUS 2026-08-20: still true for the governor — `BitrateGovernor`/
+`LinkAdaptor` keep zero mesh callers. What landed is the static side of item 4:
+the mesh now owns per-link ceilings in `capFor`/`reconcileCaps`
+(`mesh.ts:1669-1712`) — the relayed-share cap at 400 kbps from both surfaces,
+and a per-receiver cam budget split (`capCamKbps / camReceiverCount`), so the
+"one owner" arbitration point now has its cap writer in place.)*
+
 1. **A `getStats` → `LinkSample` extractor** — the single biggest gap.
    `classifyLinkStats` reads only candidate types and throws every rate/quality
    metric away. Pull `rttMs` (candidate-pair `currentRoundTripTime`) and
@@ -577,11 +606,11 @@ attachments. The product is live; the plan must treat it as live.
 
 | # | Item | Why now |
 |---|---|---|
-| N1 | **Register the DMCA §512(c) agent + repeat-infringer policy** (reverses the 3.4 deferral) + the 3.6(a) legal-copy fix | "Predates public" is factually false. ~$6, under an hour, best ROI in the doc |
-| N2 | **Multi-instance vote-skip/wait-for-all fix** (promotes 2.9) | The rolling deploy overlaps two instances on *every push*; a reconnect during cutover splits the room and silently deletes off-instance votes today. Fix: `PresenceTracker.connectedUserIds()` (presence already mirrors over the bus — pattern proven in `restream/service.ts`), switch `queue/service.ts:238` + `sync/service.ts:579`, verify with the two-`buildApp()` harness in `test/resilience.test.ts` |
-| N3 | **Relay metering producer + static uplink ceiling** (promotes half of §8) | `fairUseRemainingGb` is hardcoded null (`rtc/service.ts:36`), `RELAY_USAGE_KINDS` has a reader and zero writers — live product, authenticated users, unmetered TURN. Static ceiling `min(relayCap, uplinkBudget / activeShareLinkCount)` needs only `peer.senders` — lands before the full AIMD pipeline |
-| N4 | **Asset-takedown gaps** (re-scopes 3.5 into three) | (a) test that takedown 404s the content route; (b) GDPR erasure + room deletion currently *never revoke assets* (`erasure.ts:95` says so) — capability URLs resolve forever; (c) staff path to disable an asset from an external DMCA notice (`POST /report` needs an authenticated member a complainant won't have). 1–3 days, not "a half-day check" |
-| N5 | Privacy-copy fix 3.6(b) + doc-honesty pass: output protection is defense-in-depth, not physics (Widevine L3 is software-only and capturable); the real Mode B backstop is architectural. Plus the 5-line `currentTime` try/catch in `mediaDriver.ts` matching the `playbackRate` guard | Doc edits + one guard; no dependencies |
+| N1 | **Register the DMCA §512(c) agent + repeat-infringer policy** (reverses the 3.4 deferral) + the 3.6(a) legal-copy fix | "Predates public" is factually false. ~$6, under an hour, best ROI in the doc. *(STATUS 2026-08-20: the 3.6(a) half is resolved — report controls shipped with 0.1 and the abuse-page sentence is true; the registration itself leaves no artifact in the repo and cannot be verified from code — unconfirmed.)* |
+| N2 | ~~**Multi-instance vote-skip/wait-for-all fix** (promotes 2.9)~~ **DONE 2026-08-20** — landed as `PresenceTracker.presentUserIds()` (`rooms/presence.ts:271-299`; the doc's proposed name was `connectedUserIds`): `voteSkip` counts room-wide presence after an awaited `ensureRoster`, with a membership-count solo check (`queue/service.ts:326-353`), and waitForAll prunes buffering reporters against presence ∪ local sockets (`sync/service.ts:660-700`). Verified by `test/multi-instance-quorum.test.ts` + `test/multi-instance-roster.test.ts`. Known residue, recorded in code: the buffering SET stays process-local, so `sync.waiting` can under-report who is still waiting — it can no longer wrongly release a hold. | The rolling deploy overlaps two instances on *every push*; a reconnect during cutover splits the room and silently deletes off-instance votes today. |
+| N3 | **Relay metering producer + static uplink ceiling** (promotes half of §8) | `fairUseRemainingGb` is hardcoded null (`rtc/service.ts:36`), `RELAY_USAGE_KINDS` has a reader and zero writers — live product, authenticated users, unmetered TURN. Static ceiling `min(relayCap, uplinkBudget / activeShareLinkCount)` needs only `peer.senders` — lands before the full AIMD pipeline. *(STATUS 2026-08-20: half done — the static ceilings landed (relayed-share cap 400 kbps both surfaces + per-receiver cam budget, `mesh.ts:1669-1712`); the metering producer did not — `fairUseRemainingGb` is still null (`rtc/service.ts:85-93`) and `RELAY_USAGE_KINDS` still has its one reader and zero writers (`compliance/export.ts:33,118`).)* |
+| N4 | ~~**Asset-takedown gaps** (re-scopes 3.5 into three)~~ **DONE 2026-08-20** — (a) takedown 404s the content route and clears the object, and revocation is replay-proof (`test/asset-revocation.test.ts:166,190,265`); (b) GDPR erasure and room deletion now revoke assets (`compliance/erasure.ts:98-109` — "Assets are REVOKED, not orphaned"; `rooms/routes.ts:230-236`); (c) the staff path is the admin reports queue with a resolve action (`admin/routes.ts:117`, `apps/web/app/admin/page.tsx`) plus the takedown CLI (`src/cli/takedown.ts`) — an external complainant still cannot file directly (`POST /report` needs a verified identity), so the operator files the report under their own account and acts on it. | (a) test that takedown 404s the content route; (b) GDPR erasure + room deletion currently *never revoke assets*; (c) staff path to disable an asset from an external DMCA notice |
+| N5 | Privacy-copy fix 3.6(b) + doc-honesty pass: output protection is defense-in-depth, not physics (Widevine L3 is software-only and capturable); the real Mode B backstop is architectural. Plus the 5-line `currentTime` try/catch in `mediaDriver.ts` matching the `playbackRate` guard | Doc edits + one guard; no dependencies. *(STATUS 2026-08-20: the guard is DONE — `mediaDriver.ts:277-286` wraps the `currentTime` write like the rate/volume guards. The privacy copy is NOT fixed (`legal/privacy/page.tsx:31` still says "no telemetry on what you watch" against the `playback.history` write at `sync/service.ts:617-635`), and the output-protection honesty pass is not evident — `EXTENSION_FIRST.md:315` / `CONTENT_MATCHING.md:16` still state the blackout without the L3 caveat.)* |
 
 ### Plan amendments (absorbed from surviving objections)
 
@@ -597,10 +626,18 @@ attachments. The product is live; the plan must treat it as live.
   — free, no install"); hold "Netflix together" as a labeled install upsell.
   Interim: `extensionInstallUrl()` returns null and silently degrades — point
   it at an honest docs page; wire the orphaned `<ExtensionGate>` or delete it.
+  *(STATUS 2026-08-20: the interim work is DONE — `extensionInstallUrl()`
+  always answers with the honest `/extension` docs page
+  (`apps/web/app/extension/page.tsx`, `StagePane.tsx:521`) and
+  `<ExtensionGate>` is mounted in the page-kind stage (`StagePane.tsx:1603`).
+  3.2 landed the same day; the 3.1a submission date is still unset.)*
 - **DRM claims verified before store submission:** no repo artifact shows a
   real login-and-drive pass on Netflix/Disney+/Max/Hulu/Prime. Extend
   WEB_SLIMMING's real-room gate to name those sites; head-to-head ● demoted
-  to ◐ for them until the pass is logged.
+  to ◐ for them until the pass is logged. *(STATUS 2026-08-20: the protocol
+  is scripted — `WEB_SLIMMING.md` §Real-room verification names Netflix
+  logged-in as "the claim under test" — but has still never been run; the §2
+  demotion is now applied in the table.)*
 - **Content-matching ladder becomes a graded item (~M, Phase 1/2)** — it was
   the one competitive-thesis component with no schedule. Build order:
   external-ID enrichment on `ResolvedMedia` (IMDb/TMDB, ISRC/UPC) → rung-2
@@ -610,6 +647,13 @@ attachments. The product is live; the plan must treat it as live.
   signal. One clarifying line added to §1's claim: the legal/competitive base
   is Mode A + the extension (built); the ladder raises match-rate, it is not
   what makes the architecture safe.
+  *(2026-08-20 — a first slice of the ladder shipped: the "Find it where you
+  are" search bridge. The extension popup opens the member's OWN default
+  search engine on the current item's title via `chrome.search.query` and the
+  worker adopts the tab they land on (`apps/extension/src/popup.ts:244-259,
+  451-457`) — the manual recovery for the member whose region cannot play the
+  queued item, ahead of the automated rungs. External-ID enrichment and the
+  availability probe remain unbuilt.)*
 - **COST_MODEL gets a base-infrastructure table** (Railway services + Redis +
   bucket + Atlas real tiers) — the "$5 + domain" floor priced only marginal
   relay bytes, not the stack that is actually running.

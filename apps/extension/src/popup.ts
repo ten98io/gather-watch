@@ -60,6 +60,12 @@ interface Status {
    * back. '' whenever there is nothing to explain.
    */
   shareEnded?: string;
+  /**
+   * The room's current queue item, by title — the same source the overlay's
+   * now-playing line reads. Null when nothing resolvable is playing; optional
+   * because an older background does not report it at all.
+   */
+  currentItemTitle?: string | null;
 }
 
 /** Surface whose request is in flight; nothing else may be started meanwhile. */
@@ -97,6 +103,13 @@ let activeTabPatterns: string[] = [];
  * the refusal instead of silently hiding its button.
  */
 let activeTabInsecure = false;
+
+/**
+ * The current item title as the worker last reported it; '' when there is
+ * none. The click handler reads THIS, not the button's own label — the label
+ * is truncated for the 320px card, and a truncated title makes a bad query.
+ */
+let currentItemTitle = '';
 
 async function send<T>(msg: Record<string, unknown>): Promise<T> {
   const res = (await chrome.runtime.sendMessage(msg)) as
@@ -221,6 +234,32 @@ async function refreshSiteAccess(): Promise<void> {
   keep.hidden = false;
 }
 
+/* ── "Find it where you are": the default-search bridge ── */
+
+/** Label truncation only — the search query always carries the full title. */
+function truncateTitle(title: string): string {
+  return title.length > 40 ? `${title.slice(0, 40).trimEnd()}…` : title;
+}
+
+/**
+ * A member in another region often cannot play the queued item where it was
+ * queued. The recovery: one click opens THEIR default search engine on the
+ * title, they pick a site their region has, and the worker adopts the tab
+ * they land on. `chrome.search.query` runs through the user's own engine and
+ * is available to extension pages directly — no background round-trip. The
+ * API is guarded by presence, not assumed: a browser (or harness) without it
+ * simply never shows the button, and never throws.
+ */
+function renderFindContent(status: Status): void {
+  currentItemTitle =
+    status.connected && typeof status.currentItemTitle === 'string' ? status.currentItemTitle : '';
+  const usable = currentItemTitle.length > 0 && typeof chrome.search?.query === 'function';
+  const btn = $<HTMLButtonElement>('find-content');
+  btn.hidden = !usable;
+  btn.textContent = usable ? `Find “${truncateTitle(currentItemTitle)}” where you are` : '';
+  $('find-content-hint').hidden = !usable;
+}
+
 async function refresh(): Promise<void> {
   const status = await send<Status>({ kind: 'popup:status' });
   const dot = $('livedot');
@@ -248,6 +287,7 @@ async function refresh(): Promise<void> {
   }
 
   renderShare(liveShare(status));
+  renderFindContent(status);
   if (status.connected) await refreshSiteAccess();
 
   // Written, never cleared, from here: the request's own outcome owns this
@@ -406,6 +446,18 @@ function mount(): void {
   }
 
   $('share-stop').addEventListener('click', () => stopShare());
+
+  $('find-content').addEventListener('click', () => {
+    // Called INSIDE the click — chrome.search.query requires a user gesture,
+    // so no await may come before it. The title goes as-is (the resolver
+    // upstream may already carry a year); 'watch' steers a bare title toward
+    // players rather than reviews. Guarded again here: the button should not
+    // be visible without the API, but a render race must not become a throw.
+    if (currentItemTitle.length === 0 || typeof chrome.search?.query !== 'function') return;
+    void chrome.search
+      .query({ text: `${currentItemTitle} watch`, disposition: 'NEW_TAB' })
+      .catch(() => undefined);
+  });
 
   $('cast').addEventListener('click', () => {
     const btn = $<HTMLButtonElement>('cast');

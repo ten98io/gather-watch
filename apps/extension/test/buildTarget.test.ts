@@ -129,6 +129,36 @@ describe('the dev build', () => {
     expect(stamped['name']).toBe('Gather — Watch Together');
     expect(stamped['version_name']).toBe('0.1.0 — prod — https://api.gather.watch');
   });
+
+  /**
+   * The one host permission every artifact must carry: its own API origin.
+   * An extension bypasses CORS only for origins it holds host permissions
+   * on; when the manifest went to zero host access, every worker fetch to
+   * the API died in preflight ("Failed to fetch" on join, members, room,
+   * events) — in the REAL browser only, because the suite fakes fetch. The
+   * grant is stamped from the SAME baked-in origin the calls use, so the
+   * two cannot drift.
+   */
+  it('stamps the API origin as the one host permission, in both modes', () => {
+    const prod = stampManifest({ version: '1.0.0' }, resolveBuildTarget(PROD));
+    expect(prod['host_permissions']).toEqual(['https://api.gather.watch/*']);
+
+    // Match patterns carry no port — one WITH a port is invalid to Chrome
+    // and would kill the dev artifact at load. Portless matches every port.
+    const dev = stampManifest({ version: '1.0.0' }, resolveBuildTarget({}));
+    expect(dev['host_permissions']).toEqual(['http://localhost/*']);
+  });
+
+  it('keeps and dedupes host permissions the source manifest already carries', () => {
+    const stamped = stampManifest(
+      { version: '1.0.0', host_permissions: ['https://api.gather.watch/*', 'https://other.example/*'] },
+      resolveBuildTarget(PROD),
+    );
+    expect(stamped['host_permissions']).toEqual([
+      'https://api.gather.watch/*',
+      'https://other.example/*',
+    ]);
+  });
 });
 
 /**

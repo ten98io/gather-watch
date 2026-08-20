@@ -71,6 +71,9 @@ interface Status {
   driving?: boolean;
   /** Why the ROOM ended the last share; absent when nothing ended that way. */
   shareEnded?: string;
+  /** The room's current item title, as the overlay's now-playing line has it;
+   *  null when nothing resolvable plays. Optional — older backgrounds omit it. */
+  currentItemTitle?: string | null;
 }
 
 interface Worker {
@@ -101,6 +104,9 @@ let permissions: {
 /** Everything the popup did that has an order worth asserting: 'request' for
  *  a permission ask, 'msg:<kind>' for a worker message. */
 let calls: string[] = [];
+
+/** Every ask handed to chrome.search.query, in order. */
+let searchQueries: Array<{ text: string; disposition: string }> = [];
 
 /** The worker's half of the internal channel, answering in its envelope. */
 async function sendMessage(msg: Record<string, unknown>): Promise<Envelope> {
@@ -174,6 +180,9 @@ beforeEach(() => {
       // have to say anything about driving.
       drivenTab: true,
       driving: true,
+      // Nothing resolvable plays by default, so only the find-button tests
+      // have to say anything about the current item.
+      currentItemTitle: null,
     },
     shareAnswer: SHARED_WINDOW,
     castAnswer: { clicked: false, reason: '' },
@@ -181,6 +190,7 @@ beforeEach(() => {
   activeTab = { id: 7, url: 'https://example.com/watch' };
   permissions = { requested: [], requestAnswer: true, containsAnswer: false };
   calls = [];
+  searchQueries = [];
   globals.document = { getElementById: (id: string): FakeEl | null => elements.get(id) ?? null };
   globals.chrome = {
     runtime: { sendMessage },
@@ -192,6 +202,11 @@ beforeEach(() => {
         return permissions.requestAnswer;
       },
       contains: async () => permissions.containsAnswer,
+    },
+    search: {
+      query: async (q: { text: string; disposition: string }) => {
+        searchQueries.push({ text: q.text, disposition: q.disposition });
+      },
     },
   };
 });
@@ -429,6 +444,92 @@ describe('what the popup says a cast press did', () => {
 
     expect(el('cast-reason').textContent).toBe("Opened YouTube's cast picker.");
     expect(el('cast').disabled).toBe(false);
+  });
+});
+
+/* ── "Find it where you are": the default-search bridge ── */
+
+/**
+ * A member in another region often cannot play the queued item where it was
+ * queued. The button hands the title to THEIR default engine (chrome.search,
+ * on the click's own gesture) and the user picks a site their region has —
+ * Gather never navigates for anyone. The worker names the item; this page
+ * only renders and asks.
+ */
+describe('the find-it-where-you-are button', () => {
+  it('shows the title and searches the user’s engine in a new tab', async () => {
+    worker.status.currentItemTitle = 'The Feature (2019)';
+    await openPopup();
+
+    expect(el('find-content').hidden).toBe(false);
+    expect(el('find-content').textContent).toBe('Find “The Feature (2019)” where you are');
+    expect(el('find-content-hint').hidden).toBe(false);
+
+    el('find-content').click();
+    await settle();
+
+    // The full title as the room has it, plus 'watch' — no year synthesis:
+    // the resolver upstream already put one in the title when it had one.
+    expect(searchQueries).toEqual([
+      { text: 'The Feature (2019) watch', disposition: 'NEW_TAB' },
+    ]);
+  });
+
+  it('truncates a long title in the label, never in the query', async () => {
+    const long = 'An Extremely Long Documentary About the Bottom of the Sea (2021)';
+    worker.status.currentItemTitle = long;
+    await openPopup();
+
+    expect(el('find-content').textContent).toBe(
+      'Find “An Extremely Long Documentary About the…” where you are',
+    );
+
+    el('find-content').click();
+    await settle();
+
+    expect(searchQueries).toEqual([{ text: `${long} watch`, disposition: 'NEW_TAB' }]);
+  });
+
+  it('stays hidden with nothing playing, and while not connected', async () => {
+    worker.status.currentItemTitle = null;
+    await openPopup();
+
+    expect(el('find-content').hidden).toBe(true);
+    expect(el('find-content-hint').hidden).toBe(true);
+
+    // A titled item does not resurrect the button on a disconnected popup.
+    worker.status = { ...worker.status, connected: false, currentItemTitle: 'The Feature' };
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(el('find-content').hidden).toBe(true);
+    expect(el('find-content-hint').hidden).toBe(true);
+  });
+
+  it('goes away on the poll that stops naming an item', async () => {
+    worker.status.currentItemTitle = 'The Feature';
+    await openPopup();
+    expect(el('find-content').hidden).toBe(false);
+
+    worker.status.currentItemTitle = null;
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(el('find-content').hidden).toBe(true);
+    expect(el('find-content-hint').hidden).toBe(true);
+  });
+
+  it('never appears — and never throws — without chrome.search', async () => {
+    worker.status.currentItemTitle = 'The Feature';
+    delete (globals.chrome as { search?: unknown }).search;
+    await openPopup();
+
+    expect(el('find-content').hidden).toBe(true);
+    expect(el('find-content-hint').hidden).toBe(true);
+    // A click on the hidden control (keyboard focus can still reach it) is a
+    // no-op, not a TypeError on a missing namespace.
+    expect(() => el('find-content').click()).not.toThrow();
+    expect(searchQueries).toEqual([]);
   });
 });
 

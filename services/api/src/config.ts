@@ -55,7 +55,6 @@ export const configSchema = z.object({
       emailFrom: z.string().min(1).default('Gather <no-reply@gather.local>'),
     })
     .default({}),
-  enableMediaPipeline: z.boolean().default(false),
   tenorApiKey: z.string().min(1).nullable().default(null),
   vapid: z
     .object({
@@ -82,14 +81,6 @@ export type AppConfig = z.infer<typeof configSchema>;
 function envStr(env: Record<string, string | undefined>, key: string): string | undefined {
   const value = env[key];
   return value === undefined || value.trim() === '' ? undefined : value;
-}
-
-/** 'true'/'1' (case-insensitive) enable a flag; anything else means default. */
-function envBool(env: Record<string, string | undefined>, key: string): boolean | undefined {
-  const value = envStr(env, key);
-  if (value === undefined) return undefined;
-  const lowered = value.toLowerCase();
-  return lowered === 'true' || lowered === '1';
 }
 
 /**
@@ -137,7 +128,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       emailApiToken: envStr(env, 'CF_EMAIL_API_TOKEN'),
       emailFrom: envStr(env, 'CF_EMAIL_FROM'),
     },
-    enableMediaPipeline: envBool(env, 'ENABLE_MEDIA_PIPELINE'),
     tenorApiKey: envStr(env, 'TENOR_API_KEY'),
     vapid: {
       publicKey: envStr(env, 'VAPID_PUBLIC_KEY'),

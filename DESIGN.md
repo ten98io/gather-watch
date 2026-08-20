@@ -137,12 +137,13 @@ is one absolute near-black at the same alpha in both themes, because what a scri
 has to suppress is the brightest pixel available and that is a near-white either
 way. Use `.scrim` (`apps/web/app/globals.css`), never a hand-rolled `bg-black/50`.
 
-Three call sites do not follow this yet — known debt, not counterexamples:
-`hover:text-accent` on the glass text buttons in `components/stage/StagePane.tsx`
-and `components/stage/ListenStage.tsx`, and one surviving `text-accent-ink` in
-`components/extension/ExtensionGate.tsx`. `packages/design/test/palette.test.ts`
-walks token *pairs*; it never reads a Tailwind class string, so neither shape is
-caught automatically.
+One call site does not follow this yet — known debt, not a counterexample:
+a surviving `text-accent-ink` in `components/extension/ExtensionGate.tsx`. (The
+`hover:text-accent` glass text buttons this note used to name in
+`components/stage/StagePane.tsx` and `ListenStage.tsx` have since been replaced
+with tokened variants.) `packages/design/test/palette.test.ts` walks token
+*pairs*; it never reads a Tailwind class string, so the shape is not caught
+automatically.
 
 ### 2.1 Ink on a fill — never theme-relative
 

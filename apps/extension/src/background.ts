@@ -2693,6 +2693,13 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
             // Why the last one stopped, when the room stopped it. '' whenever
             // there is nothing to explain, which is almost always.
             shareEnded: shareEndedNote,
+            // The room's current queue item, by title — THE SAME source the
+            // overlay's now-playing line reads (overlayQueueLines resolves the
+            // playing row by media identity, not by raw queueIndex), so the
+            // popup's "find it where you are" button can never name an item
+            // the overlay would not. Null when there is no session, no
+            // resolvable current item, or the row carries no title.
+            currentItemTitle: overlayQueueLines().nowPlaying,
           };
         })(),
       );

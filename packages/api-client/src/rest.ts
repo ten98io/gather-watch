@@ -4,16 +4,12 @@ import {
   AddToRoomQueueResponse,
   BanMemberBody,
   BanMemberResponse,
-  CompleteUploadBody,
-  CompleteUploadResponse,
   CreateInviteBody,
   CreateInviteResponse,
   CreatePlaylistBody,
   CreatePlaylistResponse,
   CreateRoomBody,
   CreateRoomResponse,
-  CreateUploadBody,
-  CreateUploadResponse,
   DeletePlaylistResponse,
   GetPlaylistResponse,
   GetRoomResponse,
@@ -162,15 +158,13 @@ export class RestClient {
     pinMessage(roomId: RoomId, body: PinMessageBody): Promise<PinMessageResponse>;
     unfurl(body: UnfurlBody): Promise<UnfurlResponse>;
   };
-  /** Link metadata, plus the multipart upload session ChunkedUploader drives. */
+  /** Link/media metadata. The multipart upload session (ChunkedUploader +
+   *  media.createUpload/completeUpload) was deleted with services/media —
+   *  no server ever answered /media/uploads. Chat attachments never came
+   *  through here: they use the room-scoped POST /rooms/:roomId/attachments
+   *  (apps/web/lib/attachments.ts) and only borrow the CreateUpload/
+   *  CompleteUpload schemas, which stay in @gather/contracts. */
   readonly media: {
-    /** NO SERVER: /media/uploads was services/media, which was deleted. Chat
-     *  attachments do NOT come through here — they use the room-scoped
-     *  POST /rooms/:roomId/attachments (apps/web/lib/attachments.ts) and only
-     *  borrow the schemas. These two exist for ChunkedUploader alone, which
-     *  now has no caller either; they go when it does. */
-    createUpload(body: CreateUploadBody): Promise<CreateUploadResponse>;
-    completeUpload(body: CompleteUploadBody): Promise<CompleteUploadResponse>;
     /** Server-side title/artwork/duration lookup for a pasted link or a
      *  MediaRef — the paste-a-link preview and any surface that needs real
      *  metadata before an item exists in a queue. */
@@ -466,22 +460,6 @@ export class RestClient {
     };
 
     this.media = {
-      createUpload: (body) =>
-        this.request({
-          label: 'media.createUpload',
-          method: 'POST',
-          path: '/media/uploads',
-          schema: CreateUploadResponse,
-          body,
-        }),
-      completeUpload: (body) =>
-        this.request({
-          label: 'media.completeUpload',
-          method: 'POST',
-          path: '/media/uploads/complete',
-          schema: CompleteUploadResponse,
-          body,
-        }),
       resolveMedia: (body) =>
         this.request({
           label: 'media.resolveMedia',

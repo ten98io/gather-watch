@@ -46,9 +46,9 @@ physics rather than by billing:
   uplink cannot fan a share out to everyone. Nothing selects it today (every
   stored room is `relayMode: 'mesh'`), so its arithmetic is a design budget.
 
-Synced-source playback (internally "Mode A": each viewer's own device plays
-the source) never puts content on our infrastructure at all, so the bill is
-only sync + relay in every case.
+Synced-source playback (each viewer's own device plays the source) never puts
+content on our infrastructure at all, so the bill is only sync + relay in
+every case.
 
 - **Mesh, 6 people, voice, no share:** $0.002–$0.015/room-hr depending on
   NAT-relay rate *p* (ASSUMED 5–25% band; ~95% of cost is TURN). The 1,000 GB

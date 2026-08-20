@@ -138,6 +138,8 @@ describe('admin overview + metrics', () => {
     expect(body.counts.rooms).toBe(1);
     expect(body.live.connections).toBe(0);
     expect(body.adapters).toEqual({ store: 'memory', bus: 'memory' });
+    // mediaPipeline is a wire tombstone: ENABLE_MEDIA_PIPELINE was deleted
+    // from config, and the route pins the still-contract-required field false.
     expect(body.features.mediaPipeline).toBe(false);
     expect(body.uptimeSec).toBeGreaterThanOrEqual(0);
   });

@@ -524,6 +524,9 @@ interface PopupStatus {
   /** The FULL registry entry, not the redacted summary the page gets: the
    *  popup's cast control is built out of `cast`. */
   provider: TabProvider | null;
+  /** The room's current item title, from the same source as the overlay's
+   *  now-playing line; null when nothing resolvable is playing. */
+  currentItemTitle: string | null;
 }
 
 /**
@@ -2874,6 +2877,32 @@ describe('the overlay says what is playing and what is next', () => {
     expect(drawn().upNext).toBe('The Short');
   });
 
+  /**
+   * The popup's "find it where you are" button is built out of this answer,
+   * and it must be the overlay's now-playing title EXACTLY — same resolver,
+   * same nulls — or the two surfaces would name different items.
+   */
+  it('hands the popup the playing title through popup:status', async () => {
+    await playingFirstOfTwo();
+
+    expect((await status()).currentItemTitle).toBe('The Feature');
+  });
+
+  it('hands the popup null when the queue does not hold the playing item', async () => {
+    await connectRoom();
+    room.emit('queue.state', { items: [queueRow('q_b', 'The Short', SECOND)], version: 1 });
+    room.emit('sync.state', playbackAt(0, FEATURE));
+
+    expect((await status()).currentItemTitle).toBeNull();
+  });
+
+  it('hands the popup null with no session at all', async () => {
+    const answer = await status();
+
+    expect(answer.connected).toBe(false);
+    expect(answer.currentItemTitle).toBeNull();
+  });
+
   it('says nothing is next at the end of the queue', async () => {
     await connectRoom();
     room.emit('queue.state', { items: [queueRow('q_b', 'The Short', SECOND)], version: 1 });
@@ -3124,6 +3153,13 @@ describe('manifest permissions', () => {
     for (const permission of ['offscreen', 'storage', 'activeTab', 'scripting', 'alarms']) {
       expect(manifest.permissions, permission).toContain(permission);
     }
+  });
+
+  it('declares search — the popup asks the user’s own default engine', () => {
+    // chrome.search.query is the "find it where you are" button: the user's
+    // engine, the user's pick of site, on a user gesture. Without the
+    // permission the call throws instead of searching.
+    expect(manifest.permissions).toContain('search');
   });
 
   it('demands no host at install — every content origin is an optional grant', () => {

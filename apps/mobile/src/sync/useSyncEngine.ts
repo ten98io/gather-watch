@@ -4,17 +4,15 @@
  * DriftController nudge/seek hysteresis) is NOT reimplemented here; this hook
  * only bridges it to the player's imperative API.
  *
- * Transport: sync beacons/state ride the room WS today (server-authoritative
- * sync.state + clock.ping/pong). The P2P path (one sender broadcasts beacons
- * over DataChannels; followers run the same estimator against beacon
- * timestamps) is a DOCUMENTED SEAM, not wired: @gather/p2p's BeaconFollower
- * requires an injected RTCPeerConnection (react-native-webrtc), which is a
- * native-milestone install. Only p2p TYPES are referenced below so the seam
- * stays type-checked; no p2p runtime code is loaded by the app.
- *
- * There is no election behind that seam any more. The master seat (and
- * @gather/p2p's MasterElection with it) was deleted; whatever eventually
- * drives BeaconSender has to be chosen some other way.
+ * Transport: sync state rides the room WS today (server-authoritative
+ * sync.state + clock.ping/pong). The P2P beacon seam that used to be
+ * documented here WAS REMOVED with the master clock: @gather/p2p's
+ * BeaconSender/BeaconFollower were deleted in the owner-authorized orphan
+ * cleanup (they were built for the deleted MasterElection and nothing ever
+ * constructed them). Only the BeaconState TYPE survives in @gather/p2p, and
+ * only because the SyncTransport seam type below pins the shape; no p2p
+ * runtime code is loaded by the app. A future p2p transport would have to
+ * bring its own beacon machinery AND a way to choose the sender.
  */
 import { useEffect, useRef } from 'react';
 import {
@@ -29,9 +27,9 @@ import type { BeaconState } from '@gather/p2p';
 import type { VideoPlayer } from 'expo-video';
 import { mediaIdentity } from './advance';
 
-/** Seam for the future beacon transport (see header). `ws` is the only
- *  implemented arm; `p2p` pins the @gather/p2p BeaconState shape the mobile
- *  follower will consume once react-native-webrtc lands. */
+/** Transport marker. `ws` is the only implemented arm; `p2p` merely pins the
+ *  @gather/p2p BeaconState shape — the beacon machinery behind it was removed
+ *  with the master clock (see header). */
 export type SyncTransport =
   | { kind: 'ws' }
   | { kind: 'p2p'; latestBeacon: BeaconState | null };

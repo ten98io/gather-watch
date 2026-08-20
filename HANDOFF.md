@@ -42,9 +42,9 @@ nothing ever writes anything else). `'cf-sfu'` is still in the schema
 is a layout, not a transport. No room ever successfully used LiveKit; it is
 deleted from the codebase.
 
-Gates at the end of this session (2026-08-20), forced, three consecutive
-all-green runs: **35/35 tasks — build 8/8, typecheck 9/9, test 207 files /
-2759 passed / 18 skipped, lint 9/9.** Build is 8 and not 9 because
+Gates at the end of this session (2026-08-20, second cycle), forced,
+consecutive all-green runs: **35/35 tasks — build 8/8, typecheck 9/9, test
+207 files / 2769 passed / 18 skipped, lint 9/9.** Build is 8 and not 9 because
 `apps/mobile` has no `build` script. NOTE `apps/web/turbo.json` now orders
 web's typecheck after web's OWN build: tsconfig includes `.next/types/**`,
 `next build` wipes `.next` mid-run, and the parallel typecheck died with
@@ -246,7 +246,8 @@ Reviewed and deliberately NOT changed (decisions, not oversights):
 - `restream.start` is membership-gated but not role-gated — guests may share;
   that is the product's ungated-share doctrine, not a hole.
 - `sync.advance`'s unknown-duration floor PRICES a skip rather than proving
-  one (open item 4; closing it needs duration resolution on queue insert).
+  one (open item 4 — CLOSED 2026-08-20 by resolution on queue insert; the
+  floor survives only for rows no resolver and no player has measured yet).
 - Refresh reuse detection scans live sessions in memory — O(n) per failed
   refresh; fine at current scale, worth a `rotatedHashes` array-contains query
   if session counts grow.
@@ -298,7 +299,11 @@ Reviewed and deliberately NOT changed (decisions, not oversights):
   environment-free: `providerForHost` takes hostnames, URL parsing stays
   app-side. Adding a service is one edit.
 - **Manifest narrowed for store review (FEATURE_PLAN 3.2 DONE).** The install
-  demands NO host access: `host_permissions` gone,
+  demands no host access beyond Gather's OWN API origin — stamped at build by
+  `stampManifest`, because an extension bypasses CORS only for origins it
+  holds, and zero host access made every worker API call die in preflight
+  ("Failed to fetch", found by the owner in the real browser on 2026-08-20;
+  the suite fakes fetch and cannot see this class). Otherwise:
   `optional_host_permissions: ["<all_urls>"]`, and content.js reaches sites
   three ways — (1) a registered content script (`gather-driver`) mirroring
   the granted origins (allFrames + matchOriginAsFallback + persist), (2)
@@ -359,6 +364,25 @@ are backlog; "all supported sites" covers known embed providers); the
 popup's grant offer snapshots the tab at popup open (gesture-synchronous
 request requires it); a mute set during an ad does not transfer to the film.
 
+**Same day, second cycle (owner-directed cleanup + milestone + adversarial):**
+the owner's region vision recorded in `docs/CONTENT_MATCHING.md` (user finds
+it → extension syncs it, already true; "find it where you are" via the
+user's own default engine); the **search bridge** shipped (popup button →
+`chrome.search.query`, `search` permission — the first CONTENT_MATCHING
+slice); **0.6 completed** (see closed open item 4 — placeholder-guarded
+titles, budgeted enrichment, adder duration hints discarded); **orphans
+resolved** (section above); **docs truth-swept** and the Mode A/Mode B
+vocabulary retired from docs prose; **FEATURE_PLAN milestone-verified
+end-to-end** — Phase 0 is essentially done (0.1–0.4/0.6/0.8 were already
+wired in earlier sessions; the plan just didn't know), the landing page and
+theater mode exist, and the DRM head-to-head cell is honestly ◐ until the
+verification run is logged. Real-browser testing by the owner caught the
+one blocker the suite structurally cannot (fetch is faked): **zero host
+permissions had removed the extension's CORS exemption for its own API** —
+every call died as "Failed to fetch"; fixed by stamping the API origin as
+the single install-time host permission (portless match pattern — patterns
+with ports are invalid to Chrome).
+
 ## Open items
 
 1. **TURN keys** (user action) — voice dropouts persist until `CF_TURN_KEY_ID`
@@ -378,20 +402,21 @@ request requires it); a mute set during an ad does not transfer to the film.
    a ceiling on top of the governor for relayed links only.
    `packages/p2p/src/mesh.ts` classifies each link `direct`/`relayed` and
    applies the cap to the `share` sender on relayed links only.
-4. **The advance guard PRICES a skip rather than verifying one when
-   `durationMs` is null.** `endingIsPlausible` in
-   `services/api/src/modules/sync/service.ts` has two branches and they are not
-   equally strong. With a known duration it genuinely verifies: the room's own
-   media clock, projected to now, must have reached the end minus a grace, so
-   the cost of a false skip is the item's whole remaining runtime. With
-   `durationMs === null` — nullable on `QueueItem` and null for most YouTube
-   rows, so this is the *common* case — there is no end to aim at, and the
-   branch instead demands `projected >= ADVANCE_UNKNOWN_DURATION_FLOOR_MS`
-   (20 s). That is a price, not a proof: a member can walk a queue of unresolved
-   rows at 20 s each. Fail-open is the deliberate, correct direction (a false
-   refuse strands the whole room on a finished item), but do not read the guard
-   as authorization. Closing it needs duration resolution on queue insert, not
-   a bigger floor.
+4. ~~The advance guard PRICES a skip rather than verifying one when
+   `durationMs` is null.~~ **CLOSED 2026-08-20**, the way this item asked:
+   duration resolution on queue insert. `QueueService.add` background-enriches
+   every insert through the metadata resolver (title past the
+   `isPlaceholderTitle` guard, artwork, `durationMs`), so resolved rows hit
+   `endingIsPlausible`'s VERIFY branch (`services/api/test/
+   queue-insert-resolution.test.ts` pins refuse-at-21s / accept-at-the-end on
+   a resolved ten-minute row). Honest residuals, stated: only Vimeo's oEmbed
+   carries a duration, so most rows still fill from the FIRST player report
+   (`sync.duration`, fill-once, interstitial-vetoed extension-side) and are
+   priced at the 20 s floor until one arrives; the adder's own duration hint
+   is now DISCARDED at insert (a member-chosen number was a lever on the
+   guard — review find, 2026-08-20); and enrichment is budgeted per user
+   (20/min, mirroring the REST tier on the identical lookup) so the WS door
+   cannot out-fetch `POST /media/resolve`.
 5. **The CF Realtime SFU client lane is not built.** The capacity fallback
    exists as a config surface (`CF_SFU_APP_ID` / `CF_SFU_API_TOKEN`) and a
    provider class (`packages/p2p/src/relay.ts` `CfSfuProvider`), and nothing
@@ -503,39 +528,32 @@ uploads panel no longer calls deleted media routes — `ChunkedUploader` and
 pinning it; and a `page` item with no extension now renders `PageLinkStage`
 instead of a blank stage.
 
-## Orphans — reported, not deleted
+## Orphans — resolved 2026-08-20 (owner-authorized cleanup)
 
-Each of these is live, compiling, tested code with **no production caller**. None
-is a bug today; each is a decision someone has to make on purpose, and a wrong
-deletion is worse than a surviving orphan. Listed so the next reader does not
-mistake any of them for a working path.
+The long-standing orphan inventory got its decisions. THREE WERE DELETED —
+do not go looking for them, and treat any doc that still calls them live as
+stale:
 
-- **`BeaconSender` / `BeaconFollower`** (`packages/p2p/src/beacon.ts`) — the
-  DataChannel sync-beacon pipeline. Nothing outside the package constructs
-  either; the file says so itself ("there is no longer an election to wire this
-  to: MasterElection was deleted"), and `apps/mobile/src/sync/useSyncEngine.ts`
-  calls it a documented seam. It was built for the master clock, and the master
-  clock is gone. Either wire it as a latency optimisation over the
-  server-authoritative state, or delete it — do not leave a reader believing
-  beacons are in the path.
-- **`ChunkedUploader` + `media.createUpload` / `completeUpload`**
-  (`packages/api-client`) — the multipart upload session. The API serves no
-  `/media/uploads` route (that was `services/media`), and `apps/web` no longer
-  calls it. `rest.ts` says exactly this in a comment beside the two methods.
-  Chat attachments do **not** go through here; they use
-  `POST /rooms/:roomId/attachments` and only borrow the schemas.
-- **`restream.handoff`** — declared on the wire, deliberately unhandled by the
-  server, sent by no client. Intentional and documented in
-  `services/api/src/modules/restream/index.ts`; noted here so nobody "fixes" the
+- ~~`BeaconSender` / `BeaconFollower`~~ **DELETED** (`packages/p2p/src/beacon.ts`
+  and its tests are gone). Built for the deleted master clock; git history
+  keeps it if a latency optimisation ever wants the pattern back. The
+  `BeaconState` TYPE survives in `packages/p2p/src/channels.ts` — mobile's
+  `SyncTransport` seam still names it (type-only); retiring that arm is a
+  future mobile edit.
+- ~~`ChunkedUploader` + `media.createUpload` / `completeUpload`~~ **DELETED**
+  from `packages/api-client`. Chat attachments never went through here
+  (`POST /rooms/:roomId/attachments`); the CreateUpload/CompleteUpload
+  SCHEMAS stay in contracts, pinned by `apps/web/test/no-library.test.ts`.
+- ~~`ENABLE_MEDIA_PIPELINE`~~ **DELETED** from `services/api/src/config.ts`;
+  `config-media-pipeline.test.ts` is the absence tombstone (the coturn
+  pattern). `GET /admin/overview` hardcodes `mediaPipeline: false` because
+  the contracts field and the web admin page still expect it — dropping the
+  wire field is a small contracts+web follow-up.
+- **`restream.handoff`** — KEPT, deliberately: declared on the wire,
+  unhandled by the server, sent by no client. Intentional and documented in
+  `services/api/src/modules/restream/index.ts`; noted so nobody "fixes" the
   error reply by silently succeeding.
-- **`ENABLE_MEDIA_PIPELINE`** — parsed into `AppConfig` and reported by
-  `GET /admin/overview` as `mediaPipeline`. Nothing else reads it, and there is
-  no pipeline left to enable.
-- **Two empty directories**, `services/api/test/chat/` and
-  `services/api/test/rooms/`. The chat suite lives flat
-  (`test/chat-wiring.test.ts`, `test/chat-attachment-validation.test.ts`,
-  `test/attachments.test.ts`, `src/modules/chat/unfurl.test.ts`), so the nested
-  layout `docs/history/CHAT_K3_BRIEF.md` prescribes was never populated.
+- The two empty test directories the old list mentioned no longer exist.
 
 ## Traps discovered the hard way
 
@@ -692,7 +710,7 @@ come from GitHub — pushing to main redeploys both Railway services.
 
 Before you change anything, re-run the gates yourself with --force
 (build/typecheck/test/lint) and `git status`. The forced numbers to beat:
-35/35 tasks — test 207 files / 2759 passed / 18 skipped. (web's typecheck
+35/35 tasks — test 207 files / 2769 passed / 18 skipped. (web's typecheck
 now orders after its own build — apps/web/turbo.json — so the old
 .next/types TS6053 flake cannot recur; if you see it, something regressed.)
 
@@ -734,23 +752,26 @@ Then, in this order:
    frame enumeration at grant time (or an "allow everywhere" affordance)
    closes the long tail; design against the README's Honest limits entry.
 
-Backlog after those: content-matching ladder (item 16), user-relations
-layer (13), theater mode (14), admin console (15), mobile WebView
-postMessage bridge (6), duration resolution on queue insert (4 — note the
-extension now also VETOES interstitial durations, so resolve-on-insert is
-the remaining half), account linking + playlist import, media-anchored
-chat's server half, the ≤3-step flow audit, and the Mode A/Mode B rename
-in remaining prose.
+Backlog after those: content-matching ladder rungs 2–4 (item 16 — the
+search bridge shipped as the first slice; readiness handshake next),
+user-relations layer (13), theater mode (14), admin console hardening (15),
+mobile WebView postMessage bridge (6), external-ID enrichment on
+ResolvedMedia, account linking + playlist import, media-anchored chat's
+server half, the ≤3-step flow audit, the admin-overview mediaPipeline wire
+field's contracts+web removal, and the Mode A/Mode B rename in the
+remaining CODE comments (docs prose is done; 'modeB' capability strings in
+protocol.ts are wire-compat, rename deliberately).
 
 There is ONE tier: no billing, no plans, no entitlements. Any doc, brief or
 comment that tells you to add one is stale — fix the doc, do not build it.
 The seven files in docs/history/ are records of why the code looks the way it
 does, never instructions; each one's header lists what in it is already dead.
 
-Read the "Orphans" section before deleting anything that looks unused —
-BeaconSender/BeaconFollower, ChunkedUploader, restream.handoff and
-ENABLE_MEDIA_PIPELINE are all live, tested code with no production caller.
-Each needs a decision, not a reflex.
+The orphan inventory was RESOLVED 2026-08-20 (see "Orphans — resolved"):
+BeaconSender/BeaconFollower, ChunkedUploader and ENABLE_MEDIA_PIPELINE are
+deleted; restream.handoff is deliberately kept unhandled. Before deleting
+anything ELSE that looks unused, the rule stands: verify producers and
+callers first, and REPORT rather than delete when in doubt.
 
 Use Workflow agents with DISJOINT file scopes — two agents in one file means
 the second write silently loses the first. Prove fixes by mutation (break →
