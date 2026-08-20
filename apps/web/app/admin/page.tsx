@@ -88,6 +88,17 @@ function OverviewPanel() {
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="default">store: {o.adapters.store}</Badge>
         <Badge variant="default">bus: {o.adapters.bus}</Badge>
+        {/* Observed, not read off env: 'failing' means a key is set and the
+            issue did not produce a relay — the state that read exactly like a
+            working one for two sessions while every hard-NAT call died. */}
+        {o.relay !== undefined && (
+          <Badge
+            variant={o.relay.state === 'ok' ? 'default' : 'aurora'}
+            title={o.relay.detail ?? undefined}
+          >
+            relay: {o.relay.state}
+          </Badge>
+        )}
         <Badge variant="muted">node {o.nodeVersion}</Badge>
         <Badge variant="muted">rss {o.memoryRssMb} MB</Badge>
         <Badge variant="muted">up {upH}h {upM}m</Badge>

@@ -29,8 +29,14 @@
  * call is a room full of people rather than an empty rectangle.
  *
  * Honesty notes:
- *   • Every call is a device-to-device mesh: there is one join path, and the
- *     stage badge names the mode the media actually travels in.
+ *   • Every call is a mesh, and the badge names the route the media is TAKING
+ *     rather than the one the architecture prefers — direct, relayed, or not
+ *     yet known. It read "Private · device-to-device" unconditionally, which
+ *     is the one claim a privacy promise cannot afford to guess at.
+ *   • A link that never comes up is named as such, once the mesh's own ICE
+ *     recovery budget has run out, and the room says whether the reason was a
+ *     deployment with no relay to fall back on. "Reconnecting…" forever is
+ *     indistinguishable from a slow network and gives nobody a next step.
  *   • The speaking ring is measured from the actual audio (WebAudio peak on
  *     the live tracks), never simulated. Where WebAudio is unavailable the
  *     ring simply stays off.
@@ -52,7 +58,7 @@ import {
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
-import type { MeshConnectionState } from '@gather/p2p';
+import type { MeshConnectionState, MeshLinkState } from '@gather/p2p';
 import { voiceActiveFrom } from '@gather/sync-core';
 import { api } from '@/lib/api';
 import { publishSpeechActive, publishVoiceActive } from '@/lib/player/room-audio';
@@ -63,10 +69,9 @@ import {
   onAudioSinkClaims,
   setCallIntent,
 } from '@/lib/call-mesh';
-import type { RemoteTrackEntry } from '@/lib/call-mesh';
+import type { RelayAvailability, RemoteTrackEntry } from '@/lib/call-mesh';
 import { describeError } from '@/lib/describe-error';
 import { presenceIdleStateFor } from '@/lib/media-kind';
-import { RELAY_SHORT_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -100,8 +105,8 @@ export interface CallParticipant {
   speaking: boolean;
   /** The camera track to render, when this person is publishing one. */
   videoTrack: MediaStreamTrack | null;
-  /** Their link is down and the mesh is retrying — say so on the tile. */
-  linkTrouble: boolean;
+  /** Where their link stands, in the only four states that are true. */
+  linkStatus: LinkStatus;
 }
 
 export interface CallSessionValue {
@@ -122,8 +127,12 @@ export interface CallSessionValue {
   participants: CallParticipant[];
   publisherCap: number;
   capReached: boolean;
-  /** 'Private' / 'Relayed' — the badge the privacy page promises. */
+  /** Where this call's media is actually going, folded over its live links. */
+  mediaPath: CallPath;
+  /** The badge the privacy page promises, and now the truth: {@link CALL_PATH_LABEL}. */
   relayLabel: string;
+  /** One sentence when somebody in this call cannot be reached, else null. */
+  connectivityNote: string | null;
   join(): void;
   leave(): void;
   toggleMic(): void;
@@ -146,6 +155,174 @@ export function deviceLossNote(input: { micLost: boolean; camLost: boolean }): s
   if (input.micLost) return 'Your microphone disconnected — nobody can hear you.';
   if (input.camLost) return 'Your camera disconnected — your video stopped.';
   return null;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Link honesty — what a tile, a badge and a sentence are allowed to claim
+
+   The room already knew all of this and never said any of it. A peer whose
+   link never came up showed "Reconnecting…" for as long as the tab stayed
+   open, which is indistinguishable from a slow network and gives nobody a next
+   step; the badge said "Private · device-to-device" whether the media was
+   going device to device or through a rented relay; and a deployment with no
+   relay at all — the one configuration that makes 5–25% of real network pairs
+   fail outright — was invisible from the product.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/** Where one person's link stands. Four states, and none of them is a guess. */
+export type LinkStatus = 'ok' | 'connecting' | 'reconnecting' | 'unreachable';
+
+/**
+ * One person's link status.
+ *
+ * `everConnected` is what separates the two middle states, and the distinction
+ * is not pedantry: "Reconnecting…" told the owner's two testers that something
+ * they'd had was coming back, when in fact nothing had ever been established
+ * between them. A link that has never carried a packet is CONNECTING.
+ *
+ * 'unreachable' is the mesh's own verdict (CallMesh.onUnreachablePeer), not a
+ * deadline invented here — the ICE recovery budget is what ends, and a second
+ * timer racing it could only ever contradict it.
+ */
+export function linkStatusFor(input: {
+  connection: MeshConnectionState | undefined;
+  everConnected: boolean;
+  unreachable: boolean;
+}): LinkStatus {
+  if (input.unreachable) return 'unreachable';
+  const state = input.connection;
+  if (state === undefined) return 'ok';
+  if (TROUBLED_LINK.has(state)) return input.everConnected ? 'reconnecting' : 'connecting';
+  // 'new' is the instant between constructing a peer connection and offering
+  // on it; labelling that would put "Connecting…" under every tile that has
+  // just appeared, including ones that connect immediately.
+  if (state === 'connecting') return 'connecting';
+  return 'ok';
+}
+
+/** What a tile says about a link that is not simply working. */
+export const LINK_STATUS_LABEL: Record<Exclude<LinkStatus, 'ok'>, string> = {
+  connecting: 'Connecting…',
+  reconnecting: 'Reconnecting…',
+  unreachable: 'Can’t connect',
+};
+
+/**
+ * Where the call's media is going, folded over every link in it.
+ *
+ * A call is only private if EVERY link is direct — one relayed link means a
+ * server is carrying part of this conversation, and the badge that says
+ * otherwise is the one lie a privacy promise cannot survive.
+ */
+export type CallPath =
+  | 'alone'
+  | 'connecting'
+  | 'direct'
+  | 'relayed'
+  | 'mixed'
+  | 'unknown'
+  | 'none';
+
+/**
+ * Fold the live links into the one thing the badge may claim.
+ *
+ * The order of the tests is the honesty: relay beats everything (it is the
+ * fact that costs a privacy claim), an unclassified but CONNECTED link beats
+ * 'direct' (classifyLinkStats refuses to guess, and so must this), 'connecting'
+ * is only for links genuinely still trying, and a call whose every link has
+ * been given up on is carrying nothing at all — which is neither private nor
+ * connecting, and used to read as the latter.
+ */
+export function callPathFrom(
+  links: ReadonlyArray<{
+    connection: MeshConnectionState | undefined;
+    path: MeshLinkState;
+    /** The mesh has stopped trying this link (CallMesh.onUnreachablePeer). */
+    lost: boolean;
+  }>,
+): CallPath {
+  if (links.length === 0) return 'alone';
+  let direct = 0;
+  let relayed = 0;
+  let unclassified = 0;
+  let pending = 0;
+  let lost = 0;
+  for (const link of links) {
+    if (link.lost) lost += 1;
+    else if (link.path === 'relayed') relayed += 1;
+    else if (link.path === 'direct') direct += 1;
+    else if (link.connection === 'connected') unclassified += 1;
+    else pending += 1;
+  }
+  if (relayed > 0) return direct > 0 ? 'mixed' : 'relayed';
+  if (unclassified > 0) return 'unknown';
+  if (pending > 0) return 'connecting';
+  if (lost === links.length) return 'none';
+  return 'direct';
+}
+
+/**
+ * The badge, per path.
+ *
+ * 'relayed' names the relay AND keeps the encryption promise in the same
+ * breath, because the two are separate facts and dropping the second turns an
+ * honest disclosure into a scare: a relay forwards packets it cannot read.
+ * 'unknown' claims nothing at all — the link is up and this browser would not
+ * say by which route.
+ */
+export const CALL_PATH_LABEL: Record<CallPath, string> = {
+  alone: 'Device-to-device',
+  connecting: 'Connecting…',
+  direct: 'Private · direct',
+  relayed: 'Relayed · encrypted',
+  mixed: 'Partly relayed',
+  unknown: 'Connected',
+  none: 'Not connected',
+};
+
+/** Name the people a sentence is about, without ever growing past a line. */
+function nameList(names: readonly string[]): string {
+  const [first, second] = names;
+  if (first === undefined) return '';
+  if (names.length === 1) return first;
+  if (names.length === 2 && second !== undefined) return `${first} and ${second}`;
+  return `${first} and ${String(names.length - 1)} others`;
+}
+
+/**
+ * The sentence the owner's production test never got.
+ *
+ * Two people joined, both tiles rendered, the room said "2 IN CALL", and
+ * neither could see or hear the other — with nothing on screen to say why. The
+ * cause was a deployment with no relay configured, which the client knew from
+ * its first credential fetch and never mentioned.
+ *
+ * Written for a person: no ICE, no NAT, no TURN. Precise enough to act on —
+ * "a different network" is the move that actually works, and it is the only
+ * one, because a reload rebuilds the same impossible link.
+ *
+ * It names WHO when only some links died, and stays whole-call only when every
+ * other person is unreachable: the mesh is per-link, and one person on a
+ * hostile network must not make a working call look broken.
+ */
+export function connectivityNote(input: {
+  /** Display names of the people who cannot be reached. */
+  names: readonly string[];
+  /** How many other people are in the call altogether. */
+  others: number;
+  relay: RelayAvailability;
+}): string | null {
+  if (input.names.length === 0) return null;
+  const everyone = input.others > 1 && input.names.length >= input.others;
+  const subject = everyone ? 'anyone else' : nameList(input.names);
+  if (input.relay === 'absent') {
+    return (
+      `Can’t connect to ${subject} — your networks can’t reach each other directly, and ` +
+      'this room has no relay to pass the call through. Trying a different network, or a ' +
+      'phone hotspot, usually gets around it.'
+    );
+  }
+  return `Can’t connect to ${subject} — the connection never came up. Reloading the page usually fixes it.`;
 }
 
 const CallSessionContext = createContext<CallSessionValue | null>(null);
@@ -451,9 +628,23 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const [localCam, setLocalCam] = useState<MediaStreamTrack | null>(null);
   const [remoteVideos, setRemoteVideos] = useState<RemoteTrackEntry[]>([]);
   const [remoteAudios, setRemoteAudios] = useState<RemoteTrackEntry[]>([]);
-  const [linkStates, setLinkStates] = useState<ReadonlyMap<UserId, MeshConnectionState>>(
+  const [connStates, setConnStates] = useState<ReadonlyMap<UserId, MeshConnectionState>>(
     () => new Map(),
   );
+  /** Where each peer's media actually travels, once a stats poll classifies it. */
+  const [linkPaths, setLinkPaths] = useState<ReadonlyMap<UserId, MeshLinkState>>(() => new Map());
+  /** Peers the mesh has stopped trying to reach. */
+  const [unreachable, setUnreachable] = useState<ReadonlySet<UserId>>(() => new Set());
+  /** Whether this deployment has a relay at all — known before anyone dials. */
+  const [relay, setRelay] = useState<RelayAvailability>('unknown');
+  /**
+   * Peers whose link has been up at least once this session.
+   *
+   * A ref, and correct as one: it only grows, and it is consulted about a link
+   * that is down NOW, which is a later render than the one that recorded the
+   * connection. It is what separates "Reconnecting…" from "Connecting…".
+   */
+  const everConnectedRef = useRef(new Set<UserId>());
   /** Track ids whose sink autoplay refused; non-empty means offer the tap. */
   const [soundBlocked, setSoundBlocked] = useState<ReadonlySet<string>>(() => new Set());
   const [resumeNonce, setResumeNonce] = useState(0);
@@ -496,13 +687,35 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       else setRemoteAudios(drop);
     });
     const offLink = mesh.onConnectionState((userId, state) => {
-      setLinkStates((prev) => {
+      if (state === 'connected') everConnectedRef.current.add(userId);
+      setConnStates((prev) => {
         if (prev.get(userId) === state) return prev;
         const next = new Map(prev);
         next.set(userId, state);
         return next;
       });
     });
+    // Three signals the mesh has always had and the room never showed: which
+    // route each link takes, which links it has given up on, and whether there
+    // was ever a relay to fall back on.
+    const offPath = mesh.onLinkState((userId, state) => {
+      setLinkPaths((prev) => {
+        if (prev.get(userId) === state) return prev;
+        const next = new Map(prev);
+        next.set(userId, state);
+        return next;
+      });
+    });
+    const offUnreachable = mesh.onUnreachablePeer((userId, lost) => {
+      setUnreachable((prev) => {
+        if (prev.has(userId) === lost) return prev;
+        const next = new Set(prev);
+        if (lost) next.add(userId);
+        else next.delete(userId);
+        return next;
+      });
+    });
+    const offRelay = mesh.onRelayAvailability(setRelay);
     // The empty onError this used to pass is the whole of "it just doesn't
     // work and I have no idea why". The mesh sends one plain sentence per
     // kind of failure, and only once media is actually at stake.
@@ -514,6 +727,9 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       offRemote();
       offRemoved();
       offLink();
+      offPath();
+      offUnreachable();
+      offRelay();
       offError();
     };
   }, [connection, me]);
@@ -918,7 +1134,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         sharing: presence[me]?.sharing === true,
         speaking: micOn && !micLost && speakingIds.has(me),
         videoTrack: camOn ? localCam : null,
-        linkTrouble: false,
+        linkStatus: 'ok',
       });
     }
     for (const userId of peerIds) {
@@ -944,10 +1160,16 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         // A sharing peer's video is already on the stage, and the mesh cannot
         // tell their camera track from their screen track — show the avatar.
         videoTrack: camOnPeer && !sharing ? video : null,
-        linkTrouble: TROUBLED_LINK.has(linkStates.get(userId) ?? 'new'),
+        linkStatus: linkStatusFor({
+          connection: connStates.get(userId),
+          everConnected: everConnectedRef.current.has(userId),
+          unreachable: unreachable.has(userId),
+        }),
       });
     }
     return list;
+    // everConnectedRef is a ref by design (above); connStates is the clock —
+    // nothing joins that set without also moving a connection state.
   }, [
     phase,
     me,
@@ -960,8 +1182,40 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     memberById,
     speakingIds,
     videoByUser,
-    linkStates,
+    connStates,
+    unreachable,
   ]);
+
+  /* ── what the call may claim about itself ──────────────────────────────────
+     Both of these fold over the CALL's links only. The mesh connects the whole
+     room — it carries the DataChannel fabric, and a lurker's connection is as
+     real as a caller's — so a badge folded over every peer would answer for
+     links no call media has ever touched. */
+  const mediaPath = useMemo(
+    () =>
+      callPathFrom(
+        peerIds.map((userId) => ({
+          connection: connStates.get(userId),
+          path: linkPaths.get(userId) ?? 'unknown',
+          lost: unreachable.has(userId),
+        })),
+      ),
+    [peerIds, connStates, linkPaths, unreachable],
+  );
+
+  const connectivity = useMemo(
+    () =>
+      connectivityNote({
+        names: participants
+          .filter((p) => p.linkStatus === 'unreachable')
+          // The roster's placeholder for a member row that has not loaded is a
+          // capitalised 'Someone', which mid-sentence reads as a name.
+          .map((p) => (p.name === 'Someone' ? 'someone' : p.name)),
+        others: participants.filter((p) => !p.isMe).length,
+        relay,
+      }),
+    [participants, relay],
+  );
 
   /* ── what the content player has to answer to ──────────────────────────────
      Two signals, deliberately read from two different places (see
@@ -1014,7 +1268,9 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       participants,
       publisherCap,
       capReached: inCallCount >= publisherCap && phase !== 'in-call',
-      relayLabel: RELAY_SHORT_LABEL[room.relayMode],
+      mediaPath,
+      relayLabel: CALL_PATH_LABEL[mediaPath],
+      connectivityNote: connectivity,
       join,
       leave,
       toggleMic,
@@ -1027,7 +1283,8 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       camOn,
       micLost,
       camLost,
-      room.relayMode,
+      mediaPath,
+      connectivity,
       participants,
       publisherCap,
       inCallCount,
@@ -1096,12 +1353,19 @@ function TrackVideo({ track, mirror }: { track: MediaStreamTrack; mirror: boolea
   );
 }
 
+/** How a link reads to a screen reader; the visible labels are uppercase. */
+const LINK_STATUS_SPOKEN: Record<Exclude<LinkStatus, 'ok'>, string> = {
+  connecting: 'connecting',
+  reconnecting: 'reconnecting',
+  unreachable: 'cannot connect',
+};
+
 /** One person's state in words — the tile's accessible label, and the orb's. */
 function statusOf(p: CallParticipant): string {
   const base = p.camOn ? (p.micOn ? 'mic on' : 'muted') : p.micOn ? 'camera off' : 'camera off, muted';
   // A tile is the only place a broken link is visible per person; the toast
   // says it once for the call, this says which tile it happened to.
-  return p.linkTrouble ? `${base}, reconnecting` : base;
+  return p.linkStatus === 'ok' ? base : `${base}, ${LINK_STATUS_SPOKEN[p.linkStatus]}`;
 }
 
 /**
@@ -1193,7 +1457,7 @@ function CallTile({
   compact?: boolean;
   onTurnOnCamera?: (() => void) | undefined;
 }) {
-  const { name, micOn, camOn, sharing, speaking, videoTrack, isMe, linkTrouble } = participant;
+  const { name, micOn, camOn, sharing, speaking, videoTrack, isMe, linkStatus } = participant;
   return (
     <figure
       className={cn(
@@ -1250,7 +1514,7 @@ function CallTile({
         </span>
       )}
 
-      {linkTrouble && (
+      {linkStatus !== 'ok' && (
         <span
           className={cn(
             'pointer-events-none absolute inset-x-1 bottom-1 truncate rounded-full px-2 py-0.5',
@@ -1258,7 +1522,7 @@ function CallTile({
             OVER_VIDEO,
           )}
         >
-          Reconnecting…
+          {LINK_STATUS_LABEL[linkStatus]}
         </span>
       )}
     </figure>
@@ -1323,8 +1587,18 @@ function OrbCluster({
                   </figcaption>
                 ))}
             </figure>
-            {p.linkTrouble && !compact && (
-              <p className="w-full truncate text-center text-caption text-low">Reconnecting…</p>
+            {p.linkStatus !== 'ok' && !compact && (
+              // 'unreachable' is a verdict, not a wait: it takes the danger
+              // rung so an orb that has stopped trying does not read like one
+              // that is still going.
+              <p
+                className={cn(
+                  'w-full truncate text-center text-caption',
+                  p.linkStatus === 'unreachable' ? 'text-danger' : 'text-low',
+                )}
+              >
+                {LINK_STATUS_LABEL[p.linkStatus]}
+              </p>
             )}
           </li>
         );
@@ -1552,6 +1826,13 @@ export function CallDock({ roomId, className }: { roomId: RoomId; className?: st
           {lossNote}
         </p>
       )}
+      {/* And the other half of the same rule: a tile that has stopped trying
+          gets three words, and the reason gets a sentence. */}
+      {call.connectivityNote !== null && (
+        <p role="alert" className="mt-3 text-label text-danger">
+          {call.connectivityNote}
+        </p>
+      )}
       {/* Wider than the gaps above it: the controls are a separate block from
           the people, not the last row of them. */}
       <div className="mt-4 flex items-center justify-center gap-2">
@@ -1632,10 +1913,16 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
           {participants.length}
         </Button>
         {/* Dismissing the tiles is not consent to be told nothing: a device
-            that died is the one thing this collapsed state still owes you. */}
+            that died, and a call nobody can reach you on, are the two things
+            this collapsed state still owes you. */}
         {lossNote !== null && (
           <p role="alert" className="glass-raised rounded-ctl px-2 py-1 text-label text-danger">
             {lossNote}
+          </p>
+        )}
+        {call.connectivityNote !== null && (
+          <p role="alert" className="glass-raised rounded-ctl px-2 py-1 text-label text-danger">
+            {call.connectivityNote}
           </p>
         )}
       </div>
@@ -1675,10 +1962,15 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
       <CallTiles participants={shown} compact />
       {overflow > 0 && <p className="text-label text-low">+{overflow} more in the call</p>}
       {/* Theater and mobile see this surface and no other, so the device-loss
-          sentence has to live here too. */}
+          and connectivity sentences have to live here too. */}
       {lossNote !== null && (
         <p role="alert" className="text-label text-danger">
           {lossNote}
+        </p>
+      )}
+      {call.connectivityNote !== null && (
+        <p role="alert" className="text-label text-danger">
+          {call.connectivityNote}
         </p>
       )}
       {call.phase === 'in-call' ? <ControlBar compact /> : <JoinButton />}

@@ -490,7 +490,7 @@ describe('what may duck the content', () => {
     sharing: false,
     speaking: false,
     videoTrack: null,
-    linkTrouble: false,
+    linkStatus: 'ok',
     ...over,
   });
 

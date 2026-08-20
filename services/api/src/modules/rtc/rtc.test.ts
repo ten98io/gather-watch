@@ -1,7 +1,9 @@
 /**
  * RTC module tests: the TURN credentials strategy chain
- * (Cloudflare → STUN-only), unmetered for every account. All on memory
- * adapters; global fetch is stubbed — no network.
+ * (Cloudflare → STUN-only), unmetered for every account, and the honesty
+ * field that says whether a relay actually came through. All on memory
+ * adapters; global fetch is stubbed — no network, and no Redis or Mongo is
+ * involved in any of it.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { TurnCredentialsResponse } from '@gather/contracts';
@@ -35,6 +37,12 @@ function cloudflarePayload(): string {
       credential: 'cf-pass',
     },
   });
+}
+
+/** A 200 from Cloudflare that carries no relay: STUN reflects an address,
+ *  it cannot carry media for a peer that fails to hole-punch. */
+function stunOnlyCloudflarePayload(): string {
+  return JSON.stringify({ iceServers: { urls: ['stun:stun.cloudflare.com:3478'] } });
 }
 
 const CF_CONFIGURED = {
@@ -89,7 +97,12 @@ describe('rtc module', () => {
       ]);
       expect(fetchMock).toHaveBeenCalledOnce();
       const [url, init] = fetchMock.mock.calls[0] ?? [];
-      expect(String(url)).toBe('https://rtc.live.cloudflare.com/v1/turn/keys/kid/credentials');
+      // The suffix is the fix: the bare `/credentials` path answers 405
+      // ("reserved for future WHIP/WHEP"), so every fetch failed and the
+      // service silently served STUN-only — TURN never worked, keys or not.
+      expect(String(url)).toBe(
+        'https://rtc.live.cloudflare.com/v1/turn/keys/kid/credentials/generate-ice-servers',
+      );
       expect(init?.method).toBe('POST');
       expect((init?.headers as Record<string, string>).authorization).toBe('Bearer cf-token');
     });
@@ -126,6 +139,49 @@ describe('rtc module', () => {
         }),
       );
       expect(body.iceServers).toEqual([{ urls: ['stun:stun.l.google.com:19302'] }]);
+    });
+
+    it('says relayAvailable: false when the fallback carries no relay', async () => {
+      const { body } = await turnRequest(testConfig());
+      // The deployment state behind the silent two-person call: a STUN server
+      // and nothing that can carry a byte when hole-punching fails.
+      expect(body.relayAvailable).toBe(false);
+    });
+
+    it('says relayAvailable: true when a turn: URL is actually issued', async () => {
+      stubFetch(async () =>
+        new Response(cloudflarePayload(), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const { body } = await turnRequest(testConfig(CF_CONFIGURED));
+      expect(body.relayAvailable).toBe(true);
+    });
+
+    it('reports a failed key exactly as it reports no key — same experience', async () => {
+      stubFetch(async () => new Response('nope', { status: 403 }));
+      const { body: failed } = await turnRequest(testConfig(CF_CONFIGURED), 'bad@example.com');
+      vi.unstubAllGlobals();
+      await app.app.close();
+      const { body: absent } = await turnRequest(testConfig(), 'absent@example.com');
+      expect(failed.relayAvailable).toBe(false);
+      expect(failed.relayAvailable).toBe(absent.relayAvailable);
+      expect(failed.iceServers).toEqual(absent.iceServers);
+    });
+
+    it('reads relayAvailable off the issued URLs, not off the key being set', async () => {
+      stubFetch(async () =>
+        new Response(stunOnlyCloudflarePayload(), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const { body } = await turnRequest(testConfig(CF_CONFIGURED));
+      // Cloudflare answered, so the servers are handed through — but nothing
+      // in them relays, and the caller is told so.
+      expect(body.iceServers).toEqual([{ urls: ['stun:stun.cloudflare.com:3478'] }]);
+      expect(body.relayAvailable).toBe(false);
     });
 
     it('keeps relay URLs for a heavy user — TURN relay is unmetered', async () => {

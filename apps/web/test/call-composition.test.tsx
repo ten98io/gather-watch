@@ -95,6 +95,14 @@ vi.mock('@/lib/call-mesh', () => ({
     onRemoteTrack: () => () => undefined,
     onRemoteTrackRemoved: () => () => undefined,
     onConnectionState: () => () => undefined,
+    onLinkState: () => () => undefined,
+    onUnreachablePeer: () => () => undefined,
+    // Nothing has answered a credential fetch in this harness, and 'unknown'
+    // is what the mesh reports until one does.
+    onRelayAvailability: (fn: (state: string) => void) => {
+      fn('unknown');
+      return () => undefined;
+    },
     onError: () => () => undefined,
   }),
   closeCallMesh: () => undefined,

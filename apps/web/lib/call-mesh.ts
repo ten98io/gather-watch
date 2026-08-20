@@ -38,7 +38,7 @@ import type {
   RtcPeerConnectionLike,
   TrackRole,
 } from '@gather/p2p';
-import type { UserId } from '@gather/contracts';
+import type { TurnCredentialsResponse, UserId } from '@gather/contracts';
 import { api } from './api';
 import type { RoomConnection } from './room-connection';
 
@@ -123,6 +123,60 @@ export const CALL_PEER_LOST_NOTE =
   'Could not get the connection back to someone in the call — reloading the page usually fixes it.';
 
 /**
+ * The same budget ran out on a link that never had a relay to fall back on.
+ *
+ * This is the failure the product could always have named and never did. Two
+ * people whose networks cannot reach each other directly do not get a slow
+ * call — they get no call at all, and a deployment with no relay configured has
+ * nothing left to try. Telling them to reload here would be a lie: a reload
+ * rebuilds exactly the same impossible link.
+ */
+export const CALL_NO_RELAY_NOTE =
+  'Could not connect to someone in the call — your networks cannot reach each other ' +
+  'directly, and this room has no relay to pass the call through.';
+
+/**
+ * Whether this deployment can put a relay under a call that refuses to go
+ * direct.
+ *
+ * 'unknown' is a real answer and the starting one: until a credential fetch
+ * has actually come back, the client has been told nothing, and a client that
+ * assumed 'absent' would blame the deployment for every ordinary failure of
+ * the first four seconds.
+ */
+export type RelayAvailability = 'available' | 'absent' | 'unknown';
+
+/** True when a server list carries somewhere to relay through. A list of pure
+ *  STUN servers tells a peer where it is and nothing about how to be reached,
+ *  so a link that cannot go direct has nothing left to try. */
+function hasRelayServer(servers: readonly IceServerLike[]): boolean {
+  for (const server of servers) {
+    const urls: unknown = server.urls;
+    if (!Array.isArray(urls)) continue;
+    for (const url of urls) {
+      if (typeof url === 'string' && /^turns?:/i.test(url)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * What the credentials response SAYS about a relay, or null when it says
+ * nothing.
+ *
+ * `relayAvailable` is optional on the wire (contracts rest.ts) so a client can
+ * never out-run the API it is talking to, and an absent field must never read
+ * as "no relay" — it means nobody answered. Structural rather than typed
+ * because the guarantee has to hold against a deployed API that predates the
+ * field, which is precisely the case a compile-time type cannot describe.
+ */
+function declaredRelay(res: unknown): boolean | null {
+  if (typeof res !== 'object' || res === null) return null;
+  const flag = (res as { relayAvailable?: unknown }).relayAvailable;
+  return typeof flag === 'boolean' ? flag : null;
+}
+
+/**
  * How long someone keeps receiving our camera and microphone after presence
  * stops calling them 'in-call'.
  *
@@ -142,7 +196,7 @@ export interface RemoteTrackEntry {
 }
 
 /** What kind of failure a note describes; one note per kind, per mesh. */
-type FailureKind = 'setup' | 'peer' | 'peer-lost';
+type FailureKind = 'setup' | 'peer' | 'peer-lost' | 'no-relay';
 
 /**
  * A remote track arriving or leaving. `role` is what the publisher said it is,
@@ -159,6 +213,9 @@ type LocalTrackListener = (role: TrackRole, track: MediaStreamTrack | null) => v
 type FailureListener = (note: string) => void;
 type ConnectionStateListener = (peerId: UserId, state: MeshConnectionState) => void;
 type LinkStateListener = (peerId: UserId, state: MeshLinkState) => void;
+/** A peer's link gave up (true), or came back (false). */
+type UnreachableListener = (peerId: UserId, unreachable: boolean) => void;
+type RelayAvailabilityListener = (state: RelayAvailability) => void;
 
 export class CallMesh {
   private readonly mesh: MeshManager;
@@ -170,6 +227,12 @@ export class CallMesh {
   private readonly failureSubs = new Set<FailureListener>();
   private readonly connectionStateSubs = new Set<ConnectionStateListener>();
   private readonly linkStateSubs = new Set<LinkStateListener>();
+  private readonly unreachableSubs = new Set<UnreachableListener>();
+  private readonly relaySubs = new Set<RelayAvailabilityListener>();
+  /** Peers the mesh has stopped trying to reach; see {@link markUnreachable}. */
+  private readonly unreachable = new Set<UserId>();
+  /** What the last answered credential fetch said about a relay. */
+  private relay: RelayAvailability = 'unknown';
   /** Live remote tracks, per peer, keyed by track id (replayed to new subs). */
   private readonly remoteTracks = new Map<UserId, Map<string, MediaStreamTrack>>();
   /** The role each live remote track was published as. Held beside the tracks
@@ -206,7 +269,15 @@ export class CallMesh {
     private readonly capCamKbps?: number,
   ) {
     this.turn = new TurnCredentialManager({
-      getTurnCredentials: () => api.rtc.turnCredentials(),
+      // Read the RESPONSE, not just the servers the manager keeps: whether a
+      // relay exists at all is knowable here, before anybody dials, and it is
+      // the difference between "this link failed" and "this link could never
+      // have worked".
+      getTurnCredentials: async () => {
+        const res = await api.rtc.turnCredentials();
+        this.noteCredentials(res);
+        return res;
+      },
       now: () => Date.now(),
       setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
       clearTimeoutFn: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -241,12 +312,12 @@ export class CallMesh {
       now: () => Date.now(),
       setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
       clearTimeoutFn: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
-      onError: (_peerId, context) => {
+      onError: (peerId, context) => {
         // Per-link failures also reach the UI through connectionStates(); the
         // room stays usable when one peer can't be reached, but "nothing works
         // and I don't know why" is not an acceptable way to find that out.
         if (context === 'iceRecoveryExhausted') {
-          this.reportFailure('peer-lost', CALL_PEER_LOST_NOTE);
+          this.markUnreachable(peerId);
           return;
         }
         // A platform that cannot mint a MediaStream costs role NAMES, not the
@@ -273,6 +344,10 @@ export class CallMesh {
         // peer who leaves and returns does not resurrect a dead tile.
         if (state === 'closed') this.dropPeer(peerId);
         if (state === 'failed') this.reportFailure('peer', CALL_PEER_NOTE);
+        // A link that comes back, or a peer who goes away entirely, is no
+        // longer someone we have given up on — the verdict is not permanent
+        // and the tile carrying it must not be either.
+        if (state === 'connected' || state === 'closed') this.clearUnreachable(peerId);
         for (const fn of [...this.connectionStateSubs]) fn(peerId, state);
       }),
     );
@@ -567,6 +642,49 @@ export class CallMesh {
     };
   }
 
+  /**
+   * Whether this deployment has a relay to fall back on, as it becomes known —
+   * and the current answer, 'unknown' included, replayed to a new subscriber.
+   *
+   * Answerable BEFORE anyone dials, which is the whole point: a room that
+   * cannot relay will fail outright for a fraction of every pair of networks,
+   * and this is the fact that turns an indefinite "Reconnecting…" into a
+   * sentence somebody can act on. It is the app's to phrase — the mesh knows
+   * the configuration, not what to say about it.
+   */
+  onRelayAvailability(fn: RelayAvailabilityListener): () => void {
+    this.relaySubs.add(fn);
+    fn(this.relay);
+    return () => {
+      this.relaySubs.delete(fn);
+    };
+  }
+
+  /** Peers the mesh has stopped trying to reach. */
+  unreachablePeers(): Set<UserId> {
+    return new Set(this.unreachable);
+  }
+
+  /**
+   * Peers whose link gave up, and peers whose link came back.
+   *
+   * This is the END of the recovery budget, not a timer of the UI's own: the
+   * mesh restarts ICE a bounded number of times and then says so once, and a
+   * surface that invented its own deadline would either contradict the mesh or
+   * race it. Current verdicts are replayed to a new subscriber.
+   *
+   * WHAT it means is here; WHY is {@link onRelayAvailability}. Two facts, each
+   * with one home — carrying a cause on this event as well would give the same
+   * sentence two sources that can disagree.
+   */
+  onUnreachablePeer(fn: UnreachableListener): () => void {
+    this.unreachableSubs.add(fn);
+    for (const peerId of this.unreachable) fn(peerId, true);
+    return () => {
+      this.unreachableSubs.delete(fn);
+    };
+  }
+
   close(): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
@@ -595,12 +713,53 @@ export class CallMesh {
     this.failureSubs.clear();
     this.connectionStateSubs.clear();
     this.linkStateSubs.clear();
+    this.unreachableSubs.clear();
+    this.relaySubs.clear();
+    this.unreachable.clear();
     this.pendingNotes.clear();
     this.publishing.clear();
     this.leftCallAt.clear();
   }
 
   // ---------- internals ----------
+
+  /**
+   * Record what a credential answer says about a relay.
+   *
+   * The API's own word wins when it gives one. When it does not — an API too
+   * old to carry the field — the server list is read directly. That is not a
+   * fallback guess: the API derives its answer the same way, off the servers
+   * it actually issued, so an old deployment gets the same verdict rather than
+   * an "unknown" that would silently cost the user the sentence.
+   */
+  private noteCredentials(res: TurnCredentialsResponse): void {
+    const present = declaredRelay(res) ?? hasRelayServer(res.iceServers);
+    const next: RelayAvailability = present ? 'available' : 'absent';
+    if (next === this.relay) return;
+    this.relay = next;
+    for (const fn of [...this.relaySubs]) fn(next);
+  }
+
+  /**
+   * The mesh gave up on a link.
+   *
+   * The toast's wording answers to the SAME relay fact the surface reads, so
+   * the two cannot end up telling one person two different stories about one
+   * failure. "Reloading usually fixes it" is true of a link that died and
+   * false of a link that could never have existed.
+   */
+  private markUnreachable(peerId: UserId): void {
+    if (this.closedFlag || this.unreachable.has(peerId)) return;
+    this.unreachable.add(peerId);
+    for (const fn of [...this.unreachableSubs]) fn(peerId, true);
+    if (this.relay === 'absent') this.reportFailure('no-relay', CALL_NO_RELAY_NOTE);
+    else this.reportFailure('peer-lost', CALL_PEER_LOST_NOTE);
+  }
+
+  private clearUnreachable(peerId: UserId): void {
+    if (!this.unreachable.delete(peerId)) return;
+    for (const fn of [...this.unreachableSubs]) fn(peerId, false);
+  }
 
   /**
    * Tell the user once — but only when the failure can actually cost them

@@ -25,16 +25,20 @@ import { parseWith } from '../../plugins/error-mapper';
 import { executeTakedown, listOpenReports } from '../../cli/takedown';
 import { reportTargetAssetIds, revokeAssets } from '../chat/attachments';
 import { serializeRoom } from '../rooms/serialize';
-import type { Deps } from '../types';
+import { serviceFor as rtcServiceFor } from '../rtc';
+import type { AuthContext, Deps } from '../types';
 
-/** Admin gate: account identity + email on the ADMIN_EMAILS list. */
-async function requireAdmin(deps: Deps, request: FastifyRequest): Promise<void> {
+/** Admin gate: account identity + email on the ADMIN_EMAILS list. Returns the
+ *  admin's identity — the relay probe issues a credential and Cloudflare tags
+ *  it with whoever asked. */
+async function requireAdmin(deps: Deps, request: FastifyRequest): Promise<AuthContext> {
   const auth = requireAccount(request);
   const user = await deps.store.users.findById(auth.userId);
   const email = user?.email?.toLowerCase();
   if (email === undefined || email === null || !deps.config.adminEmails.includes(email)) {
     throw new AppError('FORBIDDEN', 'admin access requires an owner-listed account');
   }
+  return auth;
 }
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
@@ -42,8 +46,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   const { store } = deps;
 
   app.get('/admin/overview', async (request): Promise<AdminOverviewResponse> => {
-    await requireAdmin(deps, request);
-    const [users, rooms, members, messages, reportsOpen, sessionsActive, assets] =
+    const auth = await requireAdmin(deps, request);
+    const [users, rooms, members, messages, reportsOpen, sessionsActive, assets, relay] =
       await Promise.all([
         store.users.count({}),
         store.rooms.count({}),
@@ -52,6 +56,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         store.reports.count({ resolvedAt: null }),
         store.sessions.count({ revokedAt: null }),
         store.assets.count({}),
+        rtcServiceFor(deps).relayStatus(auth.userId),
       ]);
     const live = deps.hub.stats();
     return {
@@ -71,6 +76,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         gifs: deps.config.tenorApiKey !== null,
         push: deps.config.vapid.publicKey !== null,
       },
+      // Relay reality, not relay config. Without this the deployment whose
+      // TURN key is unset and the one whose key works look identical from
+      // here, while 5-25% of real links (CGNAT, symmetric NAT, UDP-blocked)
+      // cannot connect at all without a relay.
+      relay,
     };
   });
 

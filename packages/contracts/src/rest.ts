@@ -478,6 +478,18 @@ export const TurnCredentialsResponse = z.object({
   ),
   ttlSeconds: z.number().int().nonnegative(),
   fairUseRemainingGb: z.number().finite().nonnegative().nullable(),
+  /**
+   * Whether the `iceServers` above actually carry a relay — at least one
+   * turn:/turns: URL. The server reads this off what it issued, never off
+   * config, so "no keys" and "keys that failed" both report false: for a
+   * caller on CGNAT, symmetric NAT or a UDP-blocking firewall the outcome is
+   * identical, and those links do not degrade, they never connect.
+   *
+   * Optional on the wire so a client can never out-run the server it talks
+   * to. Absent means an API too old to answer — that is UNKNOWN, not false,
+   * and must not be rendered as "no relay".
+   */
+  relayAvailable: z.boolean().optional(),
 });
 export type TurnCredentialsResponse = z.infer<typeof TurnCredentialsResponse>;
 
@@ -579,6 +591,26 @@ export type DeleteMeResponse = z.infer<typeof DeleteMeResponse>;
 // The spec's safeguard clause forbids content/play-activity telemetry, so
 // nothing here exposes what users watch or say.
 
+/**
+ * Relay (TURN) reality for this deployment. Observed — the state comes from
+ * an actual credential issue, not from whether the env vars are set, because
+ * a key that no longer issues leaves every user exactly as relay-less as no
+ * key at all. Operator-facing: this split exists so the owner knows WHICH
+ * thing to fix, which is the one place the difference matters.
+ */
+export const AdminRelayStatus = z.object({
+  /** 'ok' — the last check issued a turn:/turns: URL; 'failing' — keys are
+   *  configured and produced no relay; 'not-configured' — no keys at all.
+   *  'ok' means credentials were issued, NOT that media has flowed. */
+  state: z.enum(['ok', 'failing', 'not-configured']),
+  /** What an operator would have to fix, in their words; null when 'ok'. */
+  detail: z.string().nullable(),
+  /** When this was last observed — the answer is cached briefly, so a fast
+   *  poll does not spend a credential issue per refresh. */
+  checkedAt: Timestamp,
+});
+export type AdminRelayStatus = z.infer<typeof AdminRelayStatus>;
+
 export const AdminOverviewResponse = z.object({
   now: Timestamp,
   /** Process start (epoch ms) — in-process counters reset on restart. */
@@ -609,6 +641,11 @@ export const AdminOverviewResponse = z.object({
     gifs: z.boolean(),
     push: z.boolean(),
   }),
+  /** Three-state, so it cannot live in `features` beside the booleans.
+   *  Optional on the wire for the same reason as TurnCredentialsResponse's
+   *  `relayAvailable`: the console must not break against an older API. The
+   *  server always sends it. */
+  relay: AdminRelayStatus.optional(),
 });
 export type AdminOverviewResponse = z.infer<typeof AdminOverviewResponse>;
 
