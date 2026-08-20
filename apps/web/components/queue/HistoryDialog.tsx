@@ -27,12 +27,7 @@ import { providerLabel } from '@/lib/labels';
 import { mediaKindFor } from '@/lib/media-kind';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { EmptyState } from '@/components/ui/empty-state';
 import { MediaRow } from '@/components/ui/media-row';
 import { HistoryIcon, PlusIcon } from '@/components/ui/icons';
@@ -156,7 +151,7 @@ export function HistoryList({ roomId }: { roomId: RoomId }) {
         setState({
           entries: [],
           nextBefore: null,
-          error: describeError(err, "Couldn't load what this room has played."),
+          error: describeError(err, "Couldn't load this room's history. Close this and try again."),
           loading: false,
         });
       });
@@ -195,7 +190,7 @@ export function HistoryList({ roomId }: { roomId: RoomId }) {
         setState((s) => ({
           ...s,
           loading: false,
-          error: describeError(err, "Couldn't load older entries."),
+          error: describeError(err, "Couldn't load older items. Try again."),
         }));
       });
   }, [roomId, state.nextBefore, state.loading]);
@@ -296,9 +291,6 @@ export function RecentlyPlayed({
             history this is, so the title is free to be one short noun. */}
         <p className="text-caption text-low">This room</p>
         <DialogTitle>Recently played</DialogTitle>
-        <DialogDescription>
-          Everything this room has played, newest first. Add any of it back to the queue.
-        </DialogDescription>
         <div className="mt-6 max-h-96 overflow-y-auto">
           {/* Mounted only while open, so opening the dialog is the read. */}
           {open && <HistoryList roomId={roomId} />}

@@ -76,16 +76,6 @@ const disc: React.CSSProperties = {
   color: token('textLow'),
 };
 
-const overline: React.CSSProperties = {
-  margin: 0,
-  fontSize: px(typeRamp.caption.fontSize),
-  lineHeight: px(typeRamp.caption.lineHeight),
-  fontWeight: typeRamp.caption.fontWeight,
-  letterSpacing: `${typeRamp.caption.letterSpacing}em`,
-  textTransform: 'uppercase',
-  color: token('textLow'),
-};
-
 const headline: React.CSSProperties = {
   margin: 0,
   fontSize: px(typeRamp.display.fontSize),
@@ -161,13 +151,12 @@ export default function GlobalError({
             </svg>
           </span>
           <div style={{ display: 'grid', gap: px(spacing.lg), justifyItems: 'center' }}>
-            <p style={overline}>Cold start failed</p>
             <h1 style={headline}>Gather couldn’t load.</h1>
             <p style={sentence}>{describeBoundaryError(error)}</p>
           </div>
           <div style={{ display: 'flex', gap: px(spacing.md) }}>
             <button type="button" style={control} onClick={reset}>
-              Retry
+              Try again
             </button>
             <a href="/home" style={control}>
               Back to your rooms

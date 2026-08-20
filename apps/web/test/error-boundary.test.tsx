@@ -154,14 +154,14 @@ describe('a render that throws', () => {
     expect((host.textContent ?? '').length).toBeGreaterThan(20);
   });
 
-  it('offers a real way forward, and Retry actually re-renders the tree', () => {
+  it('offers a real way forward, and Try again actually re-renders the tree', () => {
     mount(RouteError as Fallback);
     // A link home is the escape hatch that works even when retry cannot.
     const home = [...host.querySelectorAll('a')].map((a) => a.getAttribute('href'));
     expect(home).toContain('/home');
 
     shouldThrow = false;
-    click('Retry');
+    click('Try again');
     expect(host.querySelector('[data-testid="recovered"]')).not.toBeNull();
   });
 

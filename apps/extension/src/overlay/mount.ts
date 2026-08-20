@@ -83,7 +83,7 @@ export interface OverlayHandle {
 
 const HANDLE_NAME = 'Gather';
 const SEND_FAILED = 'That message did not send. Try again.';
-const SKIP_FAILED = 'The room did not move on. Try again.';
+const SKIP_FAILED = 'Couldn’t skip. Try again.';
 const CHAT_PLACEHOLDER = 'Message the room';
 const OFFLINE_PLACEHOLDER = 'You can chat once you are back in the room';
 /** Distance from the end of the chat that still counts as "reading the latest". */

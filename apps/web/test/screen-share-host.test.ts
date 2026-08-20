@@ -40,11 +40,19 @@ import type { RoomConnection } from '@/lib/room-connection';
 
 class FakeTrack {
   stopped = false;
+  /** Written by the share session; '' is the platform default. */
+  contentHint = '';
+  /** Every constraint bag handed to applyConstraints, in order. */
+  readonly applied: unknown[] = [];
   private readonly listeners = new Map<string, Set<() => void>>();
   constructor(
     readonly id: string,
     readonly kind: 'audio' | 'video',
   ) {}
+  applyConstraints(constraints: unknown): Promise<void> {
+    this.applied.push(constraints);
+    return Promise.resolve();
+  }
   addEventListener(type: string, fn: () => void): void {
     let set = this.listeners.get(type);
     if (set === undefined) {
@@ -143,7 +151,7 @@ function fakeConnection(onStart?: (store: ReturnType<typeof miniStore>) => void)
 
 const openConns: RoomConnection[] = [];
 
-function stubDisplayMedia(impl: () => Promise<MediaStream>): void {
+function stubDisplayMedia(impl: (constraints?: unknown) => Promise<MediaStream>): void {
   vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia: impl } });
 }
 
@@ -289,6 +297,38 @@ describe('the host screen-share session', () => {
     expect(useShareHost.getState()).toEqual({ phase: 'idle', stream: null });
     expect(restreamStop).toHaveBeenCalledTimes(1);
     expect(presenceUpdate).toHaveBeenLastCalledWith({ sharing: false });
+  });
+
+  it('captures content audio unprocessed and hints both tracks as content', async () => {
+    const { stream, video, audio } = fakeCapture();
+    let requested: unknown;
+    stubDisplayMedia((constraints) => {
+      requested = constraints;
+      return Promise.resolve(stream);
+    });
+    const { conn } = fakeConnection((store) => {
+      store.setState({ restream: liveRestream(HOST) });
+    });
+    openConns.push(conn);
+
+    await startShare(conn, HOST);
+
+    // A share is CONTENT, not a phone call: the default voice chain pumps the
+    // soundtrack under cross-talk (auto-gain), eats music as "noise", and
+    // gates it against the room (echo cancellation). Off at request time…
+    const processingOff = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    expect(requested).toEqual({ video: true, audio: processingOff });
+    // …and re-applied on the live track, because the request is a preference
+    // the UA may ignore while applyConstraints is binding.
+    expect(audio.applied).toEqual([processingOff]);
+    // contentHint steers the encoder: full-band audio, frame rate over
+    // per-frame detail for the picture (a film share must not stutter).
+    expect(audio.contentHint).toBe('music');
+    expect(video.contentHint).toBe('motion');
   });
 
   it("publishes the capture's audio on its own role and never touches the microphone", async () => {

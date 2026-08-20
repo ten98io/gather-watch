@@ -444,7 +444,7 @@ export function MessageBubble({
               onSelect={() => {
                 void api.messages
                   .pinMessage(msg.roomId, { messageId: msg.id, pinned: !msg.pinned })
-                  .catch(() => toast.error('Could not update the pin'));
+                  .catch(() => toast.error('Couldn’t update the pin'));
               }}
               onClose={close}
             >

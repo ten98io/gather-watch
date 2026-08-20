@@ -384,7 +384,7 @@ describe('mountOverlay — what is playing', () => {
     click(host, skip);
     await flush();
 
-    expect(oneByClass(host, 'notice').textContent).toBe('The room did not move on. Try again.');
+    expect(oneByClass(host, 'notice').textContent).toBe('Couldn’t skip. Try again.');
   });
 
   it('works from the keyboard, and never reaches the page', () => {

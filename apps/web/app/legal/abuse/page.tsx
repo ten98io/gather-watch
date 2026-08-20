@@ -6,7 +6,7 @@ export default function AbusePage() {
   return (
     <>
       <h1>Abuse &amp; DMCA</h1>
-      <p><em>Gather is invite-only by design, which keeps the abuse surface small. Here is how to report what remains.</em></p>
+      <p><em>How to report abuse or copyright infringement on this instance.</em></p>
 
       <h2>Reporting content</h2>
       <p>
@@ -26,9 +26,8 @@ export default function AbusePage() {
 
       <h2>What happens next</h2>
       <p>
-        Operators can remove reported content and ban accounts via the admin tooling. We do
-        not proactively scan private rooms — moderation is report-driven, and legitimate
-        private use is never interrupted.
+        Operators can remove reported content and ban accounts. We do not proactively scan
+        private rooms — moderation is report-driven.
       </p>
 
       <h2>Repeat infringers</h2>

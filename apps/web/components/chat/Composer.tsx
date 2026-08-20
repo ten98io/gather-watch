@@ -377,7 +377,7 @@ export function Composer({
         setPendingVoice(null);
       })
       .catch((err: unknown) => {
-        toast.error(describeError(err, 'Could not send that voice note'));
+        toast.error(describeError(err, 'Couldn’t send that voice note'));
       })
       .finally(() => {
         if (!unmountedRef.current) setVoiceSending(false);
@@ -429,7 +429,7 @@ export function Composer({
       })
       .catch((err: unknown) => {
         setUploadPct(null);
-        toast.error(describeError(err, 'Could not upload that file'));
+        toast.error(describeError(err, 'Couldn’t upload that file'));
       });
   };
 

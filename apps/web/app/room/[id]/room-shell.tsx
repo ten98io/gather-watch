@@ -633,7 +633,7 @@ function RoomError({ error, onRetry }: { error: unknown; onRetry(): void }) {
         ? 'You are banned from this room'
         : apiError?.code === 'FORBIDDEN'
           ? 'This room is not yours to enter'
-          : 'The room could not be reached';
+          : 'The room couldn’t be reached';
   const detail =
     apiError?.code === 'NOT_FOUND'
       ? 'The invite link may be stale, or the room was deleted.'

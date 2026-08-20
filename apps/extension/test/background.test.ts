@@ -639,7 +639,7 @@ describe('planShare — protected tabs', () => {
   it('refuses in plain language, before any capture call', async () => {
     const deps = fakeDeps({ provider: NETFLIX });
     await expect(bg.planShare(ROOM, 'tab', deps)).rejects.toThrow(
-      'Netflix is protected — capture would send a black frame. Everyone plays their own copy in sync instead.',
+      'Netflix is protected — sharing it would show a black picture. Everyone plays their own copy in sync instead.',
     );
     expect(deps.tabCaptured).toEqual([]);
     expect(deps.pickedSources).toEqual([]);
@@ -685,7 +685,7 @@ describe('what a tab is, after the worker has forgotten', () => {
     await connectRoom();
 
     await expect(share('tab')).rejects.toThrow(
-      'Netflix is protected — capture would send a black frame.',
+      'Netflix is protected — sharing it would show a black picture.',
     );
     expect(fake.tabCaptureCalls).toEqual([]);
   });

@@ -71,7 +71,7 @@ export function RoomProvider({
 
   useEffect(() => {
     connection.connect().catch(() => {
-      toast.error('Could not connect to the room. Sign in again if this persists.');
+      toast.error('Couldn’t connect to the room. Sign in again if this persists.');
     });
     void connection.loadRecentMessages().catch(() => undefined);
     // The idle presence state follows what is PLAYING (music → 'listening'),

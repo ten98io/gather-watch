@@ -150,7 +150,7 @@ describe('ExtensionGate — the extension is too old', () => {
   it('asks for an update, not an install', () => {
     const html = render({ status: 'incompatible' });
     expect(html).toContain('Update the Gather extension');
-    expect(html).toContain('older than this room needs');
+    expect(html).toContain('needs a newer version of the extension');
     expect(html).toContain('Update the extension');
     expect(html).toContain(`href="${INSTALL}"`);
     expect(html).not.toContain('Add the extension');

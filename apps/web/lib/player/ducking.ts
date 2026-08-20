@@ -195,18 +195,22 @@ export interface ContentDuckingOptions {
 }
 
 /**
- * Drives one adapter's duck gain from the room's SPEECH signal.
+ * Drives one duck sink's gain from the room's SPEECH signal.
  *
- * Called from useSyncEngine, which is already the one place that owns "apply
- * what the room is doing to the mounted adapter" — and which receives exactly
- * the adapters that have a volume to duck.
+ * Two callers, deliberately the only two: useSyncEngine, which is already the
+ * one place that owns "apply what the room is doing to the mounted adapter"
+ * and receives exactly the adapters that have a volume to duck — and the share
+ * stage, whose viewer element carries a soundtrack that collides with voices
+ * exactly the way a player's does. The parameter asks for only the setDuck
+ * slice of PlayerAdapter because that is all this touches, and it is what lets
+ * the share element wire a bare VolumeMixer in without impersonating a player.
  *
  * The teardown restores unity gain. That is not tidiness: leaving on the last
  * ducked value when the call surface goes away is a room whose film is quietly
  * at 35% with no speech to explain it and no control that says so.
  */
 export function attachContentDucking(
-  adapter: PlayerAdapter,
+  adapter: Pick<PlayerAdapter, 'setDuck'>,
   opts: ContentDuckingOptions = {},
 ): () => void {
   const now = opts.now ?? Date.now;

@@ -39,14 +39,14 @@ export function describeJoinFailure(err: unknown): string {
       if (/banned/i.test(err.message)) {
         return 'A host or moderator banned you from this room.';
       }
-      return 'This room is not open to the identity you are signed in with.';
+      return 'You can’t join this room with your current account.';
     }
     if (err.code === 'CONFLICT') {
       return 'That display name is already taken in this room — pick another one.';
     }
     if (err.code === 'RATE_LIMITED') return 'Too many attempts — wait a minute and try again.';
   }
-  return 'Could not join the room. Try again.';
+  return 'Couldn’t join the room. Try again.';
 }
 
 /**
@@ -222,9 +222,7 @@ export function JoinClient({ code }: { code: InviteCode }) {
         <div className="rounded-stage bg-surface-1 p-8">
           {loading ? null : ownRoomId !== null ? (
             <div className="flex flex-col gap-6">
-              <p className="text-body text-mid">
-                You’re already a guest here — the identity you have still works.
-              </p>
+              <p className="text-body text-mid">You’re already a guest in this room.</p>
               <Link
                 href={`/room/${ownRoomId}`}
                 className={buttonClasses({ size: 'lg', className: 'w-full' })}
@@ -252,11 +250,10 @@ export function JoinClient({ code }: { code: InviteCode }) {
             <form onSubmit={(e) => void joinAsGuest(e)} className="flex flex-col gap-6">
               {isGuest && (
                 <div className="rounded-card bg-surface-2 p-5">
-                  <p className="text-body text-hi">A guest identity belongs to one room.</p>
+                  <p className="text-body text-hi">You’re already a guest in another room.</p>
                   <p className="mt-2 text-body text-mid">
-                    You’re a guest elsewhere, so that identity can’t come with you. Joining here
-                    creates a new guest and signs this browser out of your other room. Add an
-                    email to that identity first if you want to keep it.
+                    Joining here creates a new guest and signs this browser out of your other
+                    room. Add an email to that guest first if you want to keep it.
                   </p>
                 </div>
               )}
@@ -285,7 +282,7 @@ export function JoinClient({ code }: { code: InviteCode }) {
                 {pending ? 'Joining…' : 'Join as guest'}
               </Button>
               <div className="flex flex-col gap-2 border-t border-hairline pt-6 text-label text-low">
-                <p>Guests are room-scoped. Attach an email later to keep the identity.</p>
+                <p>A guest belongs to just this room. Add an email later to keep it.</p>
                 <p>
                   Already have an account?{' '}
                   {/* Underlined, not merely coloured: it is inline in a

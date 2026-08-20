@@ -1895,7 +1895,7 @@ export async function planShare(
     const site = await deps.providerOf(room.tabId);
     if (site !== undefined && site.drm) {
       throw new Error(
-        `${site.name} is protected — capture would send a black frame. Everyone plays their own copy in sync instead.`,
+        `${site.name} is protected — sharing it would show a black picture. Everyone plays their own copy in sync instead.`,
       );
     }
     const streamId = await deps.tabStreamId(room.tabId);
@@ -1957,8 +1957,8 @@ export const browserShareDeps: ShareDeps = {
 };
 
 /** No sentence below names an API, an error code, or a constraint. */
-const SHARE_FAILED_NOTE = 'That share could not start — nothing is going to the room.';
-const SHARE_REFUSED_NOTE = 'Chrome did not allow that — try again and pick what to share.';
+const SHARE_FAILED_NOTE = 'Sharing couldn’t start — nothing is going to the room.';
+const SHARE_REFUSED_NOTE = 'Chrome didn’t allow that — try again and pick what to share.';
 /**
  * We are in the room but cannot yet say which member we are, so a share would
  * be signed with a name no viewer can match and would reach nobody. Waiting a
@@ -1979,9 +1979,9 @@ const SHARE_NO_IDENTITY_NOTE =
  * is to refuse, and to say which share is in the way.
  */
 const SHARE_ALREADY_HERE_NOTE =
-  'You are already sharing with this room — stop that share before starting another.';
+  'You’re already sharing with this room — stop that share before starting another.';
 const SHARE_ALREADY_ELSEWHERE_NOTE =
-  'You are already sharing with this room from somewhere else — stop that share first, then share from here.';
+  'You’re already sharing with this room from somewhere else — stop that share first, then share from here.';
 
 /** Capture failures arrive as browser error text; a person gets a sentence. */
 export function shareFailureNote(error: string): string {
@@ -2102,7 +2102,7 @@ async function castActiveTab(): Promise<{ clicked: boolean; reason: string }> {
     .sendMessage(tabId, { kind: 'castNative' }, { frameId })
     .catch(() => undefined)) as { clicked?: boolean; reason?: string } | undefined;
   if (res === undefined) {
-    return { clicked: false, reason: 'Gather is not running on this page yet — reload it and try again.' };
+    return { clicked: false, reason: 'Gather isn’t running on this page yet — reload it and try again.' };
   }
   return { clicked: res.clicked === true, reason: res.reason ?? '' };
 }

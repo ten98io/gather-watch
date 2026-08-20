@@ -53,7 +53,7 @@ export function describeError(err: unknown, fallback: string): string {
     err instanceof DOMException &&
     err.name === 'NotAllowedError'
   ) {
-    return 'Permission was blocked — check browser permissions.';
+    return 'Your browser blocked that — allow it in your browser settings and try again.';
   }
   return fallback;
 }

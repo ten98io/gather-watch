@@ -184,7 +184,7 @@ describe('a guest opening an invite link', () => {
   it('explains the real reason and the real cost', async () => {
     await mount(HERE);
 
-    expect(text()).toContain('one room');
+    expect(text()).toContain('another room');
     // The cost has to be said out loud: the new guest replaces this browser's
     // credentials, so the other room is gone unless an email is attached.
     expect(text().toLowerCase()).toContain('email');
@@ -235,7 +235,7 @@ describe('a guest opening an invite link', () => {
     await mount(HERE);
 
     expect(button('Join the room')).toBeDefined();
-    expect(text()).not.toContain('one room');
+    expect(text()).not.toContain('another room');
   });
 
   it('still shows the plain guest form to someone signed out', async () => {
@@ -246,7 +246,7 @@ describe('a guest opening an invite link', () => {
 
     expect(button('Join as guest')).toBeDefined();
     // Nothing to warn about: there is no identity to lose.
-    expect(text()).not.toContain('one room');
+    expect(text()).not.toContain('another room');
   });
 });
 

@@ -101,9 +101,9 @@ export interface ShareView {
 }
 
 /** Only for a background that answered with a shape this popup cannot read. */
-const SHARE_FAILED = 'That share could not start.';
+const SHARE_FAILED = 'Sharing couldn’t start. Try again.';
 /** A share this popup did not start has no sentence of its own to show. */
-const SHARING_NOW = 'Sharing with the room now.';
+const SHARING_NOW = 'Sharing with the room.';
 
 /**
  * The background reports the outcome; it does not throw one. Closing the
@@ -267,7 +267,10 @@ function mount(): void {
     send<{ roomName: string }>({ kind: 'popup:connect', code })
       .then(() => refresh())
       .catch((err: unknown) => {
-        errEl.textContent = err instanceof Error ? err.message : 'Connect failed';
+        errEl.textContent =
+          err instanceof Error
+            ? err.message
+            : 'Couldn’t connect. Check the room code and try again.';
         errEl.hidden = false;
       })
       .finally(() => {
@@ -295,7 +298,7 @@ function mount(): void {
         castNote = res.reason;
       })
       .catch((err: unknown) => {
-        castNote = err instanceof Error ? err.message : 'Cast failed';
+        castNote = err instanceof Error ? err.message : 'Couldn’t cast. Try again.';
       })
       .finally(() => {
         btn.disabled = false;

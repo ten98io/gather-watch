@@ -40,9 +40,12 @@
  *   • The speaking ring is measured from the actual audio (WebAudio peak on
  *     the live tracks), never simulated. Where WebAudio is unavailable the
  *     ring simply stays off.
- *   • A peer who is screen-sharing shows their avatar here, not a video tile:
- *     their picture is already on the stage, and the mesh does not tag which
- *     of a peer's video tracks is the camera.
+ *   • A sharing peer's tile keeps their CAMERA (the Meet behaviour): their
+ *     screen is on the stage, their face belongs here, and the mesh names
+ *     which of their video tracks is which (CallMesh.remoteTrackRole). Only a
+ *     track whose role is null — an older client that announces nothing —
+ *     falls back to the avatar while they share, because unnamed video may BE
+ *     the screen and a tile must never guess.
  *   • A tile means "this person's media is reaching this room", not "the
  *     server said so a moment ago" — see callPeerIds below.
  */
@@ -58,7 +61,7 @@ import {
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { PresenceEntry, RoomId, UserId } from '@gather/contracts';
-import type { MeshConnectionState, MeshLinkState } from '@gather/p2p';
+import type { MeshConnectionState, MeshLinkState, TrackRole } from '@gather/p2p';
 import { voiceActiveFrom } from '@gather/sync-core';
 import { api } from '@/lib/api';
 import { publishSpeechActive, publishVoiceActive } from '@/lib/player/room-audio';
@@ -412,7 +415,25 @@ function useVoiceActivity(sources: AudioSource[], enabled: boolean): ReadonlySet
       return;
     }
 
+    // A context resumed once at build is not resumed forever: browsers suspend
+    // WebAudio when a tab sits in the background (Chrome throttles, iOS marks
+    // it 'interrupted'), and a suspended graph reads flat silence — so after a
+    // background stint the speaking rings and the duck died with nothing on
+    // screen to say why. Resume on demand instead: the visibility flip is the
+    // earliest wake, and the poll tick below covers suspensions that happen
+    // with the tab in front (bluetooth route changes, OS-level interruptions).
+    // Narrowed copy: nodes only exist under a live context, but TypeScript
+    // cannot see that across the closures below.
+    const audioCtx = ctx;
+    const resumeIfSuspended = (): void => {
+      if (audioCtx !== null && audioCtx.state !== 'running') {
+        void audioCtx.resume().catch(() => undefined);
+      }
+    };
+    document.addEventListener('visibilitychange', resumeIfSuspended);
+
     const timer = setInterval(() => {
+      resumeIfSuspended();
       const next: UserId[] = [];
       for (const n of nodes) {
         n.analyser.getByteTimeDomainData(n.data);
@@ -432,6 +453,7 @@ function useVoiceActivity(sources: AudioSource[], enabled: boolean): ReadonlySet
 
     return () => {
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', resumeIfSuspended);
       for (const n of nodes) {
         try {
           n.node.disconnect();
@@ -570,6 +592,15 @@ export function callPeerIds(input: CallRosterInput): UserId[] {
  */
 export const CALL_SOUND_BLOCKED_LABEL = 'Tap to enable sound';
 
+/**
+ * A remote track, who publishes it, and the role they announced it under —
+ * null from a client too old to announce (the interop rule, binding here as
+ * everywhere: null keeps the pre-role behaviour, never a guess).
+ */
+interface RemoteMediaEntry extends RemoteTrackEntry {
+  role: TrackRole | null;
+}
+
 /** Hidden sink for one remote audio track. */
 function RemoteAudioTrack({
   track,
@@ -626,8 +657,8 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const [micLost, setMicLost] = useState(false);
   const [camLost, setCamLost] = useState(false);
   const [localCam, setLocalCam] = useState<MediaStreamTrack | null>(null);
-  const [remoteVideos, setRemoteVideos] = useState<RemoteTrackEntry[]>([]);
-  const [remoteAudios, setRemoteAudios] = useState<RemoteTrackEntry[]>([]);
+  const [remoteVideos, setRemoteVideos] = useState<RemoteMediaEntry[]>([]);
+  const [remoteAudios, setRemoteAudios] = useState<RemoteMediaEntry[]>([]);
   const [connStates, setConnStates] = useState<ReadonlyMap<UserId, MeshConnectionState>>(
     () => new Map(),
   );
@@ -673,15 +704,18 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     const offLocal = mesh.onLocalTrack((role, track) => {
       if (role === 'cam') setLocalCam(track);
     });
-    const offRemote = mesh.onRemoteTrack((userId, track) => {
-      const entry: RemoteTrackEntry = { userId, track };
-      const add = (prev: RemoteTrackEntry[]): RemoteTrackEntry[] =>
+    const offRemote = mesh.onRemoteTrack((userId, track, role) => {
+      // `?? null`: the mesh types role as nullable already, but doubles that
+      // predate roles call back without the argument, and an undefined must
+      // read as the same honest "cannot say" that null does.
+      const entry: RemoteMediaEntry = { userId, track, role: role ?? null };
+      const add = (prev: RemoteMediaEntry[]): RemoteMediaEntry[] =>
         prev.some((e) => e.track === track) ? prev : [...prev, entry];
       if (track.kind === 'video') setRemoteVideos(add);
       else setRemoteAudios(add);
     });
     const offRemoved = mesh.onRemoteTrackRemoved((_userId, track) => {
-      const drop = (prev: RemoteTrackEntry[]): RemoteTrackEntry[] =>
+      const drop = (prev: RemoteMediaEntry[]): RemoteMediaEntry[] =>
         prev.some((e) => e.track === track) ? prev.filter((e) => e.track !== track) : prev;
       if (track.kind === 'video') setRemoteVideos(drop);
       else setRemoteAudios(drop);
@@ -874,7 +908,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
         toast.error('Microphone permission denied — allow it in your browser to join');
       } else {
-        toast.error(describeError(err, 'Could not join the call'));
+        toast.error(describeError(err, 'Couldn\'t join the call. Check your connection and try again.'));
       }
     }
   }, [connection, handleMicEnded, me]);
@@ -912,7 +946,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
           toast.error('Microphone permission denied — allow it in your browser to be heard');
         } else {
-          toast.error(describeError(err, 'Could not reach a microphone'));
+          toast.error(describeError(err, 'Couldn\'t reach your microphone. Check browser permissions and try again.'));
         }
       }
     })();
@@ -961,7 +995,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
           toast.error('Camera permission denied — allow camera access in your browser');
         } else {
-          toast.error(describeError(err, 'Camera unavailable'));
+          toast.error(describeError(err, "Couldn't start your camera. Check browser permissions and try again."));
         }
       }
     })();
@@ -1020,11 +1054,18 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     return map;
   }, [membersQuery.data]);
 
-  /** Newest live camera track per peer. */
+  /** Newest live video per peer, split by what the publisher SAID it is: a
+   *  named camera ('cam'), or a track from a client too old to name roles
+   *  (null). 'share' never enters either map — the stage is its one sink, and
+   *  a tile that rendered it would be a second element on the stage's track. */
   const videoByUser = useMemo(() => {
-    const map = new Map<UserId, MediaStreamTrack>();
-    for (const { userId, track } of remoteVideos) map.set(userId, track);
-    return map;
+    const cams = new Map<UserId, MediaStreamTrack>();
+    const unnamed = new Map<UserId, MediaStreamTrack>();
+    for (const { userId, track, role } of remoteVideos) {
+      if (role === 'cam') cams.set(userId, track);
+      else if (role === null) unnamed.set(userId, track);
+    }
+    return { cams, unnamed };
   }, [remoteVideos]);
 
   /** Peers whose media is arriving right now — the evidence half of the
@@ -1144,9 +1185,10 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       const entry = presence[userId];
       const info = memberById.get(userId);
       const sharing = entry?.sharing === true;
-      const video = videoByUser.get(userId) ?? null;
+      const cam = videoByUser.cams.get(userId) ?? null;
+      const unnamed = videoByUser.unnamed.get(userId) ?? null;
       const micOnPeer = entry?.micOn ?? true;
-      const camOnPeer = entry?.camOn ?? video !== null;
+      const camOnPeer = entry?.camOn ?? (cam !== null || unnamed !== null);
       list.push({
         userId,
         name: info?.displayName ?? 'Someone',
@@ -1157,9 +1199,16 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         camOn: camOnPeer,
         sharing,
         speaking: micOnPeer && speakingIds.has(userId),
-        // A sharing peer's video is already on the stage, and the mesh cannot
-        // tell their camera track from their screen track — show the avatar.
-        videoTrack: camOnPeer && !sharing ? video : null,
+        // A sharing peer's tile keeps their CAMERA (the Meet behaviour). This
+        // used to show the avatar because "the mesh cannot tell their camera
+        // track from their screen track" — obsolete since roles ride the wire
+        // (dc35ea6, CallMesh.remoteTrackRole): a track named 'cam' is the
+        // face, whatever else its owner is publishing. The interop rule is
+        // binding: a NULL role (an older client that announces nothing) keeps
+        // the pre-role behaviour — avatar while sharing, never a guess —
+        // because their unnamed video may be the screen itself, which is the
+        // stage's track and must not gain a second element here.
+        videoTrack: camOnPeer ? (cam ?? (sharing ? null : unnamed)) : null,
         linkStatus: linkStatusFor({
           connection: connStates.get(userId),
           everConnected: everConnectedRef.current.has(userId),

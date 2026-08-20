@@ -30,12 +30,7 @@ import { describeError } from '@/lib/describe-error';
 import { useRoom } from '@/lib/room-context';
 import { ReportDialog } from '@/components/report/ReportDialog';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { SettingsIcon } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
@@ -162,7 +157,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       toast.success('Room renamed');
       setOpen(false);
     } catch (err) {
-      toast.error(describeError(err, 'Could not rename the room'));
+      toast.error(describeError(err, 'Couldn’t rename the room'));
     } finally {
       setBusy(false);
     }
@@ -182,7 +177,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       toast.success(trimmed.length > 0 ? 'Room password saved' : 'Room password cleared');
       setPassword('');
     } catch (err) {
-      toast.error(describeError(err, 'Could not update the password'));
+      toast.error(describeError(err, 'Couldn’t update the password'));
     } finally {
       setBusy(false);
     }
@@ -194,7 +189,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       await api.rooms.updatePolicies(roomId, patch);
       toast.success(done);
     } catch (err) {
-      toast.error(describeError(err, 'Could not change what the room allows'));
+      toast.error(describeError(err, 'Couldn’t change what the room allows'));
       // The failed value is still under the thumb; put the room's back.
       setSkipPct(Math.round(room.policies.skipVoteThreshold * 100));
     } finally {
@@ -211,7 +206,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       // telling the person they were removed from a room they just left.
       router.push('/home');
     } catch (err) {
-      toast.error(describeError(err, 'Could not leave the room'));
+      toast.error(describeError(err, 'Couldn’t leave the room'));
       setBusy(false);
     }
   };
@@ -223,7 +218,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       toast.success('Room deleted');
       router.push('/home');
     } catch (err) {
-      toast.error(describeError(err, 'Could not delete the room'));
+      toast.error(describeError(err, 'Couldn’t delete the room'));
       setBusy(false);
     }
   };
@@ -252,12 +247,6 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent aria-label="Room settings">
           <DialogTitle>Room settings</DialogTitle>
-          <DialogDescription>
-            {canManage
-              ? 'Rename the room, gate it with a password, set what it allows, or delete it ' +
-                'for everyone. Deletion removes members, invites, and history — there is no undo.'
-              : 'Leave this room, or report it to whoever runs this instance.'}
-          </DialogDescription>
 
           {canManage && (
             <Section label="Name">
@@ -297,7 +286,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
                   maxLength={120}
                   placeholder={
                     room.hasPassword
-                      ? 'New password (submit empty to clear)'
+                      ? 'New password, or leave blank to remove'
                       : 'Set a room password'
                   }
                   aria-label="Room password"
@@ -307,8 +296,7 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
                 </Button>
               </form>
               <p className="mt-2 text-label text-low">
-                New joins need the password. If it is lost, set a new one here — that is the
-                recovery.
+                Anyone joining needs the password. If you forget it, set a new one here.
               </p>
             </Section>
           )}
@@ -417,7 +405,10 @@ export function RoomMenu({ room, canManage }: { room: Room; canManage: boolean }
             <div className="mt-6 border-t border-hairline pt-4">
               {confirmDelete ? (
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-body text-danger">Delete this room for everyone?</span>
+                  <span className="text-body text-danger">
+                    Delete this room for everyone? This removes members, invites and history —
+                    there’s no undo.
+                  </span>
                   <div className="flex gap-2">
                     <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
                       Keep

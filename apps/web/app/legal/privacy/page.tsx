@@ -34,9 +34,9 @@ export default function PrivacyPage() {
 
       <h2>Your rights (GDPR)</h2>
       <p>
-        Settings → Your data gives you <strong>export</strong> (a complete JSON dump of your
-        account) and <strong>deletion</strong> (account plus cascade, executed after a short
-        grace period). Sessions can be revoked per-device or everywhere at once.
+        Settings → Your data gives you <strong>export</strong> (a complete JSON copy of your
+        account) and <strong>deletion</strong> (your account and everything in it, removed
+        after a short grace period). You can also sign out your other sessions in one move.
       </p>
 
       <h2>Self-hosted instances</h2>

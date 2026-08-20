@@ -107,9 +107,13 @@ const roomStub = vi.hoisted(() => ({
   member: null as unknown,
 }));
 
-/** Captures the mesh's remote-track subscriber so tests can deliver tracks. */
+/** Captures the mesh's remote-track subscriber so tests can deliver tracks.
+ *  The third argument is the announced role — omitted by older callers, which
+ *  is exactly the interop case the provider must read as null. */
 const meshStub = vi.hoisted(() => ({
-  remoteTrack: null as ((userId: string, track: unknown) => void) | null,
+  remoteTrack: null as
+    | ((userId: string, track: unknown, role?: string | null) => void)
+    | null,
 }));
 
 const MEMBERS = [
@@ -140,7 +144,7 @@ vi.mock('@/lib/call-mesh', () => ({
     start: () => undefined,
     setLocalTrack: () => undefined,
     onLocalTrack: () => () => undefined,
-    onRemoteTrack: (fn: (userId: string, track: unknown) => void) => {
+    onRemoteTrack: (fn: (userId: string, track: unknown, role?: string | null) => void) => {
       meshStub.remoteTrack = fn;
       return () => undefined;
     },
@@ -287,7 +291,7 @@ describe('CallPills', () => {
 
   const addPeers = async (
     entries: PresenceEntry[],
-    tracks: Array<{ userId: UserId; track: FakeTrack }> = [],
+    tracks: Array<{ userId: UserId; track: FakeTrack; role?: string | null }> = [],
   ): Promise<void> => {
     await act(async () => {
       conn().useRoomState.setState({
@@ -296,7 +300,7 @@ describe('CallPills', () => {
           PresenceEntry
         >,
       });
-      for (const { userId, track } of tracks) meshStub.remoteTrack?.(userId, track);
+      for (const { userId, track, role } of tracks) meshStub.remoteTrack?.(userId, track, role);
       await settle();
     });
   };
@@ -462,5 +466,70 @@ describe('CallPills', () => {
     const ringed = mine?.querySelector('video')?.parentElement;
     expect(ringed?.className).toContain('ring-2');
     expect(ringed?.className).toContain('ring-accent');
+  });
+
+  /** Every figure for one participant, across dock tiles AND pills. */
+  const figuresFor = (name: string): HTMLElement[] =>
+    [...host.querySelectorAll<HTMLElement>('figure')].filter((f) =>
+      (f.getAttribute('aria-label') ?? '').startsWith(name),
+    );
+
+  const videoTrackIdOf = (figure: HTMLElement): string | undefined => {
+    const el = figure.querySelector('video');
+    const stream = (el as unknown as { srcObject?: FakeStream } | null)?.srcObject;
+    return stream?.getVideoTracks()[0]?.id;
+  };
+
+  it('shows a sharing peer’s named camera in the tile AND the pill — never their screen', async () => {
+    // Both surfaces at once, like the doubled-audio pin above: the pills reuse
+    // the tile plumbing, so the cam-while-sharing rule must reach both.
+    await mount(
+      <>
+        <CallDock roomId={ROOM_ID} />
+        <CallPills edge="right" collapsed={false} onToggleCollapsed={noop} />
+      </>,
+    );
+    await join();
+    await addPeers(
+      [presenceEntry(PEER, { camOn: true, sharing: true })],
+      [
+        { userId: PEER, track: new FakeTrack('peer-cam', 'video'), role: 'cam' },
+        // The screen arrives newer; only the role keeps it off the circles.
+        { userId: PEER, track: new FakeTrack('peer-screen', 'video'), role: 'share' },
+      ],
+    );
+
+    const robins = figuresFor('Robin Vasquez');
+    expect(robins.length).toBeGreaterThanOrEqual(2); // dock tile + pill
+    for (const figure of robins) {
+      expect(videoTrackIdOf(figure)).toBe('peer-cam');
+    }
+    // The stage's track gains no element on any call surface.
+    for (const el of document.querySelectorAll('video')) {
+      const stream = (el as unknown as { srcObject?: FakeStream }).srcObject;
+      expect(stream?.getVideoTracks()[0]?.id).not.toBe('peer-screen');
+    }
+  });
+
+  it('keeps the avatar while sharing when the track’s role is unknown (older client)', async () => {
+    await mount(
+      <>
+        <CallDock roomId={ROOM_ID} />
+        <CallPills edge="right" collapsed={false} onToggleCollapsed={noop} />
+      </>,
+    );
+    await join();
+    // No role at all — the pre-role client. Their unnamed video may BE the
+    // screen, so the avatar stands, exactly as before roles existed.
+    await addPeers(
+      [presenceEntry(PEER, { camOn: true, sharing: true })],
+      [{ userId: PEER, track: new FakeTrack('peer-video', 'video') }],
+    );
+
+    const robins = figuresFor('Robin Vasquez');
+    expect(robins.length).toBeGreaterThanOrEqual(2);
+    for (const figure of robins) {
+      expect(figure.querySelector('video')).toBeNull();
+    }
   });
 });

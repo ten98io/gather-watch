@@ -47,7 +47,6 @@ export default function RouteError({
           <OrbitIcon size={24} />
         </span>
         <div className="flex flex-col items-center gap-4">
-          <p className="text-caption text-low">Unexpected error</p>
           <h1 className="font-display text-headline text-hi md:text-display">Something broke.</h1>
           <p className="max-w-md text-body text-mid">{describeBoundaryError(error)}</p>
         </div>
@@ -56,7 +55,7 @@ export default function RouteError({
               guess, and going home is the one that always works. One primary
               per region (DESIGN.md §8). */}
           <Button variant="secondary" size="lg" onClick={reset}>
-            Retry
+            Try again
           </Button>
           <Link href="/home" className={buttonClasses({ size: 'lg' })}>
             Back to your rooms

@@ -45,7 +45,9 @@ function Section({
   children,
 }: {
   title: string;
-  description: string;
+  /** One sentence only when the title alone would mislead; controls that
+   *  explain themselves get no narration. */
+  description?: string;
   children: ReactNode;
 }) {
   // Solid ladder, not glass: a settings section is a resting surface on a
@@ -55,7 +57,9 @@ function Section({
     <section className="flex flex-col gap-6 rounded-panel bg-surface-1 p-6 md:p-8">
       <div>
         <h2 className="font-display text-title text-hi">{title}</h2>
-        <p className="mt-1 max-w-prose text-body text-mid">{description}</p>
+        {description !== undefined && (
+          <p className="mt-1 max-w-prose text-body text-mid">{description}</p>
+        )}
       </div>
       {children}
     </section>
@@ -89,7 +93,7 @@ function ProfileSection() {
       setUser(updated);
       toast.success('Profile saved');
     } catch {
-      toast.error('Could not save your profile.');
+      toast.error('Couldn’t save your profile. Try again.');
     } finally {
       setPending(false);
     }
@@ -179,7 +183,7 @@ function SessionsSection() {
       toast.success(`Signed out ${res.revoked} other ${res.revoked === 1 ? 'session' : 'sessions'}`);
       await sessionsQuery.refetch();
     } catch {
-      toast.error('Could not sign out everywhere.');
+      toast.error('Couldn’t sign out your other sessions. Try again.');
     }
   };
 
@@ -188,7 +192,9 @@ function SessionsSection() {
       {sessionsQuery.isPending ? (
         <Skeleton className="h-20" />
       ) : sessionsQuery.isError ? (
-        <p role="alert" className="text-body text-mid">Couldn’t load sessions.</p>
+        <p role="alert" className="text-body text-mid">
+          Couldn’t load your sessions. Reload the page to try again.
+        </p>
       ) : (
         <ul className="flex flex-col gap-2">
           {sessionsQuery.data.sessions.map((s) => (
@@ -253,7 +259,7 @@ function DataSection() {
       URL.revokeObjectURL(url);
       toast.success('Export downloaded');
     } catch {
-      toast.error('Export failed. Try again.');
+      toast.error('Couldn’t export your data. Try again.');
     }
   };
 
@@ -262,20 +268,20 @@ function DataSection() {
     setDeleting(true);
     try {
       const res = await apiFetch('/me', { method: 'DELETE', schema: DeleteMeResponse });
-      toast.success(`Account deletion scheduled for ${new Date(res.purgeAt).toLocaleDateString()}`);
+      toast.success(`Your account will be deleted on ${new Date(res.purgeAt).toLocaleDateString()}`);
       // Erasure drops the server row; this drops the browser end, so the
       // device stops holding a subscription to an account that is going away.
       await unsubscribeFromPush().catch(() => undefined);
       await logout();
       router.replace('/login');
     } catch {
-      toast.error('Could not delete the account.');
+      toast.error('Couldn’t delete your account. Try again.');
       setDeleting(false);
     }
   };
 
   return (
-    <Section title="Your data" description="GDPR: export everything, or delete everything. No trackers, ever.">
+    <Section title="Your data">
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" onClick={() => void exportData()}>
           Export my data (JSON)
@@ -290,8 +296,8 @@ function DataSection() {
         <DialogContent aria-label="Delete account confirmation">
           <DialogTitle>Delete your account?</DialogTitle>
           <DialogDescription>
-            Your account, messages, uploads and memberships are scheduled for deletion after a
-            short grace period. This cannot be undone once the purge runs.
+            We’ll delete your account, messages, uploads and room memberships after a short
+            grace period. Once they’re deleted, you can’t get them back.
           </DialogDescription>
           <div className="mt-8 flex flex-wrap justify-end gap-4">
             <Button variant="secondary" onClick={() => {
@@ -332,14 +338,16 @@ function NotificationsSection() {
       }
       const settled = await enable();
       if (settled === 'on') {
-        toast.success('Notifications on — @mentions only');
+        toast.success('Notifications on');
       } else if (settled === 'blocked') {
-        toast.error('Your browser blocked notifications for this site.');
+        toast.error(
+          'Your browser blocked notifications. Allow them in your browser’s site settings.',
+        );
       }
       // 'off' means the prompt was dismissed. That is an answer, not a
       // failure — the switch stays off and nothing needs saying.
     } catch (err) {
-      toast.error(describeError(err, 'Could not change notification settings.'));
+      toast.error(describeError(err, 'Couldn’t change notification settings.'));
     }
   };
 
@@ -352,12 +360,11 @@ function NotificationsSection() {
         <Skeleton className="h-9" />
       ) : state === 'unsupported' ? (
         <p className="text-body text-mid">
-          This browser can’t do push notifications. On iOS, add Gather to your Home Screen first.
+          This browser doesn’t support notifications. On iOS, add Gather to your Home Screen first.
         </p>
       ) : state === 'blocked' ? (
         <p role="alert" className="text-body text-mid">
-          Notifications are blocked for this site. Re-allow them in your browser’s site settings,
-          then come back.
+          Notifications are blocked. Allow them in your browser’s site settings, then come back.
         </p>
       ) : (
         <label className="flex items-center justify-between gap-4">
@@ -379,7 +386,7 @@ function NotificationsSection() {
 function AppearanceSection() {
   const { theme, setTheme } = useTheme();
   return (
-    <Section title="Appearance" description="Dark is the home theme; Daylight is a first-class variant.">
+    <Section title="Appearance">
       <label className="flex items-center justify-between gap-4">
         <span className="text-body text-mid">Daylight theme</span>
         <Switch
@@ -467,7 +474,7 @@ export default function SettingsPage() {
           <h1 className="mt-4 font-display text-headline text-hi md:text-display">Settings</h1>
           {user.email === null && (
             <p className="mt-6">
-              <Badge variant="warn">Guest — add an email to keep this identity</Badge>
+              <Badge variant="warn">Guest — add an email to keep this account</Badge>
             </p>
           )}
         </div>

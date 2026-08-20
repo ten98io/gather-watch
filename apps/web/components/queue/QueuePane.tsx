@@ -385,7 +385,7 @@ export function QueuePane({ roomId }: { roomId: RoomId }) {
       // The registry is no longer a gate, so the only thing left to refuse is
       // something that is not an https web address at all. Say that, and stop
       // implying there is a list the link failed to be on.
-      setError('Paste a web address — it has to start with https://');
+      setError('Paste a web address that starts with https://');
       return;
     }
     // No second refusal here. The DRM tier used to stop at this line with

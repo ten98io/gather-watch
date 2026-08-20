@@ -68,8 +68,8 @@ function TypingDots() {
  *
  * An empty room is every room's FIRST impression, and this surface used to
  * answer it with one 14px line of grey apology. It is now the one composed
- * moment the rail has: an invitation mark, an overline, a `headline` and one
- * sentence, sitting in `section` (64px) of air.
+ * moment the rail has: an invitation mark, an overline and a `headline`,
+ * sitting in `section` (64px) of air.
  *
  * `headline` and not `display`: the room screen gets exactly one `display`
  * (DESIGN.md §3) and it belongs to the Stage, which is what the screen is
@@ -89,9 +89,6 @@ function EmptyLog() {
       </span>
       <p className="text-caption text-low">Room chat</p>
       <h2 className="mt-3 text-headline text-hi">Say the first thing.</h2>
-      <p className="mt-4 max-w-xs text-body text-low">
-        Messages, GIFs and voice notes all land here, in the order the room sees them.
-      </p>
     </div>
   );
 }

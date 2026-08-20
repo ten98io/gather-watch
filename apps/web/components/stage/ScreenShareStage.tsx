@@ -45,6 +45,7 @@ import { UPLINK_LABEL } from '@/lib/labels';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
 import type { RoomConnection } from '@/lib/room-connection';
 import { claimAudioSink, getCallMesh, onCallMeshClosed } from '@/lib/call-mesh';
+import { VolumeMixer, attachContentDucking } from '@/lib/player/ducking';
 
 /* ── host share session (module-level; see the header comment) ───────────── */
 
@@ -112,7 +113,19 @@ export async function startShare(connection: RoomConnection, userId: UserId): Pr
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: true, // tab/screen audio — a silent share is half a share
+      // tab/screen audio — a silent share is half a share. The three flags are
+      // OFF because this is CONTENT, not a phone call: default capture runs
+      // the voice chain, where auto-gain rides the level up in every quiet
+      // passage and pumps it down under cross-talk, noise suppression eats
+      // sustained music as "noise", and echo cancellation gates the soundtrack
+      // against whatever the room is saying. (Chrome only offers audio at all
+      // for TAB captures — the silent-share case is already handled by the
+      // pre-flight note and the viewer's "Connecting…" copy.)
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
     });
   } catch (err) {
     useShareHost.setState({ phase: 'idle', stream: null });
@@ -128,6 +141,24 @@ export async function startShare(connection: RoomConnection, userId: UserId): Pr
   mesh.start();
   const video = stream.getVideoTracks()[0] ?? null;
   const audio = stream.getAudioTracks()[0] ?? null;
+  // The request above is a preference the UA may ignore; applyConstraints on
+  // the live track is the binding half of the same ask. Best-effort by nature
+  // (an old UA without it, a constraint it cannot satisfy) — the share must
+  // start either way.
+  void audio
+    ?.applyConstraints?.({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    })
+    .catch(() => undefined);
+  // contentHint steers the encoder's degradation choices. 'music' keeps the
+  // soundtrack full-band instead of speech-tuned. 'motion' over 'detail' for
+  // the picture: the headline share is a film playing in a tab, and 'detail'
+  // holds resolution by dropping frames — a static screen still compresses
+  // fine under 'motion', but a film under 'detail' stutters.
+  if (audio !== null) audio.contentHint = 'music';
+  if (video !== null) video.contentHint = 'motion';
   mesh.setLocalTrack('share', video);
   // 'share-audio', never 'mic'. A role is a sender: publishing the tab's
   // soundtrack on 'mic' replaced the host's voice for the whole room, and
@@ -433,6 +464,28 @@ function ShareViewer({ hostUserId }: { hostUserId: UserId }) {
     const audio = tracks.filter((t) => t.kind === 'audio');
     return { video, audio, all: video === null ? audio : [video, ...audio] };
   }, [tracks]);
+
+  /* Ducking — the same envelope every player adapter runs (lib/player/
+     ducking.ts: target, attack/hold/release, and the multiplier guarantee).
+     Without this the share was the one sound on the stage that did NOT step
+     back when somebody talked: voice and soundtrack collided raw. The duck
+     scales the ELEMENT's volume and nothing else — the tracks it plays are
+     claimed sinks (claimAudioSink) whose enabled state is ownership plumbing
+     this must not touch, and `el.muted` stays the autoplay fallback's own
+     latch, which the mixer never writes. Whatever the element's volume is at
+     mount is the user's choice; the duck may only scale it. */
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return undefined;
+    const mixer = new VolumeMixer();
+    mixer.setUserVolume(el.volume);
+    return attachContentDucking({
+      setDuck: (gain) => {
+        mixer.setDuck(gain);
+        el.volume = mixer.effective();
+      },
+    });
+  }, []);
 
   /** Try for sound; fall back to a muted picture with a tap to fix it. */
   const attemptPlay = useCallback((el: HTMLVideoElement): void => {

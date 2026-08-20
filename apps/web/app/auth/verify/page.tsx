@@ -104,11 +104,15 @@ function VerifyInner() {
           <h1 className="font-display text-headline text-hi md:text-display">
             {verifying ? 'One moment.' : 'That link is spent.'}
           </h1>
-          <p className="max-w-md text-body text-mid">
-            {verifying
-              ? 'Opening your link and handing this browser a session.'
-              : 'Magic links expire quickly and work exactly once — this one has already done its job, or it waited too long. Ask for a fresh one and it will pick up where you left off.'}
-          </p>
+          {/* Nothing while the token is in flight: the overline and heading
+              already say what is happening, and narrating the mechanism
+              ("handing this browser a session") helped nobody. */}
+          {!verifying && (
+            <p className="max-w-md text-body text-mid">
+              Sign-in links work once and expire quickly — ask for a new one and it picks up
+              where you left off.
+            </p>
+          )}
         </div>
         {/* Nothing to press while the token is in flight: a control that only
             repeats what the page is already doing is noise, and this state

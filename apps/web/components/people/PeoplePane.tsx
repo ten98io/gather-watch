@@ -169,7 +169,7 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
         ),
       )
       .catch((err: unknown) => {
-        toast.error(describeError(err, 'Could not change that role'));
+        toast.error(describeError(err, 'Couldn’t change that role'));
       });
   };
 
@@ -336,7 +336,7 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
                               .then(() => toast.success(`${user.displayName} is now host`))
                               .catch((err: unknown) => {
                                 toast.error(
-                                  describeError(err, 'Could not hand over the host seat'),
+                                  describeError(err, 'Couldn’t hand over the host seat'),
                                 );
                               });
                           }}
@@ -372,7 +372,7 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
                             void api.rooms
                               .kickMember(roomId, { userId: user.id })
                               .catch((err: unknown) => {
-                                toast.error(describeError(err, 'Could not remove them'));
+                                toast.error(describeError(err, 'Couldn’t remove them'));
                               });
                           }}
                         >
@@ -388,7 +388,7 @@ export function PeoplePane({ roomId }: { roomId: RoomId }) {
                                 void api.rooms
                                   .banMember(roomId, { userId: user.id, banned: true })
                                   .catch((err: unknown) => {
-                                    toast.error(describeError(err, 'Could not ban them'));
+                                    toast.error(describeError(err, 'Couldn’t ban them'));
                                   });
                               }}
                             >

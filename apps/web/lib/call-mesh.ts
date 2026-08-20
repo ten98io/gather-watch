@@ -122,7 +122,7 @@ export const CALL_PEER_NOTE =
  * stopped, and the only remaining move is the user's.
  */
 export const CALL_PEER_LOST_NOTE =
-  'Could not get the connection back to someone in the call — reloading the page usually fixes it.';
+  'Couldn’t get the connection back to someone in the call — reloading the page usually fixes it.';
 
 /**
  * The same budget ran out on a link that never had a relay to fall back on.
@@ -134,7 +134,7 @@ export const CALL_PEER_LOST_NOTE =
  * rebuilds exactly the same impossible link.
  */
 export const CALL_NO_RELAY_NOTE =
-  'Could not connect to someone in the call — your networks cannot reach each other ' +
+  'Couldn’t connect to someone in the call — your networks cannot reach each other ' +
   'directly, and this room has no relay to pass the call through.';
 
 /**

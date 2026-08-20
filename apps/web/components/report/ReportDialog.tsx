@@ -55,7 +55,7 @@ export function ReportDialog({
       setReason('');
       onOpenChange(false);
     } catch (err) {
-      toast.error(describeError(err, 'Could not send that report'));
+      toast.error(describeError(err, 'Couldn’t send that report'));
     } finally {
       setBusy(false);
     }

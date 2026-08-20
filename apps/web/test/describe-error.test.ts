@@ -39,7 +39,7 @@ describe('describeError', () => {
 
   it('explains blocked browser permissions and falls back for everything else', () => {
     expect(describeError(new DOMException('Denied', 'NotAllowedError'), FALLBACK)).toBe(
-      'Permission was blocked — check browser permissions.',
+      'Your browser blocked that — allow it in your browser settings and try again.',
     );
     expect(describeError(new Error('upload ticket carried no part URL'), FALLBACK)).toBe(FALLBACK);
     expect(describeError('HTTP 500', FALLBACK)).toBe(FALLBACK);

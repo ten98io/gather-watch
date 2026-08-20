@@ -179,8 +179,10 @@ class FakePc {
     return { label, close: () => undefined, send: () => undefined };
   }
   close(): void {}
-  emitTrack(t: MediaStreamTrack): void {
-    this.ontrack?.({ track: t, streams: [] });
+  /** `streams` carries the sender's msid — the only thing a role can be
+   *  named from (call-mesh.test.ts uses the same shape). */
+  emitTrack(t: MediaStreamTrack, streams: unknown[] = []): void {
+    this.ontrack?.({ track: t, streams });
   }
 }
 
@@ -242,22 +244,38 @@ interface RoomStoreState {
   membersVersion: number;
 }
 
-function fakeConnection(initial: Record<UserId, PresenceEntry>): RoomConnection {
+/** A room connection the tests can also push server-relayed frames through. */
+type TestConnection = RoomConnection & {
+  deliver(type: string, payload: Record<string, unknown>): void;
+};
+
+function fakeConnection(initial: Record<UserId, PresenceEntry>): TestConnection {
   const useRoomState = create<RoomStoreState>()(() => ({
     presence: initial,
     playback: null,
     restream: liveRestream(HOST),
     membersVersion: 0,
   }));
+  const inbound = new Map<string, Set<(ev: unknown) => void>>();
   return {
     roomId: ROOM_ID,
     useRoomState,
     rawSocket: { send: () => undefined },
-    on: () => () => undefined,
+    on: (type: string, fn: (ev: unknown) => void) => {
+      const set = inbound.get(type) ?? new Set<(ev: unknown) => void>();
+      set.add(fn);
+      inbound.set(type, set);
+      return () => set.delete(fn);
+    },
     presenceUpdate: () => undefined,
     restreamStart: () => undefined,
     restreamStop: () => undefined,
-  } as unknown as RoomConnection;
+    deliver: (type: string, payload: Record<string, unknown>) => {
+      for (const fn of [...(inbound.get(type) ?? [])]) {
+        fn({ type, roomId: ROOM_ID, seq: 1, ts: 0, payload });
+      }
+    },
+  } as unknown as TestConnection;
 }
 
 /** Drain microtasks (the credential settle rides one). */
@@ -299,6 +317,39 @@ const shareTracks = (): MediaStreamTrack[] => {
 const buttonLabelled = (label: string): HTMLButtonElement | null =>
   [...host.querySelectorAll('button')].find((b) => b.textContent?.includes(label)) ?? null;
 
+/** Mount the viewer surface for a share the HOST is running. */
+const mountViewer = async (): Promise<TestConnection> => {
+  const connection = fakeConnection({
+    [HOST]: presenceEntry(HOST, 'watching', { sharing: true }),
+  });
+  openConns.push(connection);
+  roomStub.connection = connection;
+  roomStub.room = room();
+  roomStub.member = member();
+  await act(async () => {
+    root.render(<ScreenShareStage restream={liveRestream(HOST)} />);
+    await settle();
+  });
+  return connection;
+};
+
+const emit = async (...tracks: MediaStreamTrack[]): Promise<void> => {
+  await act(async () => {
+    for (const t of tracks) FakePc.instances[0]?.emitTrack(t);
+    await settle();
+  });
+};
+
+/** One role announcement, as the hub relays it from the sharing host. */
+const announce = (conn: TestConnection, role: string, streamId: string): void => {
+  conn.deliver('webrtc.offer', {
+    fromUserId: HOST,
+    targetUserId: ME,
+    connectionId: `mesh:${ROOM_ID}:role:${role}:${streamId}`,
+    sdp: '',
+  });
+};
+
 describe('share audio reaches a viewer, in or out of the call', () => {
   beforeEach(() => {
     FakePc.reset();
@@ -320,28 +371,6 @@ describe('share audio reaches a viewer, in or out of the call', () => {
     delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
     delete (globalThis as { MediaStream?: unknown }).MediaStream;
   });
-
-  /** Mount the viewer surface for a share the HOST is running. */
-  const mountViewer = async (): Promise<void> => {
-    const connection = fakeConnection({
-      [HOST]: presenceEntry(HOST, 'watching', { sharing: true }),
-    });
-    openConns.push(connection);
-    roomStub.connection = connection;
-    roomStub.room = room();
-    roomStub.member = member();
-    await act(async () => {
-      root.render(<ScreenShareStage restream={liveRestream(HOST)} />);
-      await settle();
-    });
-  };
-
-  const emit = async (...tracks: MediaStreamTrack[]): Promise<void> => {
-    await act(async () => {
-      for (const t of tracks) FakePc.instances[0]?.emitTrack(t);
-      await settle();
-    });
-  };
 
   it('plays the share audio for a viewer who never joined the call', async () => {
     await mountViewer();
@@ -403,6 +432,108 @@ describe('share audio reaches a viewer, in or out of the call', () => {
 
     expect(shareVideo()?.muted).toBe(false);
     expect(buttonLabelled(SHARE_SOUND_BLOCKED_LABEL)).toBeNull();
+  });
+
+  it('renders the host’s screen, not their face, when both cross one connection', async () => {
+    // The other half of the tile rule (call-surface.test.tsx): the stage takes
+    // the 'share' track and refuses the 'cam', however the two are ordered —
+    // one sink per track, no element rendering another element's track.
+    const conn = await mountViewer();
+    const screen = track('screen-1', 'video');
+    const face = track('cam-1', 'video');
+
+    await act(async () => {
+      announce(conn, 'share', 'host-share');
+      announce(conn, 'cam', 'host-cam');
+      FakePc.instances[0]?.emitTrack(screen, [{ id: 'host-share' }]);
+      // The face arrives NEWER — under newest-video-wins it takes the stage.
+      FakePc.instances[0]?.emitTrack(face, [{ id: 'host-cam' }]);
+      await settle();
+    });
+
+    expect(shareTracks()).toEqual([screen]);
+  });
+});
+
+/* ── ducking the share's sound under speech ─────────────────────────────── */
+
+const { DUCK_ATTACK_MS, DUCK_HOLD_MS, DUCK_RELEASE_MS, DUCK_TARGET } = await import(
+  '@/lib/player/ducking'
+);
+const { publishSpeechActive, resetRoomAudio } = await import('@/lib/player/room-audio');
+
+describe('the share element ducks while somebody on the call is talking', () => {
+  beforeEach(() => {
+    // Installed BEFORE the viewer mounts: attachContentDucking captures its
+    // clock (Date.now) at attach, so a later fake would never reach it. 'Date'
+    // is faked explicitly so the envelope's clock and the tick interval move
+    // together under advanceTimersByTime — the deterministic drive.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+    });
+    FakePc.reset();
+    playCalls.length = 0;
+    allowUnmutedPlay = true;
+    resetRoomAudio();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    (globalThis as { MediaStream?: unknown }).MediaStream = FakeMediaStream;
+    stubMediaElements();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    for (const conn of openConns.splice(0)) closeCallMesh(conn);
+    resetShareHost();
+    resetRoomAudio();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    delete (globalThis as { MediaStream?: unknown }).MediaStream;
+    vi.useRealTimers();
+  });
+
+  it('ducks while speech is active, releases after, and touches only the element', async () => {
+    await mountViewer();
+    const audio = track('share-a', 'audio');
+    await emit(track('share-v', 'video'), audio);
+    const el = shareVideo();
+    expect(el?.volume).toBe(1);
+
+    publishSpeechActive(true);
+    vi.advanceTimersByTime(DUCK_ATTACK_MS + 60);
+    expect(el?.volume).toBeCloseTo(DUCK_TARGET, 5);
+
+    // The duck is the ELEMENT's volume and nothing else. Track enabled state
+    // is sink-ownership plumbing (claimAudioSink), and `muted` is the autoplay
+    // fallback's latch — a duck that wrote either would break a different
+    // feature to soften this one.
+    expect((audio as unknown as { enabled: boolean }).enabled).toBe(true);
+    expect(el?.muted).toBe(false);
+
+    publishSpeechActive(false);
+    vi.advanceTimersByTime(DUCK_HOLD_MS + DUCK_RELEASE_MS + 100);
+    expect(el?.volume).toBe(1);
+  });
+
+  it('holds the duck through the word gaps inside one sentence', async () => {
+    await mountViewer();
+    await emit(track('share-v', 'video'), track('share-a', 'audio'));
+    const el = shareVideo();
+
+    publishSpeechActive(true);
+    vi.advanceTimersByTime(DUCK_ATTACK_MS + 60);
+    expect(el?.volume).toBeCloseTo(DUCK_TARGET, 5);
+
+    // Four detector flickers, each shorter than the hold: the level is flat.
+    for (let i = 0; i < 4; i += 1) {
+      publishSpeechActive(false);
+      vi.advanceTimersByTime(150);
+      publishSpeechActive(true);
+      vi.advanceTimersByTime(150);
+      expect(el?.volume).toBeCloseTo(DUCK_TARGET, 5);
+    }
   });
 });
 

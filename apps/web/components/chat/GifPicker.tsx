@@ -102,9 +102,10 @@ export function GifPicker({
             ))}
           {!loading && searched && results.length === 0 && (
             <div className="col-span-3 flex flex-col items-center gap-2 py-12 text-center">
-              <p className="text-title text-hi">No GIFs came back</p>
+              <p className="text-title text-hi">No GIFs found</p>
               <p className="max-w-xs text-label text-low">
-                Try another search — or this server has no GIF provider configured.
+                Try another search. If that doesn’t work, GIF search may not be set up on this
+                server.
               </p>
             </div>
           )}

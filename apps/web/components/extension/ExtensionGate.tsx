@@ -139,8 +139,7 @@ function copyFor(props: {
     return {
       icon: <HistoryIcon size={20} />,
       title: 'Update the Gather extension',
-      description:
-        'The one installed in this browser is older than this room needs. Updating takes a moment.',
+      description: 'This room needs a newer version of the extension.',
       actionLabel: 'Update the extension',
       actionHref: props.installUrl,
       recheckLabel: 'I updated it — check again',

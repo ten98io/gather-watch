@@ -42,17 +42,16 @@ export default function RoomError({
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center px-4 py-section text-center md:py-canvas">
       <div className="flex w-full max-w-2xl flex-col items-center gap-6">
-        <h1 className="font-display text-headline text-hi md:text-display">This room stopped rendering</h1>
+        <h1 className="font-display text-headline text-hi md:text-display">This room stopped working</h1>
         <div className="flex max-w-md flex-col gap-2">
           <p className="text-body text-mid">{describeBoundaryError(error)}</p>
           <p className="text-body text-low">
-            The room itself is fine — everyone else is still in it, and rejoining picks up where
-            the room is now.
+            The room itself is fine — rejoining picks up where it is now.
           </p>
         </div>
         <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
           <Button size="lg" variant="secondary" onClick={reset}>
-            Retry
+            Try again
           </Button>
           <Link href="/home">
             <Button size="lg">Back to your rooms</Button>

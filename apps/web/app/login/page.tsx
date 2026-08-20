@@ -87,7 +87,7 @@ export default function LoginPage() {
       setError(
         err instanceof ApiError && err.code === 'RATE_LIMITED'
           ? 'Too many attempts — wait a minute and try again.'
-          : 'Could not send the link. Check the address and try again.',
+          : 'Couldn’t send the link. Check the address and try again.',
       );
     } finally {
       setPending(false);
@@ -114,13 +114,13 @@ export default function LoginPage() {
           </h1>
           <p className="mt-6 max-w-md text-body text-mid">
             {sentTo === null
-              ? 'Gather has no passwords to forget. Give us the address you want the room invites to land at, and we email you a link that signs this browser in.'
-              : `The link is on its way to ${sentTo}. It expires shortly, and opening it signs you in${
+              ? 'Gather has no passwords to forget. Enter your address and we’ll send you a sign-in link.'
+              : `We sent a sign-in link to ${sentTo}. It expires soon${
                   // Say where it lands, because the person did not come here
                   // for a sign-in screen — they came for an invitation, and
                   // "you'll be back where you were" is the reassurance that
                   // stops them hunting for the link a second time.
-                  returningToInvite ? ' and puts you back at the invitation.' : ' here.'
+                  returningToInvite ? ', and opening it takes you back to the invitation.' : '.'
                 }`}
           </p>
         </div>
@@ -182,7 +182,7 @@ export default function LoginPage() {
                   href={devLink}
                   className="block rounded-ctl bg-surface-2 p-4 text-center text-label text-hi ring-1 ring-accent transition-colors hover:bg-surface-3"
                 >
-                  Dev build — open the magic link directly →
+                  Dev build — open the sign-in link directly →
                 </a>
               )}
               <Button

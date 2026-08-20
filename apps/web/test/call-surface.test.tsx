@@ -33,7 +33,7 @@ import type {
   UserId,
 } from '@gather/contracts';
 import type { RoomConnection } from '@/lib/room-connection';
-import type { CallParticipant } from '@/components/call/CallSurface';
+import type { CallParticipant, CallSessionValue } from '@/components/call/CallSurface';
 
 // Same classic-runtime workaround as context-menu.test.tsx / room-render.ts:
 // `jsx: "preserve"` means vitest's esbuild emits React.createElement calls.
@@ -151,8 +151,10 @@ class FakePc {
     return { label, close: () => undefined, send: () => undefined };
   }
   close(): void {}
-  emitTrack(t: MediaStreamTrack): void {
-    this.ontrack?.({ track: t, streams: [] });
+  /** `streams` carries the sender's msid — the only thing a role can be
+   *  named from (call-mesh.test.ts uses the same shape). */
+  emitTrack(t: MediaStreamTrack, streams: unknown[] = []): void {
+    this.ontrack?.({ track: t, streams });
   }
   setConnectionState(state: string): void {
     this.connectionState = state;
@@ -213,6 +215,8 @@ function fakeConnection(initial: Record<UserId, PresenceEntry>): {
   connection: RoomConnection;
   setPresence(next: Record<UserId, PresenceEntry>): void;
   presenceUpdates: Array<Record<string, unknown>>;
+  /** Deliver one server-relayed signalling frame, as the hub would stamp it. */
+  deliver(type: string, payload: Record<string, unknown>): void;
 } {
   const useRoomState = create<RoomStoreState>()(() => ({
     presence: initial,
@@ -220,17 +224,28 @@ function fakeConnection(initial: Record<UserId, PresenceEntry>): {
     membersVersion: 0,
   }));
   const presenceUpdates: Array<Record<string, unknown>> = [];
+  const inbound = new Map<string, Set<(ev: unknown) => void>>();
   const connection = {
     roomId: ROOM_ID,
     useRoomState,
     rawSocket: { send: () => undefined },
-    on: () => () => undefined,
+    on: (type: string, fn: (ev: unknown) => void) => {
+      const set = inbound.get(type) ?? new Set<(ev: unknown) => void>();
+      set.add(fn);
+      inbound.set(type, set);
+      return () => set.delete(fn);
+    },
     presenceUpdate: (patch: Record<string, unknown>) => presenceUpdates.push(patch),
   } as unknown as RoomConnection;
   return {
     connection,
     setPresence: (next) => useRoomState.setState({ presence: next }),
     presenceUpdates,
+    deliver: (type, payload) => {
+      for (const fn of [...(inbound.get(type) ?? [])]) {
+        fn({ type, roomId: ROOM_ID, seq: 1, ts: 0, payload });
+      }
+    },
   };
 }
 
@@ -239,9 +254,12 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
 };
 
-/** The roster, as any pane would read it. */
+/** The roster, as any pane would read it — and the session, for assertions
+ *  that need a participant's fields rather than the id line. */
+let session: CallSessionValue | null = null;
 function Probe() {
   const call = useCallSession();
+  session = call;
   return <div data-testid="roster">{call.participants.map((p) => p.userId).join(',')}</div>;
 }
 
@@ -394,6 +412,126 @@ describe('CallSurface roster', () => {
 });
 
 /**
+ * A sharing peer's tile — the Meet behaviour, owner-confirmed twice.
+ *
+ * The old rule ("a sharing peer shows the avatar, the mesh cannot tell their
+ * camera from their screen") was justified by a limitation that no longer
+ * exists: track roles ride the wire, so a track named 'cam' is the face
+ * whatever else its owner publishes. What stays binding is the interop rule —
+ * a role of NULL (an older client that announces nothing) keeps the pre-role
+ * behaviour, avatar while sharing, because their unnamed video may BE the
+ * screen and a tile must never render the stage's track.
+ */
+describe('a sharing peer’s tile video', () => {
+  beforeEach(() => {
+    FakePc.reset();
+    session = null;
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+  });
+
+  const mount = async (presence: Record<UserId, PresenceEntry>) => {
+    const conn = fakeConnection(presence);
+    roomStub.connection = conn.connection;
+    roomStub.room = room();
+    roomStub.member = member();
+    await act(async () => {
+      root.render(
+        <CallSessionProvider>
+          <Probe />
+        </CallSessionProvider>,
+      );
+      await settle();
+    });
+    return conn;
+  };
+
+  /** One role announcement, as the hub relays it from the peer. */
+  const announce = (
+    conn: ReturnType<typeof fakeConnection>,
+    role: string,
+    streamId: string,
+  ): void => {
+    conn.deliver('webrtc.offer', {
+      fromUserId: PEER,
+      targetUserId: ME,
+      connectionId: `mesh:room_test:role:${role}:${streamId}`,
+      sdp: '',
+    });
+  };
+
+  const peer = (): CallParticipant | undefined =>
+    session?.participants.find((p) => p.userId === PEER);
+
+  it('keeps a sharing peer’s named camera on their tile, never their screen', async () => {
+    const conn = await mount({
+      [PEER]: presenceEntry(PEER, 'in-call', { camOn: true, sharing: true }),
+    });
+    await act(async () => {
+      announce(conn, 'cam', 'peer-cam');
+      announce(conn, 'share', 'peer-share');
+      FakePc.instances[0]?.emitTrack(track('cam-1', 'video'), [{ id: 'peer-cam' }]);
+      // The screen arrives NEWER — under a newest-video rule this is the
+      // mid-scramble that puts the shared screen in a 44px circle.
+      FakePc.instances[0]?.emitTrack(track('screen-1', 'video'), [{ id: 'peer-share' }]);
+      await settle();
+    });
+
+    expect(peer()?.sharing).toBe(true);
+    expect(peer()?.videoTrack?.id).toBe('cam-1');
+  });
+
+  it('keeps the avatar for a sharing peer whose client cannot name the track', async () => {
+    const conn = await mount({
+      [PEER]: presenceEntry(PEER, 'in-call', { camOn: true, sharing: true }),
+    });
+    await act(async () => {
+      // No announcement ever lands: the mesh answers null, not a guess.
+      FakePc.instances[0]?.emitTrack(track('video-1', 'video'), [{ id: 'unannounced' }]);
+      await settle();
+    });
+    expect(peer()?.videoTrack).toBeNull();
+
+    // The same unnamed track still renders once they stop sharing — the
+    // pre-role behaviour, kept exactly.
+    await act(async () => {
+      conn.setPresence({
+        [PEER]: presenceEntry(PEER, 'in-call', { camOn: true, sharing: false }),
+      });
+      await settle();
+    });
+    expect(peer()?.videoTrack?.id).toBe('video-1');
+  });
+
+  it('never puts a share-role track on a tile, even before presence says "sharing"', async () => {
+    // The mid-scramble: the share track crosses the mesh ahead of the presence
+    // write that flips `sharing` — a round trip apart by construction. During
+    // that window the old `!sharing` gate is open, so only the ROLE stands
+    // between the stage's track and a second element on a tile.
+    const conn = await mount({
+      [PEER]: presenceEntry(PEER, 'in-call', { camOn: true, sharing: false }),
+    });
+    await act(async () => {
+      announce(conn, 'share', 'peer-share');
+      FakePc.instances[0]?.emitTrack(track('screen-1', 'video'), [{ id: 'peer-share' }]);
+      await settle();
+    });
+
+    // camOn presence notwithstanding, the only video is the stage's.
+    expect(peer()?.videoTrack).toBeNull();
+  });
+});
+
+/**
  * The call surface is the only place in the app that knows both "who has a
  * microphone open" and "who is making noise right now". The content player
  * needs both and cannot see either, so this is where they are published
@@ -475,6 +613,163 @@ describe('CallSurface publishes the room-audio signals', () => {
 
     // afterEach unmounts again; a second unmount of the same root is a no-op.
     root = createRoot(host);
+  });
+});
+
+/**
+ * The speaking-detection AudioContext, across a tab suspension.
+ *
+ * Browsers suspend WebAudio when a tab sits in the background; a context
+ * resumed once at build and never again reads flat silence from then on, so
+ * the speaking rings and the duck died quietly after a background stint. The
+ * fix resumes on demand — the poll tick, and the visibility flip — and this
+ * suite drives a context that genuinely goes silent while not 'running', so
+ * the assertions are about the SIGNAL surviving, not about a resume() call.
+ */
+describe('speaking detection survives a tab suspension', () => {
+  /** Hears speech only while its context is running — a suspended graph in
+   *  real browsers stops producing data, which is the whole failure mode. */
+  class FakeAnalyser {
+    fftSize = 512;
+    smoothingTimeConstant = 0;
+    constructor(private readonly ctx: FakeAudioContext) {}
+    connect(): void {}
+    disconnect(): void {}
+    getByteTimeDomainData(data: Uint8Array): void {
+      data.fill(this.ctx.state === 'running' ? 255 : 128);
+    }
+  }
+  class FakeAudioContext {
+    static instances: FakeAudioContext[] = [];
+    state: 'suspended' | 'running' | 'closed' = 'suspended';
+    resumeCalls = 0;
+    destination = {};
+    constructor() {
+      FakeAudioContext.instances.push(this);
+    }
+    resume(): Promise<void> {
+      this.resumeCalls += 1;
+      this.state = 'running';
+      return Promise.resolve();
+    }
+    close(): Promise<void> {
+      this.state = 'closed';
+      return Promise.resolve();
+    }
+    createGain(): { gain: { value: number }; connect(): void; disconnect(): void } {
+      return { gain: { value: 0 }, connect: () => undefined, disconnect: () => undefined };
+    }
+    createMediaStreamSource(): { connect(): void; disconnect(): void } {
+      return { connect: () => undefined, disconnect: () => undefined };
+    }
+    createAnalyser(): FakeAnalyser {
+      return new FakeAnalyser(this);
+    }
+  }
+  class FakeMediaStream {
+    constructor(private readonly tracks: MediaStreamTrack[] = []) {}
+    getTracks(): MediaStreamTrack[] {
+      return [...this.tracks];
+    }
+    getAudioTracks(): MediaStreamTrack[] {
+      return this.tracks.filter((t) => t.kind === 'audio');
+    }
+    getVideoTracks(): MediaStreamTrack[] {
+      return this.tracks.filter((t) => t.kind === 'video');
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakePc.reset();
+    FakeAudioContext.instances = [];
+    session = null;
+    resetRoomAudio();
+    (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection = FakePc;
+    (globalThis as { MediaStream?: unknown }).MediaStream = FakeMediaStream;
+    (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    Object.defineProperty(HTMLMediaElement.prototype, 'play', {
+      configurable: true,
+      value: () => Promise.resolve(),
+    });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: () =>
+          Promise.resolve(new FakeMediaStream([track('mic-local', 'audio')]) as unknown),
+      },
+    });
+    turnStub.fetch = () => Promise.resolve(CREDENTIALS);
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    resetRoomAudio();
+    delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    delete (globalThis as { MediaStream?: unknown }).MediaStream;
+    delete (window as unknown as { AudioContext?: unknown }).AudioContext;
+    vi.useRealTimers();
+  });
+
+  it('keeps the duck signal alive after the context is suspended and back', async () => {
+    const conn = fakeConnection({ [PEER]: presenceEntry(PEER, 'in-call') });
+    roomStub.connection = conn.connection;
+    roomStub.room = room();
+    roomStub.member = member();
+    await act(async () => {
+      root.render(
+        <CallSessionProvider>
+          <Probe />
+        </CallSessionProvider>,
+      );
+      await settle();
+    });
+    await act(async () => {
+      session?.join();
+      await settle();
+    });
+    await act(async () => {
+      FakePc.instances[0]?.emitTrack(track('mic-peer', 'audio'));
+      await settle();
+    });
+
+    // The measured path, end to end: analyser hears the peer, the duck signal
+    // publishes. (The context started 'suspended', as real ones do — the
+    // build-time resume is what brings it up the first time.)
+    const ctx = FakeAudioContext.instances.at(-1);
+    expect(ctx).toBeDefined();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(getSpeechActive()).toBe(true);
+    const resumesBefore = ctx?.resumeCalls ?? 0;
+
+    // THE SUSPENSION: the browser parks the tab's audio. No event reaches the
+    // page, the interval survives (throttled), the graph reads silence.
+    if (ctx !== undefined) ctx.state = 'suspended';
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    // The poll notices and resumes: the signal is still alive, not frozen at
+    // a stale reading and not silently dead.
+    expect(ctx?.state).toBe('running');
+    expect(ctx?.resumeCalls ?? 0).toBeGreaterThan(resumesBefore);
+    expect(getSpeechActive()).toBe(true);
+
+    // And the visibility flip is the earliest wake — it resumes immediately,
+    // before any throttled timer gets around to it.
+    if (ctx !== undefined) ctx.state = 'suspended';
+    const resumesBeforeFlip = ctx?.resumeCalls ?? 0;
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(ctx?.state).toBe('running');
+    expect(ctx?.resumeCalls ?? 0).toBeGreaterThan(resumesBeforeFlip);
   });
 });
 

@@ -47,7 +47,7 @@ function CreateRoomDialog({ open, onOpenChange }: { open: boolean; onOpenChange(
       await queryClient.invalidateQueries({ queryKey: ['rooms'] });
       router.push(`/room/${room.id}`);
     } catch {
-      toast.error('Could not create the room. Try again.');
+      toast.error('Couldn’t create the room. Try again.');
       setPending(false);
     }
   };
@@ -261,7 +261,7 @@ export default function HomePage() {
             <Masthead overline="Offline" />
             <div role="alert" className="rounded-panel bg-surface-1 p-8">
               <p className="text-body text-mid">
-                Couldn’t load your rooms. The server may be unreachable from here.
+                Couldn’t load your rooms — check your connection.
               </p>
               <Button
                 variant="secondary"
@@ -289,7 +289,7 @@ export default function HomePage() {
               <OrbitIcon size={24} />
             </span>
             <div className="flex flex-col items-center gap-4">
-              <p className="text-caption text-low">Nothing here yet</p>
+              <p className="text-caption text-low">Your rooms</p>
               <h1 className="font-display text-headline text-hi md:text-display">The void is quiet.</h1>
               <p className="max-w-md text-body text-mid">
                 A room is a private space with one queue, one clock and the people you invite.

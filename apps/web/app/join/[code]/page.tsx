@@ -8,7 +8,7 @@ import { JoinClient } from './join-client';
  *  chat app the invite was pasted into, and an invite code is a credential. */
 export const metadata: Metadata = {
   title: 'You’re invited',
-  description: 'Someone invited you to a private Gather room — synced playback, a call and a chat.',
+  description: 'Someone invited you to a private Gather room — watch, listen and talk together.',
 };
 
 /** Guest join landing: /join/<inviteCode>. */
