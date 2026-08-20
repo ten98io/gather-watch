@@ -21,7 +21,7 @@ import type { ReactNode, RefObject } from 'react';
 import { motion } from '@gather/design';
 import type { RoomId } from '@gather/contracts';
 import { useRoom, useRoomConnection } from '@/lib/room-context';
-import { RELAY_LABEL } from '@/lib/labels';
+import { setImmersive, toggleImmersive, useImmersive } from '@/components/room/ImmersiveStage';
 import { canAct } from '@/lib/permissions';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
@@ -662,7 +662,21 @@ function ExtensionDrivingStage({
   );
 }
 
-export function StagePane({ roomId }: { roomId: RoomId }) {
+export function StagePane({
+  roomId,
+  pathBadge,
+  overlay,
+}: {
+  roomId: RoomId;
+  /** The live media-path badge (top-right cluster). Injected by the shell —
+   *  it reads the call session, and a bare StagePane must stay mountable
+   *  without one (every stage test mounts one). Absent means say nothing. */
+  pathBadge?: ReactNode;
+  /** The immersive-mode chrome. Mounted INSIDE this section on purpose: the
+   *  fullscreen top layer paints over the whole document, so chrome the shell
+   *  kept outside would simply not be on screen while fullscreen is active. */
+  overlay?: ReactNode;
+}) {
   const connection = useRoomConnection();
   const { room, member } = useRoom();
   const playback = connection.useRoomState((s) => s.playback);
@@ -731,6 +745,57 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
   const [startAttempt, setStartAttempt] = useState(0);
 
   const fullscreen = useFullscreen(stageRef);
+
+  /**
+   * THE ONE IMMERSIVE MODE (DESIGN.md §11 D1.1, unified 2026-08-20). Theater
+   * and fullscreen are the same local latch now — see ImmersiveStage.tsx. This
+   * pane wires the latch to the browser: the F key and both on-stage controls
+   * flip it, and the two effects below keep the top layer in step with it.
+   */
+  const immersive = useImmersive((s) => s.active);
+
+  /**
+   * The MODE drives the ENHANCEMENT, never the other way round: flipping the
+   * latch on asks for browser fullscreen where the platform grants it
+   * (useFullscreen's own guards make this a no-op on iOS Safari and in
+   * forbidden iframes — the layout is the mode there); flipping it off gives
+   * the top layer back. Keyed on the latch alone, through a ref for the
+   * previous value: keying on `fullscreen.active` too would re-request the
+   * top layer in the very render after the browser's own Escape exit.
+   */
+  const wasImmersiveRef = useRef(false);
+  useEffect(() => {
+    const was = wasImmersiveRef.current;
+    wasImmersiveRef.current = immersive;
+    if (immersive && !was && !fullscreen.active) fullscreen.toggle();
+    if (!immersive && was) fullscreen.exit();
+    // fullscreen.active is deliberately read, not depended on (see above).
+  }, [immersive, fullscreen.toggle, fullscreen.exit]);
+
+  /**
+   * …and an exit the BROWSER performed takes the mode with it. Escape, F11
+   * and the browser's own overlay button never pass through our handlers —
+   * they surface only as `fullscreenchange` — and a mode that stayed on after
+   * them would be two modes again, which is the disease this replaced.
+   *
+   * EXCEPT an exit WE performed to show a dialog. Dialogs portal to
+   * document.body and the fullscreen top layer paints over the whole
+   * document, so opening one means leaving fullscreen first — and that exit
+   * arrives here as the same `fullscreenchange` a user's Escape does. Reading
+   * it as "the user left" collapsed the entire immersive mode the moment
+   * anyone pressed Share screen inside it. The dialog gesture arms this
+   * latch; one browser exit is then spent putting the LAYOUT through
+   * unharmed, and fullscreen is re-requested when the dialog closes.
+   */
+  const wasFullscreenRef = useRef(false);
+  const dialogExitRef = useRef(false);
+  useEffect(() => {
+    if (wasFullscreenRef.current && !fullscreen.active && immersive) {
+      if (dialogExitRef.current) dialogExitRef.current = false;
+      else setImmersive(false);
+    }
+    wasFullscreenRef.current = fullscreen.active;
+  }, [fullscreen.active, immersive]);
 
   const debug = useMemo(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug'),
@@ -1217,16 +1282,29 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
             if (captionsAvailable) setCaptionsOn((v) => !v);
           },
         },
-        // Fullscreen is this viewer's own screen, so it is never policy-gated
-        // the way the transport is — a guest who may not press play may still
-        // fill their own display. Exiting is the same key, plus Escape, which
-        // the browser owns (see useFullscreen).
+        // F is the immersive mode (D1.1) — this viewer's own screen, so it is
+        // never policy-gated the way the transport is: a guest who may not
+        // press play may still fill their own display. It is not gated on
+        // fullscreen support either, because the mode is the LAYOUT and works
+        // where the platform cannot fullscreen (iOS Safari).
         {
           key: 'f',
-          handler: () => {
-            if (fullscreen.supported) fullscreen.toggle();
-          },
+          handler: toggleImmersive,
         },
+        // Escape leaves the mode — but only where the browser is not already
+        // doing exactly that. While the top layer is up, Escape is the
+        // browser's own exit and reaches us as `fullscreenchange` (the sync
+        // effect above), and a second handler would double-handle it. The
+        // binding exists at all only for the layout-without-top-layer case,
+        // so dialogs and sheets keep their Escape everywhere else.
+        ...(immersive && !fullscreen.active
+          ? [
+              {
+                key: 'Escape',
+                handler: () => setImmersive(false),
+              },
+            ]
+          : []),
       ],
       [
         activateStage,
@@ -1235,8 +1313,8 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         connection,
         muted,
         captionsAvailable,
-        fullscreen.supported,
-        fullscreen.toggle,
+        immersive,
+        fullscreen.active,
       ],
     ),
   );
@@ -1258,8 +1336,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         captionsAvailable={captionsAvailable && adapter?.kind === 'native'}
         muted={muted}
         onMutedChange={setMuted}
-        fullscreenActive={fullscreen.active}
-        onToggleFullscreen={fullscreen.supported ? fullscreen.toggle : null}
+        // The control reports and drives the MODE, not the raw top layer —
+        // and it is offered even where the platform cannot fullscreen,
+        // because the immersive layout is the mode and works there too.
+        fullscreenActive={immersive}
+        onToggleFullscreen={toggleImmersive}
       />
     ) : null;
 
@@ -1316,26 +1397,26 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                 screen is exactly what a viewer wants was the one moment the
                 button did not exist. The `f` binding worked the entire time;
                 a key nobody is told about is not an affordance. Glass, because
-                this genuinely floats over moving video (DESIGN.md §4). */}
-            {fullscreen.supported && (
-              <div className="absolute right-4 top-14 z-20">
-                <Tooltip
-                  content={fullscreen.active ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-                  align="end"
+                this genuinely floats over moving video (DESIGN.md §4).
+                It drives the MODE, so it is no longer gated on the platform
+                fullscreen API — the immersive layout works without one. */}
+            <div className="absolute right-4 top-14 z-20">
+              <Tooltip
+                content={immersive ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                align="end"
+              >
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-pressed={immersive}
+                  aria-label={immersive ? 'Exit fullscreen' : 'Fullscreen'}
+                  onClick={toggleImmersive}
+                  className="glass-panel"
                 >
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-pressed={fullscreen.active}
-                    aria-label={fullscreen.active ? 'Exit fullscreen' : 'Fullscreen'}
-                    onClick={fullscreen.toggle}
-                    className="glass-panel"
-                  >
-                    <TheaterIcon size={16} />
-                  </Button>
-                </Tooltip>
-              </div>
-            )}
+                  <TheaterIcon size={16} />
+                </Button>
+              </Tooltip>
+            </div>
           </>
         ) : extensionDriving ? (
           <ExtensionDrivingStage
@@ -1432,11 +1513,13 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
                   // `bg-void`, never Tailwind's black: the ground under a
                   // letterboxed picture is a palette decision like every other.
                   // `rounded-stage` is the 28px rung §4 names "the stage frame"
-                  // — and it comes off in fullscreen, where the picture IS the
-                  // screen and a rounded corner is a bezel we invented. The two
-                  // are a ternary because `cn` joins and does not resolve.
+                  // — and it comes off in the immersive mode, where the picture
+                  // IS the screen and a rounded corner is a bezel we invented
+                  // (with or without the top layer: the layout is the mode).
+                  // The two are a ternary because `cn` joins and does not
+                  // resolve.
                   'max-h-full max-w-full bg-void',
-                  fullscreen.active ? '' : 'rounded-stage',
+                  immersive || fullscreen.active ? '' : 'rounded-stage',
                   adapterKind === 'native' ? '' : 'hidden',
                 )}
                 aria-label="Shared video"
@@ -1488,11 +1571,14 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         <EmoteOverlay />
       </div>
 
-      {/* waiting-for-all honesty + relay badge + screen-share entry */}
+      {/* waiting-for-all honesty + the live media-path badge + share entry.
+          The badge is the SHELL's node (see the prop): it renders the same
+          live truth, in the same words, as the call rail — the static
+          "Private · device-to-device" architectural claim that used to sit
+          here contradicted the rail's live "Private · direct" one panel over,
+          and nothing at all is rendered when no link is flowing. */}
       <div className="pointer-events-none absolute right-4 top-4 z-20 flex flex-col items-end gap-2">
-        <Badge variant="muted" className="pointer-events-auto">
-          {RELAY_LABEL[room.relayMode]}
-        </Badge>
+        {pathBadge}
         {waitingOn.length > 0 && (
           <Badge variant="default" className="pointer-events-auto">
             Waiting for {waitingOn.length} to buffer…
@@ -1507,7 +1593,10 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
               // Dialogs portal to document.body (components/ui/dialog.tsx) and
               // the fullscreen top layer paints over the entire document, so a
               // dialog opened from inside fullscreen is simply not on screen.
-              // The gesture that asks for it leaves fullscreen first.
+              // The gesture that asks for it leaves fullscreen first — and
+              // arms the latch above so the immersive LAYOUT survives the
+              // round trip.
+              if (fullscreen.active) dialogExitRef.current = true;
               fullscreen.exit();
               setShareOpen(true);
             }}
@@ -1531,6 +1620,11 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
         </div>
       )}
 
+      {/* The immersive chrome (exit, call pills, chat sidebar) — inside the
+          section, because the fullscreen top layer paints over everything
+          else. The shell mounts it only while the mode is on. */}
+      {overlay}
+
       {debug && (
         <div className="glass-raised absolute bottom-4 left-4 z-20 rounded-ctl px-2 py-1 font-mono text-xs text-low">
           drift {Math.round(driftMs)}ms · seq {playback?.seq ?? 0} ·{' '}
@@ -1539,7 +1633,18 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
       )}
 
       {/* Screen-share hosting entry (when no one is sharing) */}
-      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+      <Dialog
+        open={shareOpen}
+        onOpenChange={(open) => {
+          setShareOpen(open);
+          // The dialog borrowed the screen from fullscreen; give it back.
+          // Guarded on the mode so a share dialog opened from the windowed
+          // layout never fullscreens anything.
+          if (!open && immersive && fullscreen.supported && !fullscreen.active) {
+            fullscreen.toggle();
+          }
+        }}
+      >
         <DialogContent aria-label="Share your screen">
           <DialogTitle>Share your screen</DialogTitle>
           <ScreenShareStage

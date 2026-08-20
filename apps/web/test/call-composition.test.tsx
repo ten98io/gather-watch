@@ -275,4 +275,62 @@ describe('the call region', () => {
     expect(named).toHaveLength(1);
     expect(named[0]?.tagName.toLowerCase()).toBe('figure');
   });
+
+  it('keeps every camera-off tile inside its own footprint', async () => {
+    await mount();
+    await join();
+
+    const entry = (userId: UserId): PresenceEntry =>
+      ({
+        userId,
+        state: 'in-call',
+        micOn: true,
+        camOn: false,
+        sharing: false,
+        lastSeenTs: 1_000,
+      }) as PresenceEntry;
+    await act(async () => {
+      (roomStub.connection as RoomConnection).useRoomState.setState({
+        presence: {
+          ['user_a' as UserId]: entry('user_a' as UserId),
+          ['user_b' as UserId]: entry('user_b' as UserId),
+        },
+      });
+      await settle();
+    });
+
+    // Three camera-off tiles: mine (carrying the camera affordance) and two
+    // peers. The screenshot bug: with everyone's camera off, tiles lost their
+    // footprint and merged — a peer's name slid under the neighbouring tile's
+    // orb and "Turn on camera" button.
+    const items = [...dock().querySelectorAll('li')];
+    expect(items).toHaveLength(3);
+
+    // jsdom does no layout, so this pins the MECHANISM real layout depends on.
+    // A peer tile is a definite `w-20` box and its figure takes `w-full` —
+    // 100% of that box — so the nowrap caption's min-content can never size
+    // the figure past the tile (a fit-content figure sized by an untruncated
+    // name is exactly how the tiles overlapped). The chain that guarantees
+    // non-overlapping, non-zero tiles is: li `w-20` (the 80px footprint) →
+    // figure `w-full` (pinned to it) → figcaption `truncate` (clipped at it).
+    for (const li of items) {
+      const figure = li.querySelector('figure');
+      expect(figure?.className).toContain('w-full');
+      const mine = (figure?.getAttribute('aria-label') ?? '').startsWith('You');
+      if (mine) {
+        // My tile's affordance is IN FLOW: the li grows to hold the button, so
+        // nothing absolutely positioned can escape into a neighbour.
+        const button = [...li.querySelectorAll('button')].find(
+          (b) => b.getAttribute('aria-label') === 'Turn on camera',
+        );
+        expect(button).toBeDefined();
+        expect(button?.className).not.toMatch(/\babsolute\b/);
+      } else {
+        expect(li.className).toContain('w-20');
+        const caption = li.querySelector('figcaption');
+        expect(caption?.className).toContain('truncate');
+        expect(caption?.className).toContain('w-full');
+      }
+    }
+  });
 });

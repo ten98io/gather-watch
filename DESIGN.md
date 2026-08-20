@@ -524,16 +524,35 @@ the binding copy.
 - **D1 — Call layout:** video tiles live in the **right rail above chat**; the
   content stage is never covered. Theater mode collapses the rail; tiles become
   a small overlay the user can hide and restore.
-- **D1.1 — Theater mode spec (owner, 2026-08-18):** fullscreen stage (true
-  browser fullscreen, not just maximized). Hover or click toggles a floating
-  glass-effect sidebar for chat, queue, and people. The sidebar uses
-  `.glass-panel` (`--surface-glass` + `backdrop-filter`) and collapses to a
-  48px handle when dismissed. Call participants render as floating circular
-  tiles on a configurable left/right edge (default: right), each tile showing
-  the avatar or camera feed in a 64px circle with a 2px speaking ring. The
-  call overlay never covers the stage center — it docks to the edge. This is
-  the only layout where the rail is glass, because it genuinely floats over
-  moving video. Keyboard shortcut: `F` enters/exits theater mode; `Esc` exits.
+- **D1.1 — Theater mode spec (owner, 2026-08-18; unified 2026-08-20):**
+  **Theater and fullscreen are the same mode, and the mode is LOCAL.** One
+  latch (`useImmersive`, components/room/ImmersiveStage.tsx), entered by the
+  header Theater button, the transport's fullscreen control, the share-stage
+  control or `F`, available to **every member** — it fills only the viewer's
+  own screen, so it is as personal as mute and never role-gated. The stage
+  section takes true browser fullscreen where the platform grants it
+  (StagePane's `useFullscreen`); where it cannot (iOS Safari, forbidden
+  iframes) the immersive **layout is the mode** — header and rail gone, stage
+  full-bleed — and fullscreen is only the enhancement. `F` enters/exits;
+  `Esc` exits (browser-owned while the top layer is up, ours otherwise).
+  The old server-backed room-wide flag is dead as a driver: nothing PATCHes
+  `/rooms/:id/theater` from the header any more, and `room.theater === true`
+  is read only as a legacy hint that keeps the control offered in rooms that
+  stored it. One person's toggle re-laying-out everyone's room was a lever,
+  not a layout.
+  In the mode: a glass sidebar (`.glass-panel`) carries **chat**, with an
+  explicit hide button on the sidebar and a 48px edge handle to bring it back
+  — the handle carries the unread count (the shell's own projection, the same
+  number the rail's Chat trigger shows). Call participants render as floating
+  circular tiles (Meet-style pills) starting from the top-right, docked to a
+  configurable left/right edge (default: right), each showing the avatar or
+  camera feed with a speaking ring; the pills collapse to the edge and come
+  back, and edge + collapsed are per-viewer preferences in localStorage —
+  never room state. The call overlay never covers the stage center — it docks
+  to the edge. All immersive chrome mounts **inside the stage section**,
+  because the fullscreen top layer paints over everything else. This is the
+  one layout where floating chrome is glass, because it genuinely floats over
+  moving video. Budget: enter 1 step, chat 1 step, leave 1 step (§12).
 - **D2 — Camera default:** mic on, camera off, with a prominent "Turn on
   camera" affordance on your own tile. No pre-join device dialog. Never render
   a silent empty call region — everyone in the call gets a tile.

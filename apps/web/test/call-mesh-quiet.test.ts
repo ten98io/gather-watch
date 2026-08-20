@@ -309,7 +309,8 @@ function framesSince(ends: FakeEnd[], from: number[]): string[] {
 }
 
 describe('CallMesh quiet after convergence', () => {
-  let meshes: CallMesh[] = [];
+  // Mutated in place (push/splice), never reassigned.
+  const meshes: CallMesh[] = [];
 
   beforeEach(() => {
     vi.useFakeTimers();

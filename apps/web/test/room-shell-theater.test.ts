@@ -1,18 +1,23 @@
 /**
- * Theater is OFFERED by the stage and HELD by the user: the header control
- * exists while the current item is video — absent for music and for an empty
- * stage — and the room header carries no Watch/Listen badge any more (a room is
- * not a mode).
+ * Theater is OFFERED by the stage and HELD by the viewer — and since the
+ * 2026-08-20 unification the thing it holds is the LOCAL immersive mode
+ * (DESIGN.md §11 D1.1): theater and fullscreen are one latch, per viewer,
+ * never on the wire. What these cases pin:
  *
- * What changed, and why the last case here reads the other way now: the layout
- * used to be re-derived per item (`room.theater && stageKind === 'video'`), so
- * a mixed queue hid and re-showed the whole rail as it flowed music → video →
- * music. That is not a mode, it is a twitch, and it cost a full remount of the
- * call dock every time (see room-shell-rail.test.tsx). The flag now decides the
- * layout on its own, and the item decides only whether the control is worth
- * offering — plus one rule the old shape never needed: while theater is ON the
- * control stays, whatever is playing, because a switch you can flip one way and
- * not back is a trap.
+ *  · the OFFER conditions: the control exists while the current item is video
+ *    or a screen share is live — absent for music and for an empty stage —
+ *    because the mode is turned on over a picture, where filling the screen
+ *    means something;
+ *  · the control is NOT role-gated any more. The old server-backed flag
+ *    re-laid-out the whole room, which was a canManage lever; the local mode
+ *    fills only your own screen, which is as personal as mute — a plain
+ *    member and a guest get it too;
+ *  · `room.theater` is a LEGACY HINT, read and never written: a room that
+ *    stored the old flag keeps the control offered whatever is playing, so
+ *    nothing an old host set up goes dark — but it does not force anyone's
+ *    layout (the latch itself starts off). The way OUT while the mode is on
+ *    lives with the mode (the overlay's exit control, F, Esc) and is pinned
+ *    in immersive-mode.test.tsx, where a click harness exists.
  *
  * RoomLayout is SSR-rendered with the same harness as stage-content.test.ts.
  * The server pass takes the mobile branch (`useMediaQuery` is false there),
@@ -88,7 +93,7 @@ describe('theater follows the playing item', () => {
   });
 
   it('hides the theater control while music plays — even in a stored watch room', () => {
-    // Theater OFF: there is no picture to fill, so there is nothing to offer.
+    // There is no picture to fill, so there is nothing to offer.
     const html = renderLayout(makeRoom('watch'), host, SC_REF);
     expect(html).not.toContain('Turn theater mode');
   });
@@ -105,22 +110,42 @@ describe('theater follows the playing item', () => {
     expect(html).toContain('Turn theater mode on');
   });
 
-  it('never offers the control to plain members', () => {
+  it('offers the control to plain members too — the mode is local now', () => {
+    // The old flag re-laid-out the whole room and was rightly canManage-gated.
+    // This one fills only the viewer's own screen: gating it by role would be
+    // gating mute by role.
     const html = renderLayout(makeRoom('watch'), makeMember('member'), YT_REF);
-    expect(html).not.toContain('Turn theater mode');
+    expect(html).toContain('Turn theater mode on');
   });
 
-  it('keeps the way OUT while theater is on and the queue moves to music', () => {
-    // The queue moves on its own. Someone who turned theater on for a film and
-    // then heard a song come on must still be able to turn it back off, so the
-    // control survives the kind change even though nothing would offer it here.
+  it('offers it to guests as well', () => {
+    const html = renderLayout(makeRoom('watch'), makeMember('guest'), YT_REF);
+    expect(html).toContain('Turn theater mode on');
+  });
+});
+
+describe('the stored room.theater flag is a legacy hint, not anyone’s layout', () => {
+  const host = makeMember('host');
+
+  it('keeps the control offered in a room that stored the flag, whatever is playing', () => {
+    // The queue moves on its own: an old room that stored theater=true keeps
+    // its control through a music item rather than going dark.
     const html = renderLayout(makeRoom('watch', { theater: true }), host, SC_REF);
-    expect(html).toContain('Turn theater mode off');
+    expect(html).toContain('Turn theater mode on');
   });
 
-  it('is still the user’s latch, not the item’s, when nothing plays at all', () => {
+  it('and when nothing plays at all', () => {
     const html = renderLayout(makeRoom('watch', { theater: true }), host, null);
-    expect(html).toContain('Turn theater mode off');
+    expect(html).toContain('Turn theater mode on');
+  });
+
+  it('but never forces the layout: the room renders windowed until THIS viewer enters', () => {
+    // "on", not "off": the stored flag no longer drives anyone's layout, so
+    // the latch is off and the header still stands (an immersive render hides
+    // it — see immersive-mode.test.tsx).
+    const html = renderLayout(makeRoom('watch', { theater: true }), host, YT_REF);
+    expect(html).not.toContain('Turn theater mode off');
+    expect(html).toContain('aria-label="Your rooms"');
   });
 });
 

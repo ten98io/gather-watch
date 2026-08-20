@@ -1,29 +1,30 @@
 // @vitest-environment jsdom
 /**
- * THE ROOM HAD NO FULLSCREEN AT ALL.
+ * THE STAGE'S FULLSCREEN — which since the 2026-08-20 unification IS the
+ * immersive/theater mode (DESIGN.md §11 D1.1): one local latch, entered by
+ * the transport control, the share-stage control and `F`, with true browser
+ * fullscreen as the ENHANCEMENT the latch asks for where the platform grants
+ * it. The room had no fullscreen at all before this file's first version
+ * (lib/player/youtube.ts set `fs: 0` next to a comment claiming the room's
+ * chrome handled it, and nothing did).
  *
- * `requestFullscreen` appeared exactly once in apps/web before this, inside a
- * comment in lib/player/youtube.ts claiming "the room's own chrome handles it"
- * next to `fs: 0`, which switches OFF YouTube's own button. Nothing handled it.
- * DESIGN.md §11 D1.1 has specified "true browser fullscreen, not just
- * maximized" with `F` to enter and exit since the decision was locked.
- *
- * What is pinned here is the shape a fullscreen control has to have to be
- * honest:
- *   - it is FEATURE-DETECTED, per document AND per element, because iOS Safari
- *     on iPhone has no `Element.prototype.requestFullscreen` (only <video>
- *     fullscreens there) and an embedded document can have the API and be
- *     forbidden to use it. Either way the control is withheld, never offered
- *     and throwing;
+ * What is pinned here is the shape the unified control has to have:
+ *   - the control is ALWAYS OFFERED, because the mode is the LAYOUT and works
+ *     where the platform cannot fullscreen (iOS Safari has no
+ *     `Element.prototype.requestFullscreen`; an embedded document can have
+ *     the API and be forbidden to use it). On those platforms activating it
+ *     enters the layout and asks the browser for nothing — offered and
+ *     throwing would be worse than either;
  *   - the element it fullscreens is the whole stage SECTION, so the transport,
- *     the shield and the overlays go with the picture;
- *   - nothing is latched optimistically: the control reads its state back from
- *     `fullscreenchange`, which is the only way it can be right after an exit
- *     the user performed themselves (Escape, F11, the browser's own control).
+ *     the shield, the overlays and the immersive chrome go with the picture;
+ *   - the control reports the MODE (the viewer's own latch, honest the moment
+ *     they flip it); the browser's answer is still read back from
+ *     `fullscreenchange`, because an exit the user performed out from under
+ *     us (Escape, F11, the browser's own control) must take the mode with it.
  *
- * jsdom, and jsdom has no Fullscreen API — which makes it the exact fixture for
- * the iOS case. The capable cases install a stub that records calls and does
- * NOT fire `fullscreenchange` on its own, so "we called it" and "the browser
+ * jsdom, and jsdom has no Fullscreen API — which makes it the exact fixture
+ * for the iOS case. The capable cases install a stub that records calls and
+ * does NOT fire `fullscreenchange` on its own, so "we asked" and "the browser
  * agreed" stay separable.
  */
 import * as React from 'react';
@@ -72,6 +73,7 @@ vi.mock('@/lib/player/embed', () => ({ EmbedAdapter: FakeAdapter }));
 
 const { RoomProvider, useRoomConnection } = await import('@/lib/room-context');
 const { StagePane } = await import('@/components/stage/StagePane');
+const { resetImmersive } = await import('@/components/room/ImmersiveStage');
 const { ROOM_ID, makeMember, makeRoom, playbackFor, queueItem } = await import(
   './helpers/room-render'
 );
@@ -158,6 +160,10 @@ describe('true browser fullscreen for the stage', () => {
   let root: Root;
 
   beforeEach(() => {
+    // The latch is a module store (three owners across two subtrees) and a
+    // bare StagePane never resets it — the shell does, and there is no shell
+    // here. Left dirty, one case's mode leaks into the next one's mount.
+    resetImmersive();
     window.matchMedia = ((query: string) => ({
       matches: false,
       media: query,
@@ -218,22 +224,33 @@ describe('true browser fullscreen for the stage', () => {
     });
   }
 
-  it('offers no fullscreen control where the platform has none', async () => {
+  it('offers the control even where the platform has no fullscreen — the mode is the layout', async () => {
     // jsdom as shipped == iOS Safari on iPhone for this purpose: no
-    // `Element.prototype.requestFullscreen` at all.
+    // `Element.prototype.requestFullscreen` at all. The control used to be
+    // withheld here; now it enters the immersive LAYOUT and simply asks the
+    // browser for nothing — reaching the assertion without a throw is half
+    // the claim.
     await mount();
-    expect(buttonByLabel(/fullscreen/i)).toBeNull();
-    // …and the bar itself is there, so the absence is the guard and not a
-    // stage that failed to render.
-    expect(buttonByLabel(/^(Play|Pause)/)).not.toBeNull();
+    const btn = buttonByLabel(/^fullscreen/i);
+    expect(btn).not.toBeNull();
+    await act(async () => {
+      btn?.click();
+    });
+    expect(buttonByLabel(/^exit fullscreen/i)).not.toBeNull();
   });
 
-  it('withholds it when the document is forbidden to fullscreen', async () => {
+  it('enters the layout but asks the browser for nothing where fullscreen is forbidden', async () => {
     // An embedded document whose embedder omitted allow="fullscreen": the
-    // method exists and always rejects.
-    installFullscreenApi(false);
+    // method exists and every call rejects. useFullscreen's availability
+    // guard is what keeps the request count at zero — the mode itself is
+    // still this viewer's to have.
+    const fs = installFullscreenApi(false);
     await mount();
-    expect(buttonByLabel(/fullscreen/i)).toBeNull();
+    await act(async () => {
+      buttonByLabel(/^fullscreen/i)?.click();
+    });
+    expect(buttonByLabel(/^exit fullscreen/i)).not.toBeNull();
+    expect(fs.requests).toHaveLength(0);
   });
 
   it('offers it where the platform can, to a member who may not press play', async () => {
@@ -259,9 +276,15 @@ describe('true browser fullscreen for the stage', () => {
     expect(btn).not.toBeNull();
   });
 
-  it('withholds the share-stage control too where the platform cannot fullscreen', async () => {
+  it('the share-stage control enters the layout too where the platform cannot fullscreen', async () => {
     await mount(makeRoom('watch'), { shareLive: true });
-    expect(buttonByLabel(/fullscreen/i)).toBeNull();
+    const btn = buttonByLabel(/^fullscreen/i);
+    expect(btn).not.toBeNull();
+    await act(async () => {
+      btn?.click();
+    });
+    // No API to call and nothing thrown — the mode is on regardless.
+    expect(buttonByLabel(/^exit fullscreen/i)).not.toBeNull();
   });
 
   it('fullscreens the whole stage section, so the transport goes with it', async () => {
@@ -277,20 +300,21 @@ describe('true browser fullscreen for the stage', () => {
     expect(fs.requests[0]?.tagName).toBe('SECTION');
   });
 
-  it('waits for the browser to confirm before it claims to be fullscreen', async () => {
+  it('claims the MODE at once, and still sends the browser the real request', async () => {
+    // The control reports the viewer's own latch — honest the moment they
+    // flip it, with or without a top layer. What must NOT be assumed is the
+    // browser's side: the request is recorded here and `fullscreenchange` is
+    // still the only thing that marks the top layer as actually held (the
+    // Escape case below is where that distinction pays).
     const fs = installFullscreenApi();
     await mount();
     await act(async () => {
-      buttonByLabel(/fullscreen/i)?.click();
+      buttonByLabel(/^fullscreen/i)?.click();
     });
-    expect(buttonByLabel(/fullscreen/i)?.getAttribute('aria-label')).toBe('Fullscreen (F)');
-
-    await act(async () => {
-      fs.confirm();
-    });
-    const btn = buttonByLabel(/fullscreen/i);
+    const btn = buttonByLabel(/^exit fullscreen/i);
     expect(btn?.getAttribute('aria-label')).toBe('Exit fullscreen (F)');
     expect(btn?.getAttribute('aria-pressed')).toBe('true');
+    expect(fs.requests).toHaveLength(1);
   });
 
   it('follows an exit the USER performed — Escape, F11, the browser’s own button', async () => {
@@ -343,14 +367,23 @@ describe('true browser fullscreen for the stage', () => {
     expect(fs.exits).toBe(1);
   });
 
-  it('F is inert, not fatal, where the API is absent', async () => {
+  it('F enters the layout, not a crash, where the API is absent', async () => {
     await mount();
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f' }));
     });
-    // Reaching here at all is the assertion: an unguarded call would have
-    // thrown on a missing `Element.prototype.requestFullscreen`.
-    expect(buttonByLabel(/fullscreen/i)).toBeNull();
+    // Reaching here at all is half the assertion: an unguarded call would
+    // have thrown on a missing `Element.prototype.requestFullscreen`. The
+    // other half is that the key did its job anyway — the mode is the layout.
+    expect(buttonByLabel(/^exit fullscreen/i)).not.toBeNull();
+
+    // …and Escape leaves it, because with no top layer there is no browser
+    // exit to defer to (D1.1: Esc exits).
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(buttonByLabel(/^exit fullscreen/i)).toBeNull();
+    expect(buttonByLabel(/^fullscreen/i)).not.toBeNull();
   });
 
   it('leaves fullscreen for a dialog, which portals outside the top layer', async () => {
@@ -370,5 +403,46 @@ describe('true browser fullscreen for the stage', () => {
       share?.click();
     });
     expect(fs.exits).toBe(1);
+  });
+
+  it('the immersive MODE survives the share dialog — only browser fullscreen is lent out', async () => {
+    // The dialog's exit arrives as the same `fullscreenchange` a user's Escape
+    // does, and reading it as "the user left" collapsed the entire immersive
+    // layout the moment anyone pressed Share screen inside it: header and rail
+    // back, chat sidebar and call pills unmounted, call tiles remounted. The
+    // reviewer proved it with exactly this sequence; the separate act() blocks
+    // are load-bearing — the exit request runs in a passive effect AFTER the
+    // click, so folding these together never observes fullscreen.active=true.
+    const fs = installFullscreenApi();
+    const { useImmersive } = await import('@/components/room/ImmersiveStage');
+    await mount();
+    await act(async () => {
+      buttonByLabel(/fullscreen/i)?.click();
+    });
+    await act(async () => {
+      fs.confirm();
+    });
+    expect(useImmersive.getState().active).toBe(true);
+
+    const share = Array.from(document.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Share screen',
+    );
+    await act(async () => {
+      share?.click();
+    });
+    await act(async () => {
+      fs.confirm(); // the browser acknowledges the exit the dialog asked for
+    });
+
+    expect(useImmersive.getState().active).toBe(true);
+
+    // Closing the dialog gives the screen back: fullscreen is re-requested.
+    const before = fs.requests.length;
+    const scrim = document.querySelector('[aria-label="Close dialog"]') as HTMLButtonElement | null;
+    await act(async () => {
+      scrim?.click();
+    });
+    expect(fs.requests.length).toBeGreaterThan(before);
+    expect(useImmersive.getState().active).toBe(true);
   });
 });

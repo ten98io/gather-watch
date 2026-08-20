@@ -6,19 +6,20 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '@gather/api-client';
-import {
-  SetTheaterResponse,
-  formatInviteCode,
-  memberRemovalReasonFromCloseText,
-} from '@gather/contracts';
+import { formatInviteCode, memberRemovalReasonFromCloseText } from '@gather/contracts';
 import type { RoomId } from '@gather/contracts';
-import { api, apiFetch } from '@/lib/api';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { describeError } from '@/lib/describe-error';
 import { ROLE_LABEL } from '@/lib/labels';
 import { canAct } from '@/lib/permissions';
-import { toast } from '@/components/ui/toast';
 import { RoomMenu } from '@/components/room/RoomMenu';
+import {
+  ImmersiveOverlay,
+  StageLivePathBadge,
+  resetImmersive,
+  toggleImmersive,
+  useImmersive,
+} from '@/components/room/ImmersiveStage';
 import { RoomProvider, useRoom, useRoomConnection } from '@/lib/room-context';
 import { unreadChatCount } from '@/lib/room-connection';
 import { mediaKindFor } from '@/lib/media-kind';
@@ -105,47 +106,31 @@ function MetaItem({ children }: { children: ReactNode }) {
 
 /**
  * Desktop right rail (380px): the ONE call surface docked above
- * Chat/Queue/People. Solid `surface-1` normally — glass is reserved for things
- * that float over moving video, which the rail only does in theater mode
- * (`floating`), where it overlays the stage.
+ * Chat/Queue/People. Solid `surface-1`, always — glass is reserved for things
+ * that float over moving video, and the rail never does that any more: the
+ * immersive mode (§11 D1.1) unmounts it outright and carries chat and the
+ * call as its own glass chrome INSIDE the stage section, because the
+ * fullscreen top layer paints over anything mounted out here.
  *
- * Theater is a PROP, never a different element. This used to be rendered by
- * two branches — `<Rail>` in one and a `<>…</>` fragment in the other — at the
- * same child slot, and React cannot reconcile a fragment against a component:
- * every theater flip destroyed the whole rail and built it again, taking the
- * call dock's `<video>` tiles, chat's scroll position and the queue with it.
- * One element, one slot, props for the rest.
+ * It carries no shadow: it is RESTING on the page and separates from the void
+ * by background step (§4). The floating `glass-panel` variant this used to
+ * grow in theater mode is gone with the server-backed theater flag itself.
  */
 function Rail({
   roomId,
   tab,
   onTabChange,
   unreadChat,
-  floating = false,
 }: {
   roomId: RoomId;
   tab: RailTab;
   onTabChange(t: RailTab): void;
   unreadChat: number;
-  floating?: boolean;
 }) {
   return (
     <aside
       aria-label="Room panel"
-      className={cn(
-        'flex w-rail shrink-0 flex-col overflow-hidden',
-        // Mutually exclusive on purpose: cn() is a plain joiner, so a floating
-        // rail that also kept `rounded-panel bg-surface-1` would paint a solid
-        // panel over the picture instead of glass.
-        //
-        // The docked rail carries no shadow: it is RESTING on the page and
-        // separates from the void by background step (§4). Only the floating
-        // one has left the page, and `shadow-e2` is what a floating panel says
-        // — the same pairing dialogs and sheets use.
-        floating
-          ? 'glass-panel absolute inset-y-4 right-4 z-20 shadow-e2'
-          : 'rounded-panel bg-surface-1',
-      )}
+      className="flex w-rail shrink-0 flex-col overflow-hidden rounded-panel bg-surface-1"
     >
       {/* Hairline: the dock and the tab nav are the same elevation step, which
           is the one case §4 allows an edge instead of a background step. */}
@@ -204,6 +189,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['← / →', 'Seek 10 seconds'],
   ['C', 'Captions'],
   ['M', 'Mute'],
+  ['F', 'Theater — Esc leaves it'],
   ['?', 'This sheet'],
 ];
 
@@ -250,14 +236,12 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
    *
    * Fixed, not derived from what the room happens to hold. A default that
    * re-decided as the queue filled would move the panel out from under the
-   * person who had just used it, which is the same twitch `theaterActive`
-   * below exists to prevent.
+   * person who had just used it — the same twitch the immersive latch below
+   * exists to prevent (a layout must never change because a song came on).
    */
   const [tab, setTab] = useState<RailTab>('queue');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  /** Theater layout: rail hidden by default, opens as a glass overlay. */
-  const [railOpen, setRailOpen] = useState(false);
   /** The 'mods' tier, from the one place that defines it — the same predicate
    *  the panes use, and the same one the server's requireRole('host',
    *  'moderator') spells out on rename, policies, kick, ban and pin. */
@@ -289,39 +273,31 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
     unreadChatCount(s.messages, s.chatSeenSeq, member.userId),
   );
   /**
-   * Theater is the USER'S LATCH, not a property of the playing item.
+   * Theater is THIS VIEWER'S LATCH now — local, never on the wire (§11 D1.1,
+   * unified 2026-08-20).
    *
-   * It used to be `room.theater && stageKind === 'video'`, re-derived from
-   * whatever was on the stage — so a mixed queue re-laid-out the entire room
-   * once per item, hiding and re-showing the rail as it flowed video → music →
-   * video while nobody touched anything. A layout that changes under you
-   * because a song came on is not a mode, it is a twitch.
+   * Two earlier truths survive the unification. First: the latch decides the
+   * layout and the ITEM decides only whether the control is worth offering —
+   * theater is turned on over a picture, and it stays offered while it is on,
+   * whatever is playing, because a switch that flips one way is a trap and
+   * the queue moves to music on its own. Second: the control is not
+   * role-gated any more. The old flag re-laid-out the whole ROOM, which was a
+   * canManage lever; this one fills only your own screen, which is as
+   * personal as mute — a guest gets it too.
    *
-   * So the flag itself decides the layout, and the ITEM decides only whether
-   * the control is worth offering: theater is turned ON over a picture, where
-   * filling the room means something. It stays offered while it is on, whatever
-   * is playing — a switch that can be flipped one way and not the other is a
-   * trap, and the queue can move to music while theater is on.
+   * The header stops writing `room.theater` entirely (the mode is not the
+   * room's). The stored flag is read once, as a LEGACY HINT: a room that has
+   * it set keeps the control offered whatever is playing, so nothing an old
+   * host set up goes dark.
    */
-  const theaterActive = room.theater;
+  const immersive = useImmersive((s) => s.active);
+  /** The next room must open windowed, whatever this one's viewer did. */
+  useEffect(() => resetImmersive, []);
   /** A live share is a moving picture too: theater is exactly as sensible over
    *  it as over a video item, and hiding the toggle during a share left the
-   *  host unable to give the room the layout the share most wants. */
+   *  viewer unable to give the share the layout it most wants. */
   const shareLive = connection.useRoomState((s) => s.restream?.active === true);
-  const canToggleTheater = canManage && (stageKind === 'video' || shareLive || theaterActive);
-
-  const toggleTheater = (): void => {
-    void apiFetch(`/rooms/${roomId}/theater`, {
-      method: 'POST',
-      body: { enabled: !room.theater },
-      schema: SetTheaterResponse,
-    })
-      .then(() => toast.success(room.theater ? 'Theater off' : 'Theater on'))
-      .catch((err: unknown) => {
-        // Curated copy only — the raw server body is never shown.
-        toast.error(describeError(err, 'Could not switch theater mode'));
-      });
-  };
+  const canToggleTheater = stageKind === 'video' || shareLive || immersive || room.theater;
 
   const shortcuts = useMemo(
     () => [
@@ -336,8 +312,17 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
   );
   useKeyboardShortcuts(shortcuts);
 
-  /** Theater collapses the rail; the call tiles float over the stage instead. */
-  const railCollapsed = theaterActive && !railOpen;
+  /**
+   * The immersive chrome and the live path badge, built HERE and handed to
+   * StagePane as nodes: they read the call session and the shell's own unread
+   * projection, and the pane must stay mountable without either (every stage
+   * test mounts it bare). They render INSIDE the stage section because the
+   * fullscreen top layer paints over everything mounted out here.
+   */
+  const stageOverlay = immersive ? (
+    <ImmersiveOverlay roomId={roomId} unreadChat={unreadChat} />
+  ) : null;
+  const stagePathBadge = <StageLivePathBadge />;
 
   // The room ended this session for good (kicked, banned, room gone, token
   // dead). No reconnect is coming, so the panes below would sit on a stale
@@ -361,9 +346,14 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
           code mattered more than the room did. Nothing was deleted to fix
           that; the metadata simply moved to where metadata goes.
 
-          Theater takes the header down a rung of the ramp rather than hiding
-          it — the mode is "give the picture the room", and both branches set
-          the same two properties so the plain joiner cannot pick.
+          The immersive mode hides the header outright — `hidden` versus the
+          `flex` composition, a ternary because both are display values and
+          the plain joiner cannot pick. The mode IS "the stage is the screen":
+          under browser fullscreen the header is invisible anyway (the top
+          layer paints over it), and where the platform cannot fullscreen the
+          layout has to say the same thing by itself. The way back in lives on
+          the stage (the overlay's exit control, F, Esc), so nothing is lost
+          with the chrome.
 
           ── The phone composition, and why it is not the desktop one ──────
           One flex row cannot carry a back arrow, a 3-segment caption, the
@@ -381,10 +371,11 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
           order, which is the desktop composition unchanged.
         */}
         <header
-          className={cn(
-            'flex shrink-0 flex-wrap items-center gap-x-4 gap-y-3 px-4',
-            theaterActive ? 'py-4' : 'py-4 md:py-6',
-          )}
+          className={
+            immersive
+              ? 'hidden'
+              : 'flex shrink-0 flex-wrap items-center gap-x-4 gap-y-3 px-4 py-4 md:py-6'
+          }
         >
           {/* Navigation, and only that. It said "Leave room" while leaving a
               room had no control anywhere in the app — the membership survived,
@@ -435,7 +426,7 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
           <div className="order-3 ml-auto flex shrink-0 items-center gap-2 md:order-none md:ml-0">
             {canToggleTheater && (
               <Button
-                variant={theaterActive ? 'secondary' : 'ghost'}
+                variant={immersive ? 'secondary' : 'ghost'}
                 size="md"
                 // Icon-only below `md`, and `px-ctl-x-md` around a 16px glyph
                 // is 40px — under the 44px §9 requires and gets everywhere
@@ -443,9 +434,9 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
                 // HEIGHT on a coarse pointer. `min-w-ctl-md` is the same
                 // token read as a width: 32 under a mouse, 44 under a finger.
                 className="min-w-ctl-md"
-                aria-pressed={theaterActive}
-                aria-label={theaterActive ? 'Turn theater mode off' : 'Turn theater mode on'}
-                onClick={toggleTheater}
+                aria-pressed={immersive}
+                aria-label={immersive ? 'Turn theater mode off' : 'Turn theater mode on'}
+                onClick={toggleImmersive}
               >
                 <TheaterIcon size={16} aria-hidden />
                 <span className="hidden md:inline">Theater</span>
@@ -483,8 +474,9 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
               // the grain visible through it, which is the whole "the room
               // floats in space" line. It is only affordable once there is
               // width to spend: below `xl` a 64px gutter comes straight out of
-              // the picture. Theater drops the frame entirely.
-              theaterActive ? '' : 'gap-4 px-4 pb-4 xl:gap-6',
+              // the picture. The immersive mode drops the frame entirely: the
+              // stage is the screen.
+              immersive ? '' : 'gap-4 px-4 pb-4 xl:gap-6',
             )}
           >
             <main
@@ -494,62 +486,29 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
                 // The stage is void on void, so the plate is drawn by its edge
                 // and its corner. A hairline is what §4 allows where two
                 // surfaces on the SAME step meet, which is exactly this one.
-                theaterActive ? '' : 'rounded-stage border border-hairline',
+                immersive ? '' : 'rounded-stage border border-hairline',
               )}
             >
-              <StagePane roomId={roomId} />
-              {/* Theater: the rail is gone, so the tiles float along the left
-                  edge — never over the middle of the picture — and can be
-                  hidden for the session. */}
-              {railCollapsed && <CallOverlay roomId={roomId} />}
+              <StagePane roomId={roomId} pathBadge={stagePathBadge} overlay={stageOverlay} />
             </main>
-            {/* Its own slot, so it can appear and disappear without moving the
-                rail below it out of position. */}
-            {theaterActive && (
-              <Button
-                variant="secondary"
-                size="md"
-                // Whole class strings, not a shared prefix plus a differing
-                // edge: `cn` is a plain joiner and `left-8 right-8` would pin
-                // both edges of an absolutely positioned control at once.
-                //
-                // It sat at the bottom-right in both states, which put it on
-                // top of the open panel's last row. The corner it can always
-                // have is the one the other floating thing is not using: with
-                // the panel open there is no CallOverlay on the left, and with
-                // it closed the tiles are there and the right is free.
-                className={
-                  railOpen
-                    ? 'absolute bottom-8 left-8 z-30'
-                    : 'absolute bottom-8 right-8 z-30'
-                }
-                onClick={() => setRailOpen((v) => !v)}
-                aria-expanded={railOpen}
-              >
-                {railOpen ? 'Hide panel' : 'Chat & queue'}
-              </Button>
-            )}
-            {/* ONE rail, in ONE slot, for every layout it has. Theater changes
-                what it looks like, never what it is: docked → floating is a
-                prop change React can reconcile, so the call tiles keep their
-                tracks and chat keeps its scroll across the flip. It is absent
-                only when it is genuinely off screen — theater with the panel
-                closed, where CallOverlay above carries the tiles instead. */}
-            {!railCollapsed && (
-              <Rail
-                roomId={roomId}
-                tab={tab}
-                onTabChange={setTab}
-                unreadChat={unreadChat}
-                floating={theaterActive}
-              />
+            {/* The rail leaves with the mode, and its replacement chrome
+                (chat sidebar, call pills) is INSIDE the stage section — see
+                stageOverlay above. Unmounted rather than hidden on purpose:
+                a merely-hidden ChatPane keeps marking messages seen, which
+                would zero the unread count the overlay's handle exists to
+                show. The dock remount on the way back is the same cost the
+                old theater's collapsed state already paid. */}
+            {!immersive && (
+              <Rail roomId={roomId} tab={tab} onTabChange={setTab} unreadChat={unreadChat} />
             )}
           </div>
         ) : (
           <>
             <main className="relative min-h-0 flex-1" aria-label="Stage area">
-              <StagePane roomId={roomId} />
-              {!sheetOpen && <CallOverlay roomId={roomId} />}
+              <StagePane roomId={roomId} pathBadge={stagePathBadge} overlay={stageOverlay} />
+              {/* The immersive overlay carries the call pills, so the floating
+                  tiles stand down with the sheet AND with the mode. */}
+              {!sheetOpen && !immersive && <CallOverlay roomId={roomId} />}
             </main>
             <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
               <SheetContent aria-label="Chat, queue and people">

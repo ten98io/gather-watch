@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '@gather/api-client';
 import { describeError } from '@/lib/describe-error';
-import { RELAY_LABEL, RELAY_SHORT_LABEL, ROLE_LABEL, UPLINK_LABEL } from '@/lib/labels';
+import { ROLE_LABEL, UPLINK_LABEL } from '@/lib/labels';
+import { CALL_PATH_LABEL } from '@/components/call/CallSurface';
 
 const FALLBACK = 'Could not do the thing';
 
@@ -51,11 +52,13 @@ function makeError(code: ConstructorParameters<typeof ApiError>[0]): ApiError {
 }
 
 describe('enum display labels', () => {
+  // RELAY_LABEL / RELAY_SHORT_LABEL are gone with the static stage badge: the
+  // media path is a live observation now (CALL_PATH_LABEL over the mesh's
+  // link stats), so the path vocabulary asserted here is the live one.
   it('never renders a raw enum value', () => {
     const labels = [
       ...Object.values(ROLE_LABEL),
-      ...Object.values(RELAY_LABEL),
-      ...Object.values(RELAY_SHORT_LABEL),
+      ...Object.values(CALL_PATH_LABEL),
       ...Object.values(UPLINK_LABEL),
     ];
     for (const label of labels) {
@@ -64,23 +67,10 @@ describe('enum display labels', () => {
     }
   });
 
-  it('keeps the relay badge wording the privacy policy quotes', () => {
-    expect(RELAY_LABEL.mesh).toBe('Private · device-to-device');
-  });
-
-  it('tells a legacy cf-sfu room the truth: it meshes like everything else', () => {
-    // Older rooms were flipped to 'cf-sfu' by the theater toggle, which no
-    // longer touches transport. The client only ever joins the mesh, so the
-    // badge must not claim a relay carries the media.
-    expect(RELAY_LABEL['cf-sfu']).toBe(RELAY_LABEL.mesh);
-    expect(RELAY_SHORT_LABEL['cf-sfu']).toBe(RELAY_SHORT_LABEL.mesh);
-  });
-
   it('never offers a plan, a tier or an upgrade anywhere in the label copy', () => {
     const copy = [
       ...Object.values(ROLE_LABEL),
-      ...Object.values(RELAY_LABEL),
-      ...Object.values(RELAY_SHORT_LABEL),
+      ...Object.values(CALL_PATH_LABEL),
       ...Object.values(UPLINK_LABEL),
       describeError(new ApiError('INTERNAL', 'plan required', 402), FALLBACK),
     ];

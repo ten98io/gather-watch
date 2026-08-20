@@ -1,18 +1,20 @@
 /**
  * Display labels for contract enums — the same pattern as PeoplePane's
  * STATE_LABEL and room-shell's statusLabel, hoisted here for the enums that
- * more than one pane renders. Raw enum values ('moderator', 'cf-sfu', 'poor')
- * must never reach the screen.
+ * more than one pane renders. Raw enum values ('moderator', 'poor') must
+ * never reach the screen.
  *
- * The relay label is load-bearing copy: the privacy policy promises the room
- * badge always says which mode you are in, so it has to describe where the
- * media ACTUALLY goes. This build has exactly one media path — the
- * device-to-device mesh (CallSurface always joins it, whatever the room says)
- * — so a legacy room still storing 'cf-sfu' meshes too, and its badge must say
- * that rather than claim a relay nothing routes through. Give 'cf-sfu' its own
- * wording again the day a relay actually carries media.
+ * THE MEDIA-PATH VOCABULARY DOES NOT LIVE HERE, and that is a decision:
+ * where media goes is a LIVE OBSERVATION folded over the mesh's link stats
+ * (`CALL_PATH_LABEL` beside `callPathFrom` in components/call/CallSurface —
+ * 'Private · direct', 'Relayed · encrypted', 'Connecting…'), never a static
+ * claim off `room.relayMode`. The RELAY_LABEL map that used to sit here was
+ * exactly that static claim, and the stage wore it beside the rail's live
+ * badge until the two disagreed in front of the owner ("am I using TURN or
+ * P2P?"). One vocabulary, one source, and it is the one that measures.
+ * `room.relayMode` stays on the wire; nothing renders it any more.
  */
-import type { MediaRef, MemberRole, RelayMode, UplinkQuality } from '@gather/contracts';
+import type { MediaRef, MemberRole, UplinkQuality } from '@gather/contracts';
 import { providerById } from '@/lib/providers';
 
 export const ROLE_LABEL: Record<MemberRole, string> = {
@@ -20,18 +22,6 @@ export const ROLE_LABEL: Record<MemberRole, string> = {
   moderator: 'Moderator',
   member: 'Member',
   guest: 'Guest',
-};
-
-/** How the room's media travels — the stage badge (StagePane). */
-export const RELAY_LABEL: Record<RelayMode, string> = {
-  mesh: 'Private · device-to-device',
-  'cf-sfu': 'Private · device-to-device',
-};
-
-/** Same idea, one word, for tight chrome like the call dock's status line. */
-export const RELAY_SHORT_LABEL: Record<RelayMode, string> = {
-  mesh: 'Private',
-  'cf-sfu': 'Private',
 };
 
 /** Human display name for a media source — never render MediaRef.kind raw. */

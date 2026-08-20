@@ -68,14 +68,20 @@ describe('the room says nothing about plans', () => {
   });
 });
 
-describe('the stage badge tells the truth about where media goes', () => {
-  it('says device-to-device for a mesh room', () => {
-    expect(renderRoom(makeRoom('watch'))).toContain('Private · device-to-device');
+describe('the stage badge claims only what is measured', () => {
+  // The static "Private · device-to-device" architectural claim is gone: the
+  // stage now renders the call rail's LIVE path truth (CALL_PATH_LABEL over
+  // the mesh's link stats — see StageLivePathBadge), and with nothing flowing
+  // it says nothing at all. The live wording itself is pinned in
+  // immersive-mode.test.tsx; what this SSR pass can and does pin is that no
+  // stored room field puts an unmeasured claim on the stage.
+  it('renders no static relay copy for a mesh room', () => {
+    expect(renderRoom(makeRoom('watch'))).not.toContain('Private · device-to-device');
   });
 
-  it('says device-to-device for a legacy cf-sfu room too — the client only meshes', () => {
+  it('claims nothing for a legacy cf-sfu room either — nothing routes through a relay', () => {
     const html = renderRoom(makeRoom('watch', { relayMode: 'cf-sfu' }));
-    expect(html).toContain('Private · device-to-device');
+    expect(html).not.toContain('Private · device-to-device');
     expect(html).not.toContain('Relayed');
   });
 });

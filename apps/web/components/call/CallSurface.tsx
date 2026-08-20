@@ -1555,7 +1555,15 @@ function OrbCluster({
         return (
           <li key={p.userId} className={cn('flex flex-col items-center gap-2', !offersCamera && 'w-20')}>
             <figure
-              className="flex flex-col items-center gap-2"
+              // `w-full` is load-bearing: without a definite width this figure
+              // is fit-content sized as a centred flex item, and the nowrap
+              // figcaption below sets its MIN-content — so any name wider than
+              // 80px pushed the figure past the `w-20` li, and neither box
+              // clips. Two camera-off tiles then interleave: the escaped name
+              // slides under the neighbour's orb and "Turn on camera" button
+              // (the owner's screenshot). 100% of the li is what makes the
+              // caption's `truncate` actually engage at the tile's edge.
+              className="flex w-full flex-col items-center gap-2"
               aria-label={`${p.name} — ${statusOf(p)}`}
             >
               <span className="relative">
@@ -1974,6 +1982,228 @@ export function CallOverlay({ roomId, className }: { roomId: RoomId; className?:
         </p>
       )}
       {call.phase === 'in-call' ? <ControlBar compact /> : <JoinButton />}
+    </aside>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Immersive pills (DESIGN.md D1.1 — the fullscreen/theater stage)
+
+   The call as Meet draws it over a presentation: each person is ONE pill —
+   their camera or their orb in a 64px circle, their name, their mic state —
+   stacked along a stage edge the PARENT chooses. This component renders
+   content only: no fixed/absolute positioning of its own, ever. The immersive
+   layout owns where the stack sits and whether it is collapsed; the pills own
+   what a person looks like. That split is the contract with the layout, and it
+   is what lets the same stack dock left or right without this file knowing why.
+
+   Audio ownership, stated because it is the regression this surface must not
+   ship: pills render PICTURES only. Every call audio sink is a hidden element
+   owned by <CallSessionProvider> — mounted once per room — so the dock tiles,
+   the overlay and these pills can render in any combination without a second
+   element ever playing the same track (a flanged double of a voice). The one
+   legitimate second sink, the share viewer, goes through claimAudioSink and
+   the provider's sinks stand down. Nothing here claims, because nothing here
+   plays.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+export interface CallPillsProps {
+  /** Which stage edge the parent docked the stack to (D1.1 default: right). */
+  edge: 'left' | 'right';
+  /** True = the slim edge stack. The parent owns and remembers this choice. */
+  collapsed: boolean;
+  onToggleCollapsed(): void;
+}
+
+/** D1.1: the avatar or the camera feed sits in a 64px circle. */
+const PILL_CIRCLE_PX = 64;
+
+/** Faces the collapsed stack shows before it is only a count. */
+const PILL_STACK_LIMIT = 3;
+
+/**
+ * One person's circle: their camera while it is on, their orb while it is not.
+ *
+ * The camera path draws the D1.1 speaking ring itself (`ring-2 ring-accent`,
+ * fed by the same measured voice activity the orb uses) because PresenceOrb —
+ * which owns the ring on the avatar path — never renders once there is a feed.
+ * A still ring on purpose: it survives `prefers-reduced-motion`, and the glow
+ * budget (§4) is already spent on the orb's halo.
+ */
+function PillCircle({ participant }: { participant: CallParticipant }) {
+  return (
+    <span className="relative shrink-0">
+      {participant.videoTrack !== null ? (
+        <span
+          className={cn(
+            'relative flex overflow-hidden rounded-full',
+            participant.speaking && 'ring-2 ring-accent',
+          )}
+          style={{ width: PILL_CIRCLE_PX, height: PILL_CIRCLE_PX }}
+        >
+          <TrackVideo track={participant.videoTrack} mirror={participant.isMe} />
+        </span>
+      ) : (
+        <PresenceOrb participant={participant} size={PILL_CIRCLE_PX} />
+      )}
+      {!participant.micOn && (
+        <OrbMarker tone="danger">
+          <MicOffIcon size={12} />
+        </OrbMarker>
+      )}
+      {participant.micOn && participant.sharing && (
+        <OrbMarker tone="quiet">
+          <MonitorIcon size={12} />
+        </OrbMarker>
+      )}
+    </span>
+  );
+}
+
+/**
+ * One person, one pill. Mine carries the compact mic/camera/leave controls on
+ * the pill itself — always visible, never hover-gated, because §12 budgets the
+ * mic at ONE step from the room and the immersive layout has no other call
+ * chrome to put it on.
+ */
+function CallPill({ participant }: { participant: CallParticipant }) {
+  return (
+    <figure
+      aria-label={`${participant.name} — ${statusOf(participant)}`}
+      // Glass is sanctioned here: the pills float directly over the
+      // fullscreen picture (D1.1 — the one layout where the call surface
+      // genuinely floats over moving video).
+      className="glass-raised flex items-center gap-2 rounded-pill p-1.5"
+    >
+      <PillCircle participant={participant} />
+      {/* min-w-0 + capped, truncating captions: a pill must never let a long
+          name set its min-content and grow past the stack — the same escape
+          the rail tiles just had. */}
+      <span className="flex min-w-0 flex-col pr-1.5">
+        <figcaption className="max-w-36 truncate text-label text-hi">
+          {participant.name}
+        </figcaption>
+        {participant.linkStatus !== 'ok' && (
+          <span
+            className={cn(
+              'max-w-36 truncate text-caption',
+              // 'unreachable' is a verdict, not a wait (same rung as the rail).
+              participant.linkStatus === 'unreachable' ? 'text-danger' : 'text-low',
+            )}
+          >
+            {LINK_STATUS_LABEL[participant.linkStatus]}
+          </span>
+        )}
+        {participant.isMe && (
+          <span className="mt-1">
+            <ControlBar compact />
+          </span>
+        )}
+      </span>
+    </figure>
+  );
+}
+
+/**
+ * The in-call participants as floating pills for the immersive layout.
+ *
+ * Renders nothing while nobody is in the call — an empty stack over the
+ * picture would be chrome with no referent. Collapsed, it is the slim edge
+ * stack: overlapping faces and a count on one button, because hiding the pills
+ * is not leaving the call and the stage must keep saying who is here. Both
+ * states keep the device-loss and connectivity sentences: dismissing the
+ * pills is not consent to be told nothing (the same rule the overlay holds).
+ */
+export function CallPills({ edge, collapsed, onToggleCollapsed }: CallPillsProps) {
+  const call = useCallSession();
+  const { participants } = call;
+  const lossNote = deviceLossNote(call);
+
+  if (participants.length === 0) return null;
+
+  // The one thing the pills do about the parent's edge choice: hug it.
+  // Mutually exclusive by ternary — cn() is a plain joiner.
+  const align = edge === 'right' ? 'items-end' : 'items-start';
+
+  const notes = (
+    <>
+      {lossNote !== null && (
+        <p role="alert" className="glass-raised max-w-56 rounded-ctl px-2 py-1 text-label text-danger">
+          {lossNote}
+        </p>
+      )}
+      {call.connectivityNote !== null && (
+        <p role="alert" className="glass-raised max-w-56 rounded-ctl px-2 py-1 text-label text-danger">
+          {call.connectivityNote}
+        </p>
+      )}
+    </>
+  );
+
+  if (collapsed) {
+    const faces = participants.slice(0, PILL_STACK_LIMIT);
+    return (
+      <aside aria-label="Call" className={cn('flex flex-col gap-1', align)}>
+        <button
+          type="button"
+          aria-expanded={false}
+          // The names ride the label: a collapsed stack still answers "who is
+          // in the call" without being opened.
+          aria-label={`Show call pills — ${String(participants.length)} in call: ${nameList(
+            participants.map((p) => p.name),
+          )}`}
+          onClick={onToggleCollapsed}
+          className="glass-raised flex flex-col items-center gap-1 rounded-pill px-1.5 py-2"
+        >
+          <span aria-hidden className="flex flex-col items-center -space-y-2">
+            {faces.map((p) => (
+              <Avatar
+                key={p.userId}
+                name={p.name}
+                src={p.avatarUrl}
+                accentColor={p.accentColor}
+                size={28}
+                decorative
+              />
+            ))}
+          </span>
+          <span className="text-caption text-hi tabular-nums">{participants.length}</span>
+        </button>
+        {notes}
+      </aside>
+    );
+  }
+
+  return (
+    <aside aria-label="Call" className={cn('flex flex-col gap-2', align)}>
+      <button
+        type="button"
+        aria-expanded={true}
+        aria-label="Hide call pills"
+        onClick={onToggleCollapsed}
+        className={cn(
+          'glass-raised flex items-center gap-1 rounded-pill px-2 py-1 text-caption text-low',
+          'transition-colors duration-150 hover:text-hi',
+        )}
+      >
+        <XIcon size={12} aria-hidden />
+        <span className="tabular-nums">{participants.length}</span> in call
+      </button>
+      <ul role="list" className={cn('flex list-none flex-col gap-2', align)}>
+        {participants.map((p) => (
+          <li key={p.userId}>
+            <CallPill participant={p} />
+          </li>
+        ))}
+      </ul>
+      {/* Others are talking and I am not in yet: the immersive layout shows
+          this surface and no other, so joining has to be reachable from it. */}
+      {call.phase !== 'in-call' && (
+        <span className="glass-raised rounded-pill p-1">
+          <JoinButton />
+        </span>
+      )}
+      {notes}
     </aside>
   );
 }
