@@ -35,8 +35,16 @@ import { SoundCloudAdapter } from '@/lib/player/soundcloud';
 import { VimeoAdapter } from '@/lib/player/vimeo';
 import { EmbedAdapter } from '@/lib/player/embed';
 import { useSyncEngine } from '@/lib/player/useSyncEngine';
-import { drivenIsDrm, useExtensionDriver } from '@/lib/player/extension-driver';
+import {
+  EXTENSION_DOCS_PATH,
+  drivenIsDrm,
+  extensionInstallUrl,
+  isHandheldBrowser,
+  useExtensionDriver,
+} from '@/lib/player/extension-driver';
 import type { ExtensionDriverState } from '@/lib/player/extension-driver';
+import { ExtensionGate } from '@/components/extension/ExtensionGate';
+import type { ExtensionGateStatus } from '@/components/extension/ExtensionGate';
 import { extensionMediaKey, onEnded } from '@/lib/extension-bridge';
 import type { ProviderSummary } from '@/lib/extension-bridge';
 import { API_URL, getAccessToken } from '@/lib/api';
@@ -509,12 +517,11 @@ function CueingStage({ title }: { title: string | null }) {
 /**
  * The one extra sentence a page item owes THIS browser, or null.
  *
- * `extensionInstallUrl()` returns null in two unrelated situations — this build
- * has no store listing, and this browser could never host the extension — and a
- * null URL cannot tell them apart, nor from the third case where the extension
- * is already installed and simply is not driving this tab yet. The driver's
- * phase knows all three, so the sentence is chosen from that and omitted rather
- * than guessed at. Saying nothing is allowed; saying something untrue is not.
+ * Chosen from the driver's phase, never inferred from the install URL: the URL
+ * can no longer distinguish anything (`extensionInstallUrl()` always answers,
+ * falling back to the app's own /extension page), and only the phase knows
+ * whether the extension is already here, absent, or impossible on this
+ * browser. Saying nothing is allowed; saying something untrue is not.
  */
 function pageItemNote(state: ExtensionDriverState): string | null {
   if (state.phase === 'ready') {
@@ -522,6 +529,20 @@ function pageItemNote(state: ExtensionDriverState): string | null {
   }
   if (state.phase === 'unavailable' && state.reason === 'unsupported-browser') {
     return 'The extension needs Chrome on a computer. On a phone, the Gather app plays these.';
+  }
+  return null;
+}
+
+/**
+ * The gate's vocabulary for the driver's phase, or null when the driver is
+ * ready and there is nothing to gate. A pure translation: both unions are
+ * closed, and this is the single place they meet.
+ */
+function gateStatusFor(state: ExtensionDriverState): ExtensionGateStatus | null {
+  if (state.phase === 'detecting') return 'detecting';
+  if (state.phase === 'incompatible') return 'incompatible';
+  if (state.phase === 'unavailable') {
+    return state.reason === 'unsupported-browser' ? 'unsupported-browser' : 'not-installed';
   }
   return null;
 }
@@ -546,6 +567,7 @@ function PageLinkStage({
   title,
   installUrl,
   note,
+  installHandledBelow = false,
 }: {
   url: string;
   title: string | null;
@@ -553,6 +575,10 @@ function PageLinkStage({
   installUrl: string | null;
   /** The browser-specific sentence, or null when there is nothing true to say. */
   note: string | null;
+  /** True when the gate below carries the region's primary (its install CTA):
+   *  "Open the link" then stays secondary, so the region keeps one gradient
+   *  (DESIGN.md §2) and one offer. */
+  installHandledBelow?: boolean;
 }) {
   return (
     <StagePoster
@@ -576,7 +602,7 @@ function PageLinkStage({
             target="_blank"
             rel="noopener noreferrer"
             className={buttonClasses({
-              variant: installUrl === null ? 'primary' : 'secondary',
+              variant: installUrl === null && !installHandledBelow ? 'primary' : 'secondary',
               size: 'lg',
             })}
           >
@@ -1162,11 +1188,41 @@ export function StagePane({
   /** A pasted link with no extension to play it. `adapterKindFor` returns null
    *  for a page ref on purpose, so nothing else on this stage claims the space. */
   const pageRef = mediaRef !== null && mediaRef.kind === 'page' ? mediaRef : null;
+  /**
+   * Where "Add the extension" goes, or null where offering an install would be
+   * a lie: the extension is already here, or this browser could never run it
+   * (the driver leaves `installUrl` null there on purpose). Everywhere else
+   * there is always somewhere honest to send people — the driver's own answer,
+   * or `extensionInstallUrl()` while detection is still running, both of which
+   * bottom out at the app's own /extension page.
+   */
   const extensionInstall =
     extension.state.phase === 'unavailable' || extension.state.phase === 'incompatible'
       ? extension.state.installUrl
-      : null;
+      : extension.state.phase === 'detecting'
+        ? extensionInstallUrl()
+        : null;
   const extensionNote = pageItemNote(extension.state);
+  const gateStatus = gateStatusFor(extension.state);
+  /**
+   * When the gate below carries an install action of its own, the poster hands
+   * the conversation over instead of repeating it: one offer, one gradient in
+   * the region (DESIGN.md §2). 'detecting' and 'unsupported-browser' render an
+   * actionless gate, so the poster keeps its link there.
+   */
+  const gateOwnsInstall = gateStatus === 'not-installed' || gateStatus === 'incompatible';
+
+  /**
+   * Phones and tablets never see the gate: its mobile branch funnels to an app
+   * with no store listing, and a dead app link violates the gate's own rule.
+   * Settled in an effect, not during render — the server pass has no browser
+   * to sniff (same order `useFullscreen.supported` settles in), so SSR and the
+   * first client paint agree on the desktop shape and hydration corrects it.
+   */
+  const [handheld, setHandheld] = useState(false);
+  useEffect(() => {
+    setHandheld(isHandheldBrowser());
+  }, []);
 
   /** The stage's one action: recover a refused start locally, or drive the
    *  room's transport under the same policy gate as the keyboard map. */
@@ -1527,12 +1583,33 @@ export function StagePane({
             )}
             {mediaRef === null && <EmptyStage />}
             {pageRef !== null && (
-              <PageLinkStage
-                url={pageRef.url}
-                title={currentItem?.title ?? null}
-                installUrl={extensionInstall}
-                note={extensionNote}
-              />
+              /* The page-kind branch is the ONE place the install funnel
+                 mounts (docs/FEATURE_PLAN.md §9 amendments): every other kind
+                 still plays through this page's own adapters until
+                 WEB_SLIMMING step 4 actually executes, so a gate anywhere
+                 wider would block playback that works. Column layout: the
+                 poster explains the item, the gate below it owns the install
+                 conversation — and only where the driver is not ready, on a
+                 browser that could ever hold an extension. */
+              <div className="flex h-full min-h-0 w-full flex-col">
+                <PageLinkStage
+                  url={pageRef.url}
+                  title={currentItem?.title ?? null}
+                  installUrl={gateOwnsInstall && !handheld ? null : extensionInstall}
+                  note={extensionNote}
+                  installHandledBelow={gateOwnsInstall && !handheld}
+                />
+                {gateStatus !== null && !handheld && (
+                  <ExtensionGate
+                    status={gateStatus}
+                    platform="desktop"
+                    installUrl={extensionInstall ?? extensionInstallUrl()}
+                    appUrl={EXTENSION_DOCS_PATH}
+                    onRecheck={extension.refresh}
+                    recheckPending={extension.checking}
+                  />
+                )}
+              </div>
             )}
             {/* The item is on its way. Below the shield (z-10) and inert, so
                 the one play affordance stays the one play affordance; keyed on

@@ -85,6 +85,9 @@
     <div class="card" id="connect-card">
       <label for="code">Room code</label>
       <input id="code" class="mono" placeholder="XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
+      <label for="password" style="margin-top: 8px">Room password</label>
+      <input id="password" type="password" autocomplete="off" />
+      <p class="sub">Only some rooms have one — leave empty otherwise.</p>
       <button id="connect">Connect this tab</button>
       <p id="error" hidden></p>
     </div>
@@ -99,6 +102,13 @@
       <p id="share-note" class="sub" hidden></p>
       <p id="share-error" hidden></p>
       <button id="share-stop" class="ghost" hidden>Stop sharing</button>
+
+      <div class="split">
+        <p class="lbl">Site access</p>
+        <p id="site-access-note" class="sub" hidden></p>
+        <button id="site-keep" hidden>Keep Gather on this site</button>
+        <button id="site-all" class="ghost">Allow all supported sites</button>
+      </div>
 
       <div class="split">
         <button id="disconnect" class="ghost" style="margin-top: 0">Disconnect</button>

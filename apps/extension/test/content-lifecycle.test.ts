@@ -115,10 +115,13 @@ const sentKinds = (kind: string): Array<Record<string, unknown>> =>
   toWorker.filter((m) => m['kind'] === kind);
 
 beforeAll(async () => {
-  // Fake timers before the import: content.ts arms a 1 Hz heartbeat at module
-  // scope, and nothing here wants it running on its own.
+  // Fake timers before the import: content.ts arms a 1 Hz heartbeat at boot,
+  // and nothing here wants it running on its own.
   vi.useFakeTimers();
   installBrowserFake();
+  // The boot sentinel lives on globalThis and survives vi.resetModules, so
+  // the harness starts from the state a fresh document is in: no flag.
+  delete (globalThis as Record<string, unknown>)['__gatherContentBooted'];
   await import('../src/content');
   await settle();
 });
@@ -151,6 +154,32 @@ describe('an ordinary load arms the page exactly once', () => {
 
     expect(sentKinds('provider')).toHaveLength(1);
     expect(observerCalls).toEqual([]);
+  });
+});
+
+describe('a second injection into the same document', () => {
+  /**
+   * The narrowed permission model injects this script twice on purpose: the
+   * registered (or declarative) script covers the document on load, and the
+   * worker's executeScript one-shot covers tabs that were already open when a
+   * grant landed or the popup connected. The boot sentinel on globalThis makes
+   * the second evaluation a no-op — without it every listener, observer and
+   * heartbeat would exist twice and the frame would claim and report double.
+   */
+  it('does nothing at all — no listener, no observer, no report', async () => {
+    const listenersBefore = new Map([...windowListeners].map(([type, list]) => [type, list.length]));
+
+    // The same document, injected again: a fresh module evaluation, the same
+    // globalThis, the flag already set by the first copy.
+    vi.resetModules();
+    await import('../src/content');
+    await settle();
+
+    expect(toWorker).toEqual([]);
+    expect(observerCalls).toEqual([]);
+    for (const [type, list] of windowListeners) {
+      expect(list.length, type).toBe(listenersBefore.get(type) ?? 0);
+    }
   });
 });
 

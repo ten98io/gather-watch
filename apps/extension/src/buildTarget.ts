@@ -119,6 +119,89 @@ export function originsMissingFromManifest(
   return origins.filter((o) => !covered.has(o));
 }
 
+/** Every icon file the manifest references — `icons` plus
+ *  `action.default_icon` — deduped. Both spellings (map or string) are read,
+ *  because a path in either ships in the artifact either way. */
+export function manifestIconPaths(manifest: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (!out.includes(value)) out.push(value);
+      return;
+    }
+    if (typeof value === 'object' && value !== null) {
+      for (const entry of Object.values(value)) collect(entry);
+    }
+  };
+  collect(manifest['icons']);
+  collect((manifest['action'] as Record<string, unknown> | undefined)?.['default_icon']);
+  return out;
+}
+
+/** x.y.z, digits only — the only shape a store listing can carry. */
+export function isReleaseVersion(version: unknown): boolean {
+  return typeof version === 'string' && /^\d+\.\d+\.\d+$/.test(version);
+}
+
+/** Chrome's manifest description cap; the Web Store rejects at upload. */
+export const MANIFEST_DESCRIPTION_MAX = 132;
+
+/**
+ * Everything that makes the manifest a store-rejectable or silently broken
+ * artifact, as sentences. Pure: the caller reads the manifest, lists the
+ * files in public/ and resolves the web-origin allowlist itself.
+ *
+ *   - an icon path with no file behind it ships a store-rejectable zip;
+ *   - a content_scripts entry that misses a Gather web origin kills the
+ *     extension-id announce there, and with it the web app's discovery.
+ *     `webOrigins` is the BUILD's list (target.effectiveWebOrigins) — the
+ *     announce must reach the origins this artifact will actually allow, not
+ *     the hardcoded defaults a custom-origins build has replaced;
+ *   - a placeholder version is not a version a listing can carry;
+ *   - a missing or over-long description dies at upload, never earlier.
+ */
+export function manifestShipErrors(
+  manifest: Record<string, unknown>,
+  publicFiles: readonly string[],
+  webOrigins: readonly string[],
+): string[] {
+  const errors: string[] = [];
+  for (const icon of manifestIconPaths(manifest)) {
+    if (!publicFiles.includes(icon)) {
+      errors.push(
+        `manifest.json points at "${icon}", which is not in public/ — ` +
+          'an artifact with missing icons is store-rejectable.',
+      );
+    }
+  }
+  const contentScripts = manifest['content_scripts'];
+  const matches = Array.isArray(contentScripts)
+    ? ((contentScripts[0] as { matches?: string[] } | undefined)?.matches ?? [])
+    : [];
+  for (const origin of originsMissingFromManifest(webOrigins, matches)) {
+    errors.push(
+      `content_scripts does not run on ${origin} — the extension-id announce ` +
+        'dies there, and the web app cannot discover the extension.',
+    );
+  }
+  if (!isReleaseVersion(manifest['version'])) {
+    errors.push(
+      `manifest version "${String(manifest['version'])}" is not x.y.z — ` +
+        'a store listing needs a real version.',
+    );
+  }
+  const description = manifest['description'];
+  if (typeof description !== 'string' || description.trim().length === 0) {
+    errors.push('manifest.json has no description — the Web Store requires one.');
+  } else if (description.length > MANIFEST_DESCRIPTION_MAX) {
+    errors.push(
+      `manifest description is ${String(description.length)} characters — Chrome caps ` +
+        `it at ${String(MANIFEST_DESCRIPTION_MAX)}, and the Web Store rejects the upload.`,
+    );
+  }
+  return errors;
+}
+
 /**
  * Resolve what to inline, or throw with the command that fixes it.
  *

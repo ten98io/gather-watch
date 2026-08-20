@@ -42,11 +42,15 @@ nothing ever writes anything else). `'cf-sfu'` is still in the schema
 is a layout, not a transport. No room ever successfully used LiveKit; it is
 deleted from the codebase.
 
-Gates at the end of this session, forced (not cached): **build 8/8, typecheck
-14/14, test 159 files / 2028 passed / 18 skipped, lint 9/9.** Build is 8 and not
-9 because `apps/mobile` has no `build` script. Typecheck and test are 14 because
-both `dependsOn: ["^build"]`, so each run also builds the five `dist`-shipped
-packages: 9 workspaces + 5 builds.
+Gates at the end of this session (2026-08-20), forced, three consecutive
+all-green runs: **35/35 tasks — build 8/8, typecheck 9/9, test 207 files /
+2759 passed / 18 skipped, lint 9/9.** Build is 8 and not 9 because
+`apps/mobile` has no `build` script. NOTE `apps/web/turbo.json` now orders
+web's typecheck after web's OWN build: tsconfig includes `.next/types/**`,
+`next build` wipes `.next` mid-run, and the parallel typecheck died with
+TS6053 on routes that plainly exist — a 3-of-6 forced-run flake on
+2026-08-20, now structurally gone. A standalone `turbo typecheck --force`
+therefore also builds web; the combined gate run costs nothing extra.
 
 ## The architecture in six sentences
 
@@ -283,6 +287,78 @@ Reviewed and deliberately NOT changed (decisions, not oversights):
   file are resolved; the mangled `passwordHash`-on-the-wire design became
   server-only `RoomDoc.passwordHash` + wire `hasPassword`.
 
+## Shipped 2026-08-20 (extension/store-readiness session; verified against the code)
+
+- **Provider registry has ONE copy** — `packages/contracts/src/providers.ts`
+  (the superset: host regexes, DRM flags, cast descriptors, and NEW
+  `grantPatterns` — https-only Chrome match patterns per provider). The
+  extension re-exports it; `apps/web/lib/providers.ts` derives its rows; the
+  `EmbedProvider` enum is WELDED to the registry by
+  `packages/contracts/test/providers-registry.test.ts`. Contracts stays
+  environment-free: `providerForHost` takes hostnames, URL parsing stays
+  app-side. Adding a service is one edit.
+- **Manifest narrowed for store review (FEATURE_PLAN 3.2 DONE).** The install
+  demands NO host access: `host_permissions` gone,
+  `optional_host_permissions: ["<all_urls>"]`, and content.js reaches sites
+  three ways — (1) a registered content script (`gather-driver`) mirroring
+  the granted origins (allFrames + matchOriginAsFallback + persist), (2)
+  activeTab + `executeScript` on popup connect (and a rate-limited rescue
+  injection when the popup opens over a driven tab with no elected frame),
+  (3) popup grant buttons ("Keep Gather on this site" — https only — and
+  "Allow all supported sites" from the registry's grantPatterns). The one
+  declarative content script covers exactly the five Gather origins (the
+  announce). `content.ts` has a boot sentinel — double injection is a no-op.
+  Version 1.0.0, icons 16/32/48/128 wired (generator:
+  `apps/extension/scripts/gen-icons.mjs`), and `manifestShipErrors`
+  (buildTarget.ts) fails the build on missing icons, an announce origin the
+  content script misses (checked against the BUILD's effective origins), a
+  placeholder version, or a description over Chrome's 132-char cap.
+- **The volume half of PlaybackDriver is implemented.** Overlay audio row
+  (mute + slider in the now-playing block) → `overlay:volume`/`overlay:mute`
+  (driven-tab gate) → `setAudio` at the elected frame (licence-gated like
+  `drive`) → guarded writes in `mediaDriver.applyDecision`; telemetry carries
+  volume/muted INTERNALLY only — the external event-port shape is unchanged,
+  and volume never becomes room state. `load()` stays 'unsupported' by
+  design. Auto-duck deliberately NOT built: the only signal the worker can
+  see is presence `micOn`, and a mic left open would pin the film at 35%
+  indefinitely — the duck waits for a speech signal (arrives with overlay
+  voice).
+- **The install funnel is REACHABLE (WEB_SLIMMING step 3 done).**
+  `extensionInstallUrl()` bottoms out at `/extension` (an honest docs page
+  that ships with the web app and says the store listing does not exist
+  yet); `NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL` wins when set.
+  `<ExtensionGate>` is MOUNTED — page-kind stage branch only, desktop only,
+  and the poster hands its install CTA to the gate (one gradient per region).
+- **Popup password field.** Guest join carries `password` only when typed;
+  the one error sentence is "Invite code not found — or the password is
+  wrong." (the server prices probes — unknown code, missing and wrong
+  password are the same NOT_FOUND).
+- **The 'players' adversarial audit completed** (it died mid-run last
+  session) and its blocker is fixed: an ad swapped into the driven element
+  could fabricate `sync.advance` (one viewer's preroll skipped the film for
+  the whole room), poison the fill-once `sync.duration` with the ad's
+  length, and get hard-seeked to its own end by the drive loop. All three
+  are closed by ONE predicate — `isInterstitialSource` (driver.ts §5):
+  duration ≤120 s while the room's projection is >45 s past it ⇒ not the
+  room's item ⇒ not driven, end not reported, duration not filled. The
+  worker's veto and the drive tick share the same `roomProjectedMs()` so
+  they cannot diverge. ACCEPTED TRADE (documented in README): a short
+  genuine item in a projection-overrun room is also vetoed; recovery is
+  Skip or a host seek.
+- **Tab-share classification is FRESH.** `planShare` classifies from a new
+  `chrome.tabs.get` read at share time, never the tab-provider cache —
+  without host permissions `tabs.onUpdated` omits `changeInfo.url`, so the
+  cache can silently describe the previous site across a cross-origin
+  navigation (YouTube→Netflix shared as unprotected, once). An
+  unclassifiable tab share is refused before the picker.
+
+New known limits, deliberate and documented in the README: a page-JS pause
+reads as user intent (IMA overlay-ad pattern — the room pauses with you); a
+per-site grant cannot reach a cross-origin player iframe (frame-aware grants
+are backlog; "all supported sites" covers known embed providers); the
+popup's grant offer snapshots the tab at popup open (gesture-synchronous
+request requires it); a mute set during an ad does not transfer to the film.
+
 ## Open items
 
 1. **TURN keys** (user action) — voice dropouts persist until `CF_TURN_KEY_ID`
@@ -359,11 +435,14 @@ Reviewed and deliberately NOT changed (decisions, not oversights):
    and any change to `adapters/redis-bus.ts` as unverified until it has run
    against a real Redis by hand.
 9. **Web-slimming steps 4–5** (delete web player adapters + web
-   `getDisplayMedia`) — still gated on a real-room verification that the
-   extension drives playback correctly. `apps/web/lib/player/{youtube,
-   soundcloud,vimeo,native,embed,adapter}.ts` and the `getDisplayMedia` call at
-   `apps/web/components/stage/ScreenShareStage.tsx:113` are all still present.
-   See `docs/WEB_SLIMMING.md` header for the blast radius.
+   `getDisplayMedia`) — still gated on the real-room verification, which is
+   now a SCRIPTED PROTOCOL with a results table in `docs/WEB_SLIMMING.md`
+   (~45 min, owner runs it: build prod artifact at HEAD, YouTube + generic
+   page + Netflix logged-in + a second DRM site + shares + worker-recycle +
+   popup/password join; the DRM sites are NAMED per FEATURE_PLAN §9). Steps
+   4–5 stay frozen until one run records all-PASS. The adapters and the
+   `getDisplayMedia` call are all still present; see the doc header for the
+   blast radius.
 10. ~~Mobile RN type defects~~ **CLOSED 2026-08-19.** The hero step carries an
     explicit `rnFontSize: 34` (`packages/design/src/scales.ts` — the old
     displayL, neither the 28px web floor nor the 56px fluid ceiling, which
@@ -554,6 +633,24 @@ mistake any of them for a working path.
   empty string counts as ABSENT everywhere in `services/api/src/config.ts`.
   `/readyz` is the probe that reflects the real store; the api's railway.json
   healthcheck uses it (web's gates on `/`).
+- **`tabs.onUpdated` omits `changeInfo.url` for origins the extension has no
+  host access to** — under the narrowed manifest that is MOST origins, so any
+  cache keyed on a tab's URL can silently describe the previous site across
+  a cross-origin navigation. Classify fresh at the moment of consequence
+  (`resolveTabProviderFresh` for shares); the cache is for cheap paths only.
+- **Registered content scripts do not inject into already-open documents.**
+  On `permissions.onAdded` you must `executeScript` the open matching tabs
+  yourself (the boot sentinel makes it idempotent) — and the same fact is
+  why `/extension` tells people to RELOAD their room tab after a
+  load-unpacked install.
+- **activeTab does not reach cross-origin iframes on an ungranted page, and
+  dies on cross-origin navigation.** Granted origins have neither limit.
+  Anything that "worked when I clicked the icon" and died later is usually
+  this.
+- **The store caps the manifest `description` at 132 characters.** A
+  165-char description passed every gate here and would have been rejected
+  at upload; `manifestShipErrors` now counts it, with the icon-existence,
+  announce-coverage and version checks beside it.
 - **When in doubt about deleting something, REPORT it.** A wrong deletion is
   far worse than a surviving orphan — and this repo has already deleted a
   production Mongo cluster once.
@@ -586,54 +683,64 @@ mistake any of them for a working path.
 ## Next session — starting prompt
 
 ```
-Continue Gather (~/Desktop/playin, live at gather.watch). Read HANDOFF.md
-first — live state, open items, and the traps list.
+Continue Gather (~/Desktop/gather-watch, live at gather.watch). Read
+HANDOFF.md first — live state, open items, and the traps list.
 
 Everything is on main and deployed; dev trails and fast-forwards. Deploys
 come from GitHub — pushing to main redeploys both Railway services.
 `railway up` is a local-source escape hatch, not the path.
 
 Before you change anything, re-run the gates yourself with --force
-(build/typecheck/test/lint) and `git status` — confirm the tree is clean
-rather than taking a previous session's word for it. The forced numbers to
-beat: build 8/8, typecheck 14/14, test 159 files / 2028 passed / 18 skipped,
-lint 9/9.
+(build/typecheck/test/lint) and `git status`. The forced numbers to beat:
+35/35 tasks — test 207 files / 2759 passed / 18 skipped. (web's typecheck
+now orders after its own build — apps/web/turbo.json — so the old
+.next/types TS6053 flake cannot recur; if you see it, something regressed.)
 
-Pick up in this order:
-1. If the TURN keys and/or the $5 Cast registration landed since last
-   session, wire them: TURN needs only CF_TURN_KEY_ID + CF_TURN_API_TOKEN on
-   the api service and a redeploy to heal voice dropouts; Cast unlocks slice
-   1 of docs/CAST_RELAY.md (the hardware spike that go/no-goes the Chromecast
-   TV-participant feature; slices 2+ follow).
-2. Dynamic bitrate adaptation (open item 3, partly landed): the static
-   relayed ceiling is now wired (both share producers pass
-   `capRelayedVideoKbps: 400`). What remains is the governor itself — wire
-   the already-built `BitrateGovernor` + `LinkAdaptor` into the share sender
-   per link, in the build order in `docs/FEATURE_PLAN.md` §8 (stats extractor
-   → per-link lifecycle → cadence → cap arbitration → uplink budget
-   allocator). The static cap becomes a ceiling on top of the governor for
-   relayed links only.
-3. Web-slimming steps 4–5 (delete web player adapters + web
-   getDisplayMedia): STILL GATED on verifying the extension drives a real
-   room correctly end-to-end. Do that verification first — a real room, a
-   real site, the installed extension — then the deletions per
-   docs/WEB_SLIMMING.md. Note the blast radius recorded there: the adapters
-   are not leaf files.
-4. Content-matching ladder (open item 16): external-ID enrichment →
-   availability probe → readiness handshake. This is the primary path for
-   cross-region access; it gates any future relay/VPN discussion.
+THE ONE GATE EVERYTHING WAITS ON: the owner runs the real-room verification
+protocol in docs/WEB_SLIMMING.md (~45 min, scripted end to end: prod
+artifact at HEAD, YouTube, a generic page, Netflix + one more DRM site
+logged in, shares, worker-recycle, popup/password join). Record the results
+in the doc's runs table. All-PASS unlocks web-slimming steps 4–5 (delete
+the web player adapters + web getDisplayMedia — blast radius in the doc)
+and makes the head-to-head DRM claim real. If a run happened since last
+session, execute steps 4–5 per the doc. If it FAILED anywhere, fixing that
+outranks everything below.
 
-Backlog after those: user-relations layer (open item 13), theater mode
-(open item 14), admin console (open item 15), the mobile WebView postMessage
-bridge (open item 6 — a mobile-only room on an embed cannot report its own
-endings), duration resolution on queue insert so the advance guard verifies
-instead of prices (open item 4), a password field in the EXTENSION popup's
-join flow (the popup copy already says to use the web app), voice in the
-extension overlay (offscreen getUserMedia, reuses the screen-share plumbing),
-account linking + playlist import, media-anchored chat's server half
-(mediaPositionMs on messages), the ≤3-step flow audit, and the Mode A/Mode B
-→ synced-source/screen-share rename in the remaining prose and comments
-(internal vocabulary only; users never see it).
+Then, in this order:
+1. Chrome Web Store submission (FEATURE_PLAN 3.1 — 3.2's narrowing is DONE,
+   the manifest is store-shaped: no host_permissions, icons, 1.0.0,
+   description under the cap, build-time ship checks). What remains is the
+   listing itself: developer account, store assets/screenshots, privacy
+   disclosures — owner work with light support. When the listing exists,
+   set NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL (and _ID) on the web
+   service; /extension keeps working as the fallback.
+2. Voice in the overlay (owner-wanted; the biggest missing Model C piece —
+   the README's "No voice yet" limit). Mic publisher in the offscreen
+   document reusing the share plumbing + mesh lanes; sinks in the overlay;
+   AUDIENCE_ROLES cam/mic gate on presence 'in-call'. MIND THE RULE: the
+   extension never writes presence STATE from a timer — extend the
+   background.test.ts pin to any new presence writer. This also unlocks
+   auto-duck: DuckEnvelope/VolumeMixer in apps/web/lib/player/ducking.ts
+   are the pattern, the overlay volume lever is the actuator, and a real
+   speech signal is what was missing.
+3. TURN keys / $5 Cast registration if they landed (user actions): TURN
+   needs CF_TURN_KEY_ID + CF_TURN_API_TOKEN on the api service; Cast
+   unlocks docs/CAST_RELAY.md slice 1.
+4. Dynamic bitrate adaptation (open item 3): wire BitrateGovernor +
+   LinkAdaptor into the share sender per link, build order in
+   FEATURE_PLAN §8; the static relayed cap becomes a ceiling on top.
+5. Frame-aware site grants (new, from this session's review): a per-site
+   grant cannot reach a cross-origin player iframe. A webNavigation-based
+   frame enumeration at grant time (or an "allow everywhere" affordance)
+   closes the long tail; design against the README's Honest limits entry.
+
+Backlog after those: content-matching ladder (item 16), user-relations
+layer (13), theater mode (14), admin console (15), mobile WebView
+postMessage bridge (6), duration resolution on queue insert (4 — note the
+extension now also VETOES interstitial durations, so resolve-on-insert is
+the remaining half), account linking + playlist import, media-anchored
+chat's server half, the ≤3-step flow audit, and the Mode A/Mode B rename
+in remaining prose.
 
 There is ONE tier: no billing, no plans, no entitlements. Any doc, brief or
 comment that tells you to add one is stale — fix the doc, do not build it.

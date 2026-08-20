@@ -1,15 +1,19 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 import {
+  MANIFEST_DESCRIPTION_MAX,
   PROD_BUILD_COMMAND,
   buildLabel,
   formatBuildBanner,
   formatBuildInfo,
   isLoopbackUrl,
+  isReleaseVersion,
+  manifestIconPaths,
   manifestPatternOrigin,
+  manifestShipErrors,
   originsMissingFromManifest,
   parseWebOriginsStrict,
   resolveBuildTarget,
@@ -217,6 +221,111 @@ describe('the manifest is checked against the in-code allowlist at build time', 
     expect(originsMissingFromManifest(['https://a.gather.watch'], ['https://*.gather.watch/*'])).toEqual(
       ['https://a.gather.watch'],
     );
+  });
+});
+
+/* ── the artifact itself: icons, the announce entry, a real version ─────── */
+
+/**
+ * All three fail SILENTLY at install time — an icon path with no file behind
+ * it and a placeholder version surface at store review, and a content-script
+ * entry that misses a Gather origin kills the extension-id announce there.
+ * The build refuses instead; these pins keep the refusal honest.
+ */
+describe('the manifest cannot ship broken', () => {
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../public/manifest.json', import.meta.url)), 'utf8'),
+  ) as Record<string, unknown>;
+  const publicFiles = readdirSync(fileURLToPath(new URL('../public', import.meta.url)));
+
+  it('the shipped manifest and the shipped public/ pass', () => {
+    expect(manifestShipErrors(manifest, publicFiles, DEFAULT_WEB_ORIGINS)).toEqual([]);
+  });
+
+  it('reads every icon path the manifest carries, both surfaces, deduped', () => {
+    const paths = manifestIconPaths(manifest);
+    for (const size of [16, 32, 48, 128]) {
+      expect(paths).toContain(`icon-${String(size)}.png`);
+    }
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+
+  it('names the icon file that is missing from public/', () => {
+    const errors = manifestShipErrors(
+      manifest,
+      publicFiles.filter((f) => f !== 'icon-48.png'),
+      DEFAULT_WEB_ORIGINS,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('icon-48.png');
+  });
+
+  it('names the Gather origin the content-script entry fails to reach', () => {
+    const narrowed = {
+      ...manifest,
+      content_scripts: [{ matches: ['https://gather.watch/*'], js: ['content.js'] }],
+    };
+    const errors = manifestShipErrors(narrowed, publicFiles, DEFAULT_WEB_ORIGINS);
+    expect(errors.some((e) => e.includes('http://localhost:3000'))).toBe(true);
+    expect(errors.some((e) => e.includes('https://app.gather.watch'))).toBe(true);
+  });
+
+  /**
+   * The announce is checked against the BUILD's origin list, not the hardcoded
+   * defaults: a custom-origins build (GATHER_WEB_ORIGINS=…) replaces the
+   * defaults wholesale, and its announce has to reach the origins it will
+   * actually allow — the externally_connectable check already uses the same
+   * list, and the two gates must not read different ones.
+   */
+  it('checks the announce against the origins the build actually allows', () => {
+    const errors = manifestShipErrors(manifest, publicFiles, [
+      'https://gather.watch',
+      'https://rooms.example.org',
+    ]);
+    const announce = errors.filter((e) => e.includes('content_scripts'));
+    expect(announce).toHaveLength(1);
+    expect(announce[0]).toContain('https://rooms.example.org');
+  });
+
+  it('refuses a placeholder version', () => {
+    const errors = manifestShipErrors({ ...manifest, version: '0' }, publicFiles, DEFAULT_WEB_ORIGINS);
+    expect(errors.some((e) => e.includes('"0"'))).toBe(true);
+  });
+
+  /**
+   * Chrome caps the manifest description at 132 characters and the Web Store
+   * rejects the upload — the last possible moment. The shipped description sat
+   * at 165 with nothing checking it; now the build refuses first.
+   */
+  it('refuses an over-long description, naming its count', () => {
+    const long = 'x'.repeat(165);
+    const errors = manifestShipErrors({ ...manifest, description: long }, publicFiles, DEFAULT_WEB_ORIGINS);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('165');
+    expect(errors[0]).toContain('132');
+  });
+
+  it('refuses a missing or empty description', () => {
+    for (const description of [undefined, '', '   ']) {
+      const broken: Record<string, unknown> = { ...manifest, description };
+      if (description === undefined) delete broken['description'];
+      const errors = manifestShipErrors(broken, publicFiles, DEFAULT_WEB_ORIGINS);
+      expect(errors.some((e) => e.includes('description')), String(description)).toBe(true);
+    }
+  });
+
+  it('the shipped description is under the cap', () => {
+    const description = manifest['description'];
+    expect(typeof description).toBe('string');
+    expect(String(description).length).toBeLessThanOrEqual(MANIFEST_DESCRIPTION_MAX);
+  });
+
+  it('knows a release version from everything else', () => {
+    expect(isReleaseVersion('1.0.0')).toBe(true);
+    expect(isReleaseVersion('12.3.456')).toBe(true);
+    for (const bad of ['0', '1.0', '1.0.0.0', '1.0.0-beta', 'v1.0.0', 0, undefined]) {
+      expect(isReleaseVersion(bad), String(bad)).toBe(false);
+    }
   });
 });
 

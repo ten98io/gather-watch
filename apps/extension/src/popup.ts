@@ -20,7 +20,9 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 import { castAffordanceFor } from './cast';
+import { providerGrantPatterns } from './providers';
 import type { TabProvider } from './providers';
+import { grantPatternsForTabUrl, isInsecureTabUrl } from './siteAccess';
 
 /** What the user picked, in the user's terms — never a capture API name. */
 type ShareSurface = 'tab' | 'window' | 'screen';
@@ -43,6 +45,12 @@ interface Status {
   playing: boolean;
   telemetry: { positionMs: number; durationMs: number; playing: boolean } | null;
   provider: TabProvider | null;
+  /** This popup's tab is the tab the room drives. Optional: older backgrounds
+   *  do not report it, and absent must not read as "not driven". */
+  drivenTab?: boolean;
+  /** …and a frame on it is actually elected and driven. `connected` is ROOM
+   *  state; only this says a player was found on the tab in front of the user. */
+  driving?: boolean;
   /** Optional: older backgrounds do not report it, so it is never required. */
   sharing?: boolean;
   /**
@@ -74,6 +82,21 @@ let shareNote = '';
  * so every re-render puts it back.
  */
 let castNote = '';
+/**
+ * Match patterns for the tab this popup is drawn over; [] until the tab is
+ * known, or when it cannot be granted at all (a chrome:// page). Read when
+ * the popup OPENS: `chrome.permissions.request` must be CALLED synchronously
+ * inside the click that asks for it, so the pattern list has to be sitting
+ * here already — an await between the click and the request voids the gesture.
+ */
+let activeTabPatterns: string[] = [];
+/**
+ * The tab is plain http: grantable-shaped, but a standing grant is refused
+ * (siteAccess.ts is https-only — a persistent http origin grant is a standing
+ * MITM door). Kept beside the patterns so the site-access card can explain
+ * the refusal instead of silently hiding its button.
+ */
+let activeTabInsecure = false;
 
 async function send<T>(msg: Record<string, unknown>): Promise<T> {
   const res = (await chrome.runtime.sendMessage(msg)) as
@@ -159,6 +182,45 @@ function renderShare(live: boolean): void {
   note.hidden = line.length === 0;
 }
 
+/* ── Site access (the manifest demands no host; the user grants sites) ── */
+
+/**
+ * Whether Gather sticks to this site, and the lever when it does not.
+ * activeTab lasts exactly as long as this connection and this page, so the
+ * sentence says so honestly, and the button turns it into a standing grant.
+ * Once the site is granted there is nothing to say and nothing to press.
+ */
+async function refreshSiteAccess(): Promise<void> {
+  const note = $('site-access-note');
+  const keep = $<HTMLButtonElement>('site-keep');
+  if (activeTabPatterns.length === 0) {
+    // No keep button either way — there is nothing to request. An insecure
+    // (http) site gets the sentence that says why, because to the user it
+    // looks exactly like a site Gather could keep; a page with nothing
+    // grantable at all (chrome://, the PDF viewer) gets silence — the
+    // sentence would ask the impossible.
+    note.textContent = activeTabInsecure
+      ? 'Gather follows this tab while it stays connected — an insecure site can’t be kept.'
+      : '';
+    note.hidden = !activeTabInsecure;
+    keep.hidden = true;
+    return;
+  }
+  const granted = await chrome.permissions
+    .contains({ origins: activeTabPatterns })
+    .catch(() => false);
+  if (granted) {
+    note.textContent = '';
+    note.hidden = true;
+    keep.hidden = true;
+    return;
+  }
+  note.textContent =
+    'Gather follows this tab only while you keep it connected — allow the site to make it stick.';
+  note.hidden = false;
+  keep.hidden = false;
+}
+
 async function refresh(): Promise<void> {
   const status = await send<Status>({ kind: 'popup:status' });
   const dot = $('livedot');
@@ -174,8 +236,19 @@ async function refresh(): Promise<void> {
   if (status.telemetry !== null && status.telemetry.durationMs > 0) {
     $('provider').textContent += ` — ${fmt(status.telemetry.positionMs)} / ${fmt(status.telemetry.durationMs)}`;
   }
+  // 'Connected · playing' above is ROOM state; without an elected frame this
+  // tab is not actually being driven (ungranted page, player in a cross-origin
+  // iframe), and the popup must say so rather than claim a sync it isn't doing.
+  // The condition needs `drivenTab === true` explicitly: an older background
+  // reports neither field, and absence must not put the sentence everywhere.
+  if (status.connected && status.drivenTab === true && status.driving === false) {
+    const line = $('provider').textContent ?? '';
+    $('provider').textContent =
+      line.length > 0 ? `${line} — no player found on this tab yet` : 'No player found on this tab yet';
+  }
 
   renderShare(liveShare(status));
+  if (status.connected) await refreshSiteAccess();
 
   // Written, never cleared, from here: the request's own outcome owns this
   // slot (see applyShare), and a poll two seconds later must not wipe the
@@ -257,14 +330,41 @@ function stopShare(): void {
 /* ── Wiring ── */
 
 function mount(): void {
+  // The tab this popup is drawn over, read at open so the pattern list is
+  // sitting ready BEFORE any click needs it (see activeTabPatterns).
+  void chrome.tabs
+    .query({ active: true, currentWindow: true })
+    .then((tabs) => {
+      const url = tabs[0]?.url;
+      activeTabPatterns = grantPatternsForTabUrl(url);
+      activeTabInsecure = isInsecureTabUrl(url);
+      return refreshSiteAccess();
+    })
+    .catch(() => undefined);
+
   $('connect').addEventListener('click', () => {
     const code = $<HTMLInputElement>('code').value.trim();
     if (code.length === 0) return;
+    const password = $<HTMLInputElement>('password').value.trim();
     const errEl = $('error');
     errEl.hidden = true;
     $('connect').textContent = 'Connecting…';
     ($('connect') as HTMLButtonElement).disabled = true;
-    send<{ roomName: string }>({ kind: 'popup:connect', code })
+    // Asked INSIDE the click, before any await — a gesture does not survive
+    // one. Declining is an answer, not an error: activeTab covers this tab
+    // for as long as it stays connected, so the join proceeds either way.
+    const asked =
+      activeTabPatterns.length > 0
+        ? chrome.permissions.request({ origins: activeTabPatterns }).catch(() => false)
+        : Promise.resolve(false);
+    asked
+      .then(() =>
+        send<{ roomName: string }>({
+          kind: 'popup:connect',
+          code,
+          ...(password.length > 0 ? { password } : {}),
+        }),
+      )
       .then(() => refresh())
       .catch((err: unknown) => {
         errEl.textContent =
@@ -277,6 +377,24 @@ function mount(): void {
         $('connect').textContent = 'Connect this tab';
         ($('connect') as HTMLButtonElement).disabled = false;
       });
+  });
+
+  $('site-keep').addEventListener('click', () => {
+    if (activeTabPatterns.length === 0) return;
+    // Synchronously in the click — the gesture is the licence to ask.
+    chrome.permissions
+      .request({ origins: activeTabPatterns })
+      .catch(() => false)
+      .then(() => refreshSiteAccess())
+      .catch(() => undefined);
+  });
+
+  $('site-all').addEventListener('click', () => {
+    chrome.permissions
+      .request({ origins: providerGrantPatterns() })
+      .catch(() => false)
+      .then(() => refreshSiteAccess())
+      .catch(() => undefined);
   });
 
   $('disconnect').addEventListener('click', () => {

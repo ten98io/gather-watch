@@ -39,7 +39,13 @@ import type {
 
 import { endedQueueItemId } from './advance';
 import { API_URL, WEB_ORIGINS, WS_URL, originOfUrl } from './config';
-import { ElasticDriver, mediaKeyOf, profileForContent, voiceActiveFrom } from './driver';
+import {
+  ElasticDriver,
+  isInterstitialSource,
+  mediaKeyOf,
+  profileForContent,
+  voiceActiveFrom,
+} from './driver';
 import type { DriverTelemetry, ElasticDriverState, PresenceLike } from './driver';
 import {
   EventPortRegistry,
@@ -81,6 +87,7 @@ import type {
 } from './protocol';
 import { providerForUrl } from './providers';
 import type { TabProvider } from './providers';
+import { REGISTRATION_ID, registrationMatches, sameMatchSet } from './siteAccess';
 
 interface Session {
   roomId: string;
@@ -154,6 +161,14 @@ interface RoomChatLine {
 
 let session: Session | null = null;
 let lastTelemetry: TelemetryPayload | null = null;
+/**
+ * The driven element's volume/mute, as its last telemetry reported it. Kept
+ * BESIDE {@link lastTelemetry} rather than in it, because TelemetryPayload is
+ * the event-port shape the web app reads (protocol.ts) and that wire must not
+ * grow: volume is per-viewer LOCAL state, drawn only on this user's overlay,
+ * and it never leaves this machine. Cleared wherever lastTelemetry is.
+ */
+let lastAudio: { volume: number; muted: boolean } | null = null;
 /**
  * Which surface family is being captured, or null when nothing is. It is what
  * the popup asks for, so a popup that was destroyed by the picker taking focus
@@ -229,6 +244,16 @@ const tabProviders = new Map<number, TabProvider>();
 const tabProviderEpoch = new Map<number, number>();
 /** Last time a tab reported a media element (telemetry implies one exists). */
 const tabMediaSeenAt = new Map<number, number>();
+/**
+ * Last time a popup:status triggered the recovery injection for a tab, so an
+ * open popup polling every 2s cannot hammer `scripting.executeScript`. A plain
+ * timestamp map, deliberately not a timer: the popup's own polls are the only
+ * clock this needs, and this worker must add no timers (the presence beat and
+ * the drive tick are the only two, by design).
+ */
+const rescueInjectedAt = new Map<number, number>();
+/** Floor between recovery injections per tab. */
+const RESCUE_INJECT_MIN_MS = 5000;
 /** The last content tab the *user* focused — the 'auto' handoff target. */
 let lastContentTabId: number | null = null;
 
@@ -255,6 +280,24 @@ function isDrivableTabUrl(url: string | undefined): boolean {
 async function resolveTabProvider(tabId: number): Promise<TabProvider | undefined> {
   const known = tabProviders.get(tabId);
   if (known !== undefined) return known;
+  return resolveTabProviderFresh(tabId);
+}
+
+/**
+ * The same classification, from the BROWSER only — the cache is never read.
+ *
+ * The cache can lie in one specific, dangerous way: without host permissions,
+ * `tabs.onUpdated` omits `changeInfo.url` for ungranted origins, so a
+ * navigation never invalidates it. A tab classified on youtube.com and then
+ * navigated to netflix.com still reads "YouTube" from the cache — and the tab
+ * SHARE path gates its DRM refusal on that answer, so the stale entry shares a
+ * protected site as an unprotected one: a black rectangle for the room.
+ * planShare therefore classifies from a fresh `chrome.tabs.get` (the popup
+ * gesture's activeTab makes the url visible right then); the drive-loop and
+ * status paths, where staleness costs a label rather than a capture, keep the
+ * cache through {@link resolveTabProvider}.
+ */
+async function resolveTabProviderFresh(tabId: number): Promise<TabProvider | undefined> {
   const epoch = tabProviderEpoch.get(tabId) ?? 0;
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   const url = tab?.url ?? '';
@@ -316,6 +359,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabProviders.delete(tabId);
   tabProviderEpoch.delete(tabId);
   tabMediaSeenAt.delete(tabId);
+  rescueInjectedAt.delete(tabId);
   if (lastContentTabId === tabId) lastContentTabId = null;
   // Its capture died with it. The offscreen document sees the track end too,
   // and both paths land on the same idempotent teardown.
@@ -337,6 +381,10 @@ async function adoptTabIfArmed(): Promise<void> {
   const tabId = await resolveAutoTab();
   if (tabId === null) return;
   session.drivenTabId = tabId;
+  // Best effort: an adopted tab may predate any grant and carry no script
+  // yet. An ungranted, never-clicked tab simply cannot claim — the popup on
+  // that tab is the recovery — so the failure is swallowed, not surfaced.
+  void ensureContentScript(tabId).catch(() => undefined);
   await persistSession();
   driveTab();
   broadcastStatus();
@@ -475,6 +523,108 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabWinner.delete(tabId);
 });
 
+/* ── Reaching content pages (the manifest demands no host at install) ── */
+
+/**
+ * The manifest's only declarative content script covers the Gather web
+ * origins (the extension-id announce). Every CONTENT site is reached one of
+ * three ways instead:
+ *
+ *   1. granted origins — the dynamic registration below, kept equal to what
+ *      the user has granted. A registered script behaves exactly like a
+ *      declarative one on those origins: every new document, every new frame,
+ *      which is what preserves the "player iframe can appear at any time"
+ *      design (content.ts header).
+ *   2. one tab, right now — activeTab + {@link ensureContentScript}. Opening
+ *      the popup IS the activeTab grant for that tab.
+ *   3. everything at once — the popup requesting broader grants.
+ *
+ * Known limits, accepted: activeTab does not reach cross-origin iframes on an
+ * ungranted page and dies on cross-origin navigation; granted origins have
+ * neither limit.
+ */
+async function syncRegisteredScripts(): Promise<void> {
+  const granted = await chrome.permissions.getAll().catch(() => ({ origins: [] as string[] }));
+  const matches = registrationMatches(granted.origins ?? [], WEB_ORIGINS);
+  const existing = await chrome.scripting
+    .getRegisteredContentScripts({ ids: [REGISTRATION_ID] })
+    .catch(() => [] as chrome.scripting.RegisteredContentScript[]);
+  const current = existing[0];
+  if (matches.length === 0) {
+    // Nothing granted, nothing registered — a registration with no matches is
+    // an error to Chrome, not an off switch.
+    if (current !== undefined) {
+      await chrome.scripting
+        .unregisterContentScripts({ ids: [REGISTRATION_ID] })
+        .catch(() => undefined);
+    }
+    return;
+  }
+  const registration: chrome.scripting.RegisteredContentScript = {
+    id: REGISTRATION_ID,
+    js: ['content.js'],
+    matches,
+    runAt: 'document_idle',
+    allFrames: true,
+    // The modern spelling of match_about_blank: an about:blank/srcdoc frame
+    // is admitted by the origin of the document that made it — player iframes
+    // are routinely built that way.
+    matchOriginAsFallback: true,
+    persistAcrossSessions: true,
+  };
+  if (current === undefined) {
+    await chrome.scripting.registerContentScripts([registration]).catch(() => undefined);
+    return;
+  }
+  if (!sameMatchSet(current.matches ?? [], matches)) {
+    await chrome.scripting.updateContentScripts([registration]).catch(() => undefined);
+  }
+}
+
+/**
+ * One-shot injection into a tab that is already open — a registered script
+ * only covers documents that load AFTER it exists. The content script's boot
+ * sentinel makes a double injection a no-op, so this never needs to ask
+ * whether the script is already there.
+ */
+async function ensureContentScript(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content.js'],
+    });
+  } catch {
+    throw new Error(
+      "Gather can't reach this page — open the site you want to watch and connect from there.",
+    );
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  void syncRegisteredScripts();
+});
+chrome.runtime.onStartup.addListener(() => {
+  void syncRegisteredScripts();
+});
+chrome.permissions.onAdded.addListener((added) => {
+  void syncRegisteredScripts();
+  const origins = added.origins ?? [];
+  if (origins.length === 0) return;
+  // The registration covers future documents; pages ALREADY open on the newly
+  // granted origins get the one-shot, or the grant looks like it did nothing.
+  void chrome.tabs
+    .query({ url: origins })
+    .then(async (tabs) => {
+      for (const tab of tabs) {
+        if (tab.id !== undefined) await ensureContentScript(tab.id).catch(() => undefined);
+      }
+    })
+    .catch(() => undefined);
+});
+chrome.permissions.onRemoved.addListener(() => {
+  void syncRegisteredScripts();
+});
+
 /* ── Guest join (popup path) ── */
 
 interface GuestJoinWire {
@@ -483,15 +633,23 @@ interface GuestJoinWire {
   accessToken: string;
 }
 
-async function guestJoin(code: string): Promise<GuestJoinWire> {
+async function guestJoin(code: string, password?: string): Promise<GuestJoinWire> {
   const res = await fetch(`${API_URL}/auth/guest`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ inviteCode: normalizeInviteCode(code), displayName: 'Extension' }),
+    body: JSON.stringify({
+      inviteCode: normalizeInviteCode(code),
+      displayName: 'Extension',
+      // Only when one was typed: the key's absence is what "no password" is.
+      ...(password !== undefined && password.length > 0 ? { password } : {}),
+    }),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(res.status === 404 ? 'Invite code not found — or the room needs a password, which the popup cannot enter yet. Join from the web app instead.' : `Join failed (${res.status}): ${text.slice(0, 120)}`);
+    // The server prices probes: unknown code, missing password and wrong
+    // password all answer the same NOT_FOUND, so this sentence covers them
+    // all without telling a prober which one it hit.
+    throw new Error(res.status === 404 ? 'Invite code not found — or the password is wrong.' : `Join failed (${res.status}): ${text.slice(0, 120)}`);
   }
   return (await res.json()) as GuestJoinWire;
 }
@@ -532,6 +690,31 @@ function localTelemetry(): DriverTelemetry | null {
 }
 
 /**
+ * The room's playback projected to `nowMs` — THE projection, the exact one the
+ * drive tick hands the elastic driver as `expectedMs`. The interstitial veto
+ * reads the same number through the same function so the two can never
+ * disagree about where the room is. Null while the room has no playback.
+ */
+function roomProjectedMs(live: Session, nowMs: number): number | null {
+  const p = live.playback;
+  if (p === null) return null;
+  return expectedPositionMs(p, live.socket.clock.serverNow(nowMs));
+}
+
+/**
+ * Is `durationMs` the length of an AD occupying the driven element, judged
+ * against where the room is right now? See {@link isInterstitialSource} for
+ * the predicate and the accepted trade; this wrapper only supplies the room's
+ * projection. False whenever the room's position is unknowable — with nothing
+ * to compare against there is no basis to veto anything.
+ */
+function isInterstitialNow(live: Session, durationMs: number, nowMs: number): boolean {
+  const projected = roomProjectedMs(live, nowMs);
+  if (projected === null) return false;
+  return isInterstitialSource(durationMs, projected);
+}
+
+/**
  * Keep the band and the capability flags pointed at what is actually playing.
  * Both facts arrive asynchronously (the provider from the tab's top frame, the
  * media tag from the winning frame's claim), so this runs every tick and is a
@@ -546,6 +729,7 @@ function refreshDriverContext(tabId: number, frameId: number): void {
     session.driverTarget = targetKey;
     session.driver.reset();
     lastTelemetry = null;
+    lastAudio = null;
   }
   // This tick reads what is already known; a tab nothing has classified yet
   // is read from the browser and is answered on the next one. See
@@ -677,6 +861,11 @@ function reportItemDuration(durationMs: number): void {
     return;
   }
   if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+  // An ad swapped into the driven element reports the AD's length under the
+  // FILM's name — and a duration is a fill-once, so that wrong number would be
+  // the permanent one. Vetoed before the latch, so the film's real length is
+  // still reportable the moment the element holds the film again.
+  if (isInterstitialNow(live, durationMs, Date.now())) return;
   const itemId = endedQueueItemId({
     queueIndex: live.playback?.queueIndex ?? null,
     items: live.queue,
@@ -721,20 +910,34 @@ function driveTab(): void {
       session.driverTarget = null;
       session.driver.reset();
       lastTelemetry = null;
+      lastAudio = null;
     }
     return;
   }
   const now = Date.now();
   refreshDriverContext(tabId, frameId);
 
+  const local = localTelemetry();
+  // The element is holding an AD, not the room's item (see isInterstitialSource
+  // — a duration of 0 is "unknown" and never vetoed, so the no-telemetry
+  // fallback below is untouched). Like the 'stalled' non-correction: the tab is
+  // sent NOTHING this tick — no seek, no rate, no transport — because the only
+  // available correction is to seek the ad, which manufactures its 'ended'.
+  // Driving resumes by itself when telemetry shows the real item's duration
+  // again; the tick is skipped whole so the driver learns nothing from the ad.
+  if (local !== null && isInterstitialNow(session, local.durationMs, now)) return;
+
+  const expectedMs = roomProjectedMs(session, now);
+  // Unreachable: `p` above proves playback is non-null. Narrowing only.
+  if (expectedMs === null) return;
   const cmd = session.driver.tick(
     {
-      expectedMs: expectedPositionMs(p, session.socket.clock.serverNow(now)),
+      expectedMs,
       playing: p.playing,
       rate: p.rate,
       mediaKey: mediaKeyOf(p.mediaRef),
     },
-    localTelemetry(),
+    local,
     now,
   );
 
@@ -900,6 +1103,10 @@ function overlayStateFor(tabId: number | null): OverlayRoomState | null {
     // re-applied when the button is pressed — a hidden control is not a check.
     canSkip:
       queue.nowPlaying !== null && canControlPlayback(session.playbackPolicy, session.role),
+    // The driven element's own volume/mute, as its telemetry last said. Null
+    // until something reports — the overlay draws no lever for a player it
+    // has heard nothing from. LOCAL state; see {@link lastAudio}.
+    audio: lastAudio === null ? null : { volume: lastAudio.volume, muted: lastAudio.muted },
   };
 }
 
@@ -1106,6 +1313,37 @@ async function sendRoomChat(tabId: number | null, text: string): Promise<null> {
     replyTo: null,
     mentions: [],
   });
+  return null;
+}
+
+/**
+ * The overlay's volume/mute lever.
+ *
+ * Strictly LOCAL: the ask goes to the elected frame of the driven tab as a
+ * `setAudio` command and nowhere near the room's socket — volume is per-viewer
+ * state and never leaves this machine. The tab gate is {@link sendRoomChat}'s:
+ * the panel exists in exactly one tab, and an ask from anywhere else is an ask
+ * from a tab that is not in this room. The elected frame is the only possible
+ * recipient because it is the only frame licensed to touch the player at all.
+ */
+async function setOverlayAudio(
+  tabId: number | null,
+  ask: { volume?: unknown; muted?: unknown },
+): Promise<null> {
+  if (session === null || tabId === null || tabId !== session.drivenTabId) {
+    throw new Error('This tab is not in the room.');
+  }
+  const frameId = drivenFrameId(tabId);
+  if (frameId === null) throw new Error('Nothing is playing to adjust.');
+  const message: Record<string, unknown> = { kind: 'setAudio' };
+  if (typeof ask.volume === 'number' && Number.isFinite(ask.volume)) {
+    message['volume'] = Math.min(1, Math.max(0, ask.volume));
+  }
+  if (typeof ask.muted === 'boolean') message['muted'] = ask.muted;
+  if (message['volume'] === undefined && message['muted'] === undefined) {
+    throw new Error('There was nothing to change.');
+  }
+  sendToFrame(tabId, frameId, message);
   return null;
 }
 
@@ -1321,8 +1559,12 @@ async function openSession(input: OpenSessionInput): Promise<void> {
   pushOverlay();
 }
 
-async function connect(code: string, tabId: number): Promise<void> {
-  const joined = await guestJoin(code);
+async function connect(code: string, tabId: number, password?: string): Promise<void> {
+  const joined = await guestJoin(code, password);
+  // The user's click on the toolbar icon was this tab's activeTab grant.
+  // Injected after the join succeeded and before anything could drive: a tab
+  // that cannot take the script is reported, not silently left claimless.
+  await ensureContentScript(tabId);
   await openSession({
     roomId: joined.room.id,
     roomName: joined.room.name,
@@ -1589,6 +1831,7 @@ async function closeSession(): Promise<void> {
   }
   lastOverlayPush = null;
   lastTelemetry = null;
+  lastAudio = null;
   await stopKeepalive();
   await persistSession();
 }
@@ -1763,10 +2006,12 @@ export interface ShareRoom {
 export interface ShareDeps {
   /**
    * What that tab is. Asynchronous because the honest answer comes from the
-   * BROWSER — see {@link resolveTabProvider}. It was a synchronous read of a
-   * map only a content script ever wrote, and the refusal below is gated on
-   * it: an absent entry skipped the refusal outright, which is what a
-   * recycled worker made of every open tab.
+   * BROWSER — see {@link resolveTabProviderFresh}, and only the fresh read
+   * will do here: the refusal below is gated on this answer, an absent entry
+   * once skipped it outright (the recycled-worker bug), and a STALE cached
+   * entry skips it just as hard — an ungranted tab's navigations never
+   * invalidate the cache, so a tab classified on YouTube and moved to Netflix
+   * would be captured as unprotected.
    */
   providerOf(tabId: number): Promise<TabProvider | undefined>;
   tabStreamId(tabId: number): Promise<string>;
@@ -1893,7 +2138,16 @@ export async function planShare(
     // black-frames it by design, and Gather never re-encodes protected media.
     // Mode A (everyone's own player, in sync) is the path that works.
     const site = await deps.providerOf(room.tabId);
-    if (site !== undefined && site.drm) {
+    // Unclassifiable is not unprotected. `undefined` used to skip the DRM
+    // refusal outright (README, Honest limits) — the one hole in it — and the
+    // narrowed permission model must not reopen it: a tab whose URL the
+    // browser will not give us cannot be checked, so it is not captured.
+    if (site === undefined) {
+      throw new Error(
+        "Gather can't see what this tab is, so it won't share it — reconnect from the Gather button on that tab.",
+      );
+    }
+    if (site.drm) {
       throw new Error(
         `${site.name} is protected — sharing it would show a black picture. Everyone plays their own copy in sync instead.`,
       );
@@ -1938,7 +2192,10 @@ export async function planShare(
  * one.
  */
 export const browserShareDeps: ShareDeps = {
-  providerOf: (tabId) => resolveTabProvider(tabId),
+  // FRESH, never the cache: the DRM capture refusal hangs on this answer, and
+  // an ungranted tab's navigations never invalidate the cache (tabs.onUpdated
+  // omits changeInfo.url without host permissions). See resolveTabProviderFresh.
+  providerOf: (tabId) => resolveTabProviderFresh(tabId),
   tabStreamId: (tabId) => chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }),
   chooseDesktop: (sources) =>
     new Promise<DesktopPick>((resolve) => {
@@ -2184,6 +2441,10 @@ const host: ExternalHost = {
       input.target === 'sender'
         ? input.senderTabId
         : ((await resolveAutoTab()) ?? null);
+    // Same best-effort one-shot as adoption: a handed-off tab may hold no
+    // script yet, and an ungranted tab the user never clicked from cannot be
+    // reached — the popup on that tab is the recovery.
+    if (tabId !== null) void ensureContentScript(tabId).catch(() => undefined);
     await openSession({
       roomId: input.roomId,
       roomName: input.roomName ?? 'Room',
@@ -2305,11 +2566,16 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
   switch (msg['kind']) {
     case 'popup:connect': {
       const code = String(msg['code'] ?? '');
+      // A string, trimmed, capped — anything else is treated as no password.
+      // The cap is generosity, not policy: it keeps a pathological payload
+      // out of the join request without ever rejecting a real passphrase.
+      const rawPassword = msg['password'];
+      const password = typeof rawPassword === 'string' ? rawPassword.trim().slice(0, 200) : '';
       return respond(
         (async () => {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           if (tab?.id === undefined) throw new Error('no active tab');
-          await connect(code, tab.id);
+          await connect(code, tab.id, password.length > 0 ? password : undefined);
           return { roomName: session?.roomName ?? '' };
         })(),
       );
@@ -2349,6 +2615,10 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
       return respond(sendRoomChat(sender.tab?.id ?? null, String(msg['text'] ?? '')));
     case 'overlay:skip':
       return respond(skipRoomItem(sender.tab?.id ?? null));
+    case 'overlay:volume':
+      return respond(setOverlayAudio(sender.tab?.id ?? null, { volume: msg['volume'] }));
+    case 'overlay:mute':
+      return respond(setOverlayAudio(sender.tab?.id ?? null, { muted: msg['muted'] }));
     case 'overlay:leave':
       return respond(
         disconnect().then(() => {
@@ -2388,11 +2658,33 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
             .catch(() => []);
           const tabId = tab?.id;
           const driven = tabId !== undefined && tabId === session?.drivenTabId;
+          const elected = driven && drivenFrameId(tabId) !== null;
+          // The recovery this status ask IS: the popup being open is an
+          // activeTab grant for this tab, so a handoff-armed tab that never
+          // got injected (ungranted origin, cross-origin player frame) can be
+          // reached right now. Best-effort and swallowed — an unreachable tab
+          // stays unreachable — and floored at once per 5s per tab so the 2s
+          // poll cannot hammer executeScript. Never while a frame is already
+          // elected, never without a session, never for a tab the room does
+          // not drive: those tabs asked for a status, not a script.
+          if (session !== null && driven && !elected && tabId !== undefined) {
+            const last = rescueInjectedAt.get(tabId) ?? 0;
+            const now = Date.now();
+            if (now - last >= RESCUE_INJECT_MIN_MS) {
+              rescueInjectedAt.set(tabId, now);
+              void ensureContentScript(tabId).catch(() => undefined);
+            }
+          }
           return {
             connected: session !== null,
             roomName: session?.roomName ?? null,
             playing: session?.playback?.playing ?? false,
             telemetry: driven ? lastTelemetry : null,
+            // Room state says "playing"; only the election says a player on
+            // THIS tab is actually being driven. The popup needs both, or it
+            // claims 'Connected · playing' over a tab it cannot drive.
+            drivenTab: driven,
+            driving: elected,
             provider: tabId === undefined ? null : ((await resolveTabProvider(tabId)) ?? null),
             // A share this worker no longer remembers — it was terminated and
             // revived while the capture ran — is still a share, and the
@@ -2425,10 +2717,29 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
         sender.frameId === drivenFrameId(tabId)
       ) {
         lastTelemetry = payload;
+        // Volume/mute stay OFF the payload above: it is the event-port shape
+        // the web app reads, and volume is local to this viewer. It lands in
+        // lastAudio for the overlay's audio row — and the overlay is refreshed
+        // only when the audible facts moved, so the 1 Hz heartbeat does not
+        // become a 1 Hz redraw.
+        const rawVolume = msg['volume'];
+        const audio = {
+          volume:
+            typeof rawVolume === 'number' && Number.isFinite(rawVolume)
+              ? Math.min(1, Math.max(0, rawVolume))
+              : 1,
+          muted: msg['muted'] === true,
+        };
+        const audioChanged =
+          lastAudio === null ||
+          lastAudio.volume !== audio.volume ||
+          lastAudio.muted !== audio.muted;
+        lastAudio = audio;
         ports.broadcast((v) => eventMessage('telemetry', payload, v));
         // The player just said how long the item is; the room's row very
         // likely does not know. See reportItemDuration.
         reportItemDuration(payload.durationMs);
+        if (audioChanged) pushOverlay();
       }
       return false;
     }
@@ -2512,6 +2823,12 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, sender, send
         at: Date.now(),
       };
       ports.broadcast((v) => eventMessage('ended', payload, v));
+      // An AD's end is not the item's end. One viewer's preroll firing 'ended'
+      // must not name the FILM's queue row in sync.advance and move the whole
+      // room off it — the least-surprising minimal veto: the broadcast above
+      // still goes out (the web surface applies its own media-key and
+      // plausibility checks to it), only the room-socket advance is withheld.
+      if (isInterstitialNow(session, payload.durationMs, Date.now())) return false;
       // …and to the ROOM, on this worker's own socket. The broadcast above
       // reaches a Gather tab; there may not be one. See reportEndedItem.
       reportEndedItem();

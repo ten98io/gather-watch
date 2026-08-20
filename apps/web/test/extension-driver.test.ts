@@ -10,9 +10,12 @@ import {
 } from '@/lib/extension-bridge';
 import {
   EXTENSION_CAPABILITY,
+  EXTENSION_DOCS_PATH,
   EXTENSION_ERROR_MESSAGE,
   createExtensionDriverStore,
   describeExtensionError,
+  extensionInstallUrl,
+  isHandheldBrowser,
   useExtensionDriver,
 } from '@/lib/player/extension-driver';
 import type { ExtensionDriverStore } from '@/lib/player/extension-driver';
@@ -506,6 +509,97 @@ describe('which browser this is (no extension present)', () => {
     if (state.phase !== 'unavailable') throw new Error(`expected unavailable, got ${state.phase}`);
     expect(state.reason).toBe('not-installed');
     expect(state.installUrl).not.toBeNull();
+  });
+});
+
+/* ───────────────── the install link that always exists ─────────────────── */
+
+describe('extensionInstallUrl', () => {
+  const URL_KEY = 'NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL';
+  const ID_KEY = 'NEXT_PUBLIC_GATHER_EXTENSION_ID';
+
+  /** Runs with both env keys pinned to the given values, then restores. */
+  function withEnv(url: string | undefined, id: string | undefined, run: () => void): void {
+    const prev: Record<string, string | undefined> = {
+      [URL_KEY]: process.env[URL_KEY],
+      [ID_KEY]: process.env[ID_KEY],
+    };
+    if (url === undefined) delete process.env[URL_KEY];
+    else process.env[URL_KEY] = url;
+    if (id === undefined) delete process.env[ID_KEY];
+    else process.env[ID_KEY] = id;
+    try {
+      run();
+    } finally {
+      for (const key of [URL_KEY, ID_KEY]) {
+        if (prev[key] === undefined) delete process.env[key];
+        else process.env[key] = prev[key];
+      }
+    }
+  }
+
+  it('bottoms out at the app’s own /extension page, never null', () => {
+    // FEATURE_PLAN §9 amendments: the interim null silently degraded every
+    // install affordance to nothing. /extension ships with the app, so the
+    // dead-link rule survives without the null.
+    withEnv(undefined, undefined, () => {
+      expect(extensionInstallUrl()).toBe(EXTENSION_DOCS_PATH);
+      expect(EXTENSION_DOCS_PATH).toBe('/extension');
+    });
+  });
+
+  it('prefers a configured URL over everything else', () => {
+    withEnv('https://store.example/gather ', EXT_ID, () => {
+      expect(extensionInstallUrl()).toBe('https://store.example/gather');
+    });
+  });
+
+  it('derives the Web Store listing from a configured id', () => {
+    withEnv(undefined, EXT_ID, () => {
+      expect(extensionInstallUrl()).toBe(`https://chromewebstore.google.com/detail/${EXT_ID}`);
+    });
+  });
+
+  it('treats a blank configured URL as unconfigured', () => {
+    withEnv('   ', undefined, () => {
+      expect(extensionInstallUrl()).toBe(EXTENSION_DOCS_PATH);
+    });
+  });
+});
+
+/* ─────────────────────────── handheld detection ────────────────────────── */
+
+describe('isHandheldBrowser', () => {
+  // The gate's mobile branch funnels to an app with no store listing, so the
+  // stage renders NO gate on a handheld — this answer is what that decision
+  // hangs on, and it must part ways with `canInstallExtension` on desktop
+  // Safari/Firefox: those cannot install either, but they are not phones.
+
+  it('calls a phone a phone, from client hints and from the agent string', () => {
+    installExtensionlessWindow({
+      userAgent: CHROME_ANDROID_UA,
+      userAgentData: { brands: CHROMIUM_BRANDS, mobile: true },
+    });
+    expect(isHandheldBrowser()).toBe(true);
+
+    installExtensionlessWindow({ userAgent: CHROME_IOS_UA });
+    expect(isHandheldBrowser()).toBe(true);
+  });
+
+  it('does not call a desktop browser handheld — Chromium or not', () => {
+    installExtensionlessWindow({
+      userAgent: CHROME_DESKTOP_UA,
+      userAgentData: { brands: CHROMIUM_BRANDS, mobile: false },
+    });
+    expect(isHandheldBrowser()).toBe(false);
+
+    installExtensionlessWindow({ userAgent: SAFARI_DESKTOP_UA }, false);
+    expect(isHandheldBrowser()).toBe(false);
+  });
+
+  it('claims nothing with no window: the server renders the desktop shape', () => {
+    removeFakeWindow();
+    expect(isHandheldBrowser()).toBe(false);
   });
 });
 

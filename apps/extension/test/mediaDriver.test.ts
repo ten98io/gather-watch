@@ -22,6 +22,8 @@ function fakeEl(over: Partial<MediaElementLike> = {}): MediaElementLike {
     duration: 100,
     paused: true,
     playbackRate: 1,
+    volume: 1,
+    muted: false,
     play: () => undefined,
     pause: () => undefined,
     ...over,
@@ -57,14 +59,28 @@ describe('readTelemetry', () => {
       durationMs: 100_000,
       playing: false,
       rate: 1,
+      volume: 1,
+      muted: false,
     });
     expect(readTelemetry(fakeEl({ duration: Number.NaN })).durationMs).toBe(0);
+  });
+
+  it('clamps the volume to a finite 0..1 and reads muted honestly', () => {
+    expect(readTelemetry(fakeEl({ volume: 0.4, muted: true }))).toMatchObject({
+      volume: 0.4,
+      muted: true,
+    });
+    // A player can report anything; a fraction outside 0..1 is not a volume.
+    expect(readTelemetry(fakeEl({ volume: 1.5 })).volume).toBe(1);
+    expect(readTelemetry(fakeEl({ volume: -0.2 })).volume).toBe(0);
+    // 1 is the element default and the honest reading for a broken one.
+    expect(readTelemetry(fakeEl({ volume: Number.NaN })).volume).toBe(1);
   });
 });
 
 describe('decideDrive', () => {
   it('seeks only past the deadband; hard-seeks past 2 s', () => {
-    const el = { positionMs: 10_000, durationMs: 100_000, playing: true, rate: 1 };
+    const el = { positionMs: 10_000, durationMs: 100_000, playing: true, rate: 1, volume: 1, muted: false };
     const room = { playing: true, rate: 1 };
     expect(decideDrive(el, 10_100, room).seekToMs).toBeNull(); // 100 ms — inside deadband
     expect(decideDrive(el, 10_600, room).seekToMs).toBe(10_600); // soft band
@@ -72,17 +88,31 @@ describe('decideDrive', () => {
   });
 
   it('issues play/pause transitions and rate changes', () => {
-    const paused = { positionMs: 0, durationMs: 100_000, playing: false, rate: 1 };
+    const paused = { positionMs: 0, durationMs: 100_000, playing: false, rate: 1, volume: 1, muted: false };
     expect(decideDrive(paused, 0, { playing: true, rate: 1 }).action).toBe('play');
     expect(decideDrive(paused, 0, { playing: true, rate: 1.5 }).setRate).toBe(1.5);
     const playing = { ...paused, playing: true };
     expect(decideDrive(playing, 0, { playing: false, rate: 1 }).action).toBe('pause');
     expect(decideDrive(playing, 0, { playing: true, rate: 1 }).action).toBe('none');
   });
+
+  /**
+   * Volume is per-viewer LOCAL state. Whatever the drift, whatever the
+   * transport, sync never prescribes a volume or a mute — the only writer is
+   * the viewer's own overlay, through the 'setAudio' path.
+   */
+  it('never prescribes volume or mute, whatever the element reports', () => {
+    const el = { positionMs: 10_000, durationMs: 100_000, playing: true, rate: 1, volume: 0.2, muted: true };
+    for (const expected of [10_000, 10_600, 40_000]) {
+      const decision = decideDrive(el, expected, { playing: false, rate: 1.5 });
+      expect(decision.setVolume).toBeUndefined();
+      expect(decision.setMuted).toBeUndefined();
+    }
+  });
 });
 
 describe('decideDrive with explicit bands', () => {
-  const el = { positionMs: 10_000, durationMs: 100_000, playing: true, rate: 1 };
+  const el = { positionMs: 10_000, durationMs: 100_000, playing: true, rate: 1, volume: 1, muted: false };
   const room = { playing: true, rate: 1 };
 
   it('defaults to the legacy fixed thresholds', () => {
@@ -116,13 +146,15 @@ describe('decideDrive with explicit bands', () => {
  */
 describe('applyDecision', () => {
   /** A player that throws on one assignment and works normally otherwise. */
-  function player(refuses: 'currentTime' | 'playbackRate' | null): {
+  function player(refuses: 'currentTime' | 'playbackRate' | 'volume' | 'muted' | null): {
     el: MediaElementLike;
     log: string[];
   } {
     const log: string[] = [];
     let time = 10;
     let rate = 1;
+    let volume = 1;
+    let muted = false;
     const el: MediaElementLike = {
       get currentTime() {
         return time;
@@ -141,6 +173,22 @@ describe('applyDecision', () => {
         if (refuses === 'playbackRate') throw new Error('rate is not settable');
         rate = v;
         log.push(`rate:${v}`);
+      },
+      get volume() {
+        return volume;
+      },
+      set volume(v: number) {
+        if (refuses === 'volume') throw new Error('volume is not settable');
+        volume = v;
+        log.push(`volume:${v}`);
+      },
+      get muted() {
+        return muted;
+      },
+      set muted(v: boolean) {
+        if (refuses === 'muted') throw new Error('muted is not settable');
+        muted = v;
+        log.push(`muted:${String(v)}`);
       },
       play: () => {
         log.push('play');
@@ -182,6 +230,48 @@ describe('applyDecision', () => {
     }).not.toThrow();
 
     expect(log).toEqual(['seek:5', 'play']);
+  });
+
+  it('writes volume and mute when the decision carries them, clamped', () => {
+    const { el, log } = player(null);
+
+    applyDecision(el, { seekToMs: null, setRate: null, action: 'none', setVolume: 0.3, setMuted: true });
+    // 1.7 came off a wire; no element has a volume past 1.
+    applyDecision(el, { seekToMs: null, setRate: null, action: 'none', setVolume: 1.7, setMuted: false });
+
+    expect(log).toEqual(['volume:0.3', 'muted:true', 'volume:1', 'muted:false']);
+  });
+
+  it('leaves volume and mute alone for a decision that says nothing about them', () => {
+    const { el, log } = player(null);
+
+    // null and absent both mean "leave alone" — same convention as setRate.
+    applyDecision(el, { seekToMs: 5000, setRate: 1.03, action: 'play', setVolume: null, setMuted: null });
+    applyDecision(el, { seekToMs: null, setRate: null, action: 'pause' });
+
+    expect(log).toEqual(['seek:5', 'rate:1.03', 'play', 'pause']);
+  });
+
+  it("still applies the room's transport when the element refuses the volume", () => {
+    const { el, log } = player('volume');
+
+    expect(() => {
+      applyDecision(el, { seekToMs: null, setRate: null, action: 'pause', setVolume: 0.3, setMuted: true });
+    }).not.toThrow();
+
+    // A refused volume write must not carry off the transport with the throw:
+    // the room says stop, and stop still happens.
+    expect(log).toEqual(['muted:true', 'pause']);
+  });
+
+  it("still applies the room's transport when the element refuses the mute", () => {
+    const { el, log } = player('muted');
+
+    expect(() => {
+      applyDecision(el, { seekToMs: null, setRate: null, action: 'play', setVolume: 0.3, setMuted: true });
+    }).not.toThrow();
+
+    expect(log).toEqual(['volume:0.3', 'play']);
   });
 });
 

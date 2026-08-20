@@ -1,0 +1,18 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    // tsconfig.json includes `.next/types/**/*.ts`, and `next build` deletes
+    // and regenerates `.next` — so a typecheck running in parallel with this
+    // package's own build enumerates files the build then removes, and dies
+    // with TS6053 "file not found" on routes that plainly exist. The race is
+    // real and frequent (3 of 6 forced full-gate runs on 2026-08-20).
+    // Ordering typecheck after build removes the race without changing what
+    // is checked; excluding `.next/types` instead would silently drop Next's
+    // generated route typing from the gate.
+    "typecheck": {
+      "dependsOn": ["build", "^build"],
+      "outputs": []
+    }
+  }
+}

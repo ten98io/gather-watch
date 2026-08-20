@@ -108,6 +108,16 @@ interface ChromeFake {
   desktopCalls: DesktopCall[];
   tabCaptureCalls: number[];
   sent: Array<Record<string, unknown>>;
+  /** Dynamic content-script registrations, exactly as the browser holds them. */
+  registrations: Map<string, Record<string, unknown>>;
+  /** scripting.executeScript injections, in order. */
+  executed: Array<{ tabId: number; allFrames: boolean; files: string[] }>;
+  /** Origin match patterns the user has granted (chrome.permissions). */
+  grantedOrigins: string[];
+  onInstalled: FakeEvent<(details: Record<string, unknown>) => void>;
+  onStartup: FakeEvent<() => void>;
+  onPermissionsAdded: FakeEvent<(p: { origins?: string[] }) => void>;
+  onPermissionsRemoved: FakeEvent<(p: { origins?: string[] }) => void>;
   /** Everything sent into a page: drive, frameRole, driveOff, overlay. */
   tabMessages: TabMessage[];
   /** URLs the worker opened a tab for. */
@@ -157,6 +167,15 @@ interface ChromeFake {
   allEvents: Array<{ listeners: unknown[] }>;
 }
 
+/** Chrome match pattern → does it admit this URL? `<all_urls>` admits all,
+ *  and a `*.host` pattern admits the bare host too, as Chrome's do. */
+function matchesPattern(pattern: string, url: string): boolean {
+  if (pattern === '<all_urls>') return true;
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  const source = escaped.replace('://*\\.', '://([^/]+\\.)?').split('*').join('.*');
+  return new RegExp(`^${source}`).test(url);
+}
+
 function installChromeFake(): ChromeFake {
   const allEvents: Array<{ listeners: unknown[] }> = [];
   function evt<F = () => void>(): FakeEvent<F> {
@@ -177,10 +196,21 @@ function installChromeFake(): ChromeFake {
     evt<(tabId: number, change: Record<string, unknown>, tab: Record<string, unknown>) => void>();
   const onConnectExternal = evt<(port: unknown) => void>();
   const onSuspend = evt<() => void>();
+  const onInstalled = evt<(details: Record<string, unknown>) => void>();
+  const onStartup = evt<() => void>();
+  const onPermissionsAdded = evt<(p: { origins?: string[] }) => void>();
+  const onPermissionsRemoved = evt<(p: { origins?: string[] }) => void>();
   const state: ChromeFake = {
     desktopCalls: [],
     tabCaptureCalls: [],
     sent: [],
+    registrations: new Map<string, Record<string, unknown>>(),
+    executed: [],
+    grantedOrigins: [],
+    onInstalled,
+    onStartup,
+    onPermissionsAdded,
+    onPermissionsRemoved,
     tabMessages: [],
     createdTabs: [],
     nextPick: { streamId: 'desktop-stream-1', canRequestAudioTrack: false },
@@ -209,7 +239,9 @@ function installChromeFake(): ChromeFake {
       onMessageExternal: evt(),
       onConnectExternal,
       onSuspend,
-      getManifest: () => ({ version: '0.1.0' }),
+      onInstalled,
+      onStartup,
+      getManifest: () => ({ version: '1.0.0' }),
       sendMessage: async (msg: Record<string, unknown>) => {
         state.sent.push(msg);
         if (msg['kind'] === 'startShare') return state.nextShareReply;
@@ -227,7 +259,18 @@ function installChromeFake(): ChromeFake {
         if (state.closedTabs.has(tabId)) throw new Error(`No tab with id: ${String(tabId)}`);
         return { id: tabId, url: state.tabUrls.get(tabId) };
       },
-      query: async () => (state.activeTab === null ? [] : [state.activeTab]),
+      // `url` asks about EVERY open tab (the one-shot after a new grant);
+      // without it, the active-tab answer every other caller expects.
+      query: async (opts?: { url?: string | string[] }) => {
+        if (opts?.url === undefined) return state.activeTab === null ? [] : [state.activeTab];
+        const patterns = Array.isArray(opts.url) ? opts.url : [opts.url];
+        const out: Array<{ id: number; url: string }> = [];
+        for (const [tabId, url] of state.tabUrls) {
+          if (state.closedTabs.has(tabId)) continue;
+          if (patterns.some((p) => matchesPattern(p, url))) out.push({ id: tabId, url });
+        }
+        return out;
+      },
       sendMessage: async (
         tabId: number,
         msg: Record<string, unknown>,
@@ -242,6 +285,62 @@ function installChromeFake(): ChromeFake {
       },
     },
     alarms: { onAlarm: evt(), create: async () => undefined, clear: async () => true },
+    permissions: {
+      onAdded: onPermissionsAdded,
+      onRemoved: onPermissionsRemoved,
+      getAll: async () => ({ permissions: [], origins: [...state.grantedOrigins] }),
+      contains: async (opts: { origins?: string[] }) =>
+        (opts.origins ?? []).every((o) => state.grantedOrigins.includes(o)),
+      request: async (opts: { origins?: string[] }) => {
+        for (const origin of opts.origins ?? []) {
+          if (!state.grantedOrigins.includes(origin)) state.grantedOrigins.push(origin);
+        }
+        return true;
+      },
+    },
+    scripting: {
+      registerContentScripts: async (scripts: Array<Record<string, unknown>>) => {
+        for (const script of scripts) {
+          const id = String(script['id']);
+          // Chrome refuses a duplicate id — the worker must update instead.
+          if (state.registrations.has(id)) throw new Error(`Duplicate script ID '${id}'`);
+          state.registrations.set(id, { ...script });
+        }
+      },
+      updateContentScripts: async (scripts: Array<Record<string, unknown>>) => {
+        for (const script of scripts) {
+          const id = String(script['id']);
+          const existing = state.registrations.get(id);
+          if (existing === undefined) throw new Error(`Nonexistent script ID '${id}'`);
+          state.registrations.set(id, { ...existing, ...script });
+        }
+      },
+      unregisterContentScripts: async (filter?: { ids?: string[] }) => {
+        for (const id of filter?.ids ?? [...state.registrations.keys()]) {
+          state.registrations.delete(id);
+        }
+      },
+      getRegisteredContentScripts: async (filter?: { ids?: string[] }) => {
+        const all = [...state.registrations.values()];
+        if (filter?.ids === undefined) return all;
+        return all.filter((s) => filter.ids?.includes(String(s['id'])) === true);
+      },
+      executeScript: async (opts: {
+        target: { tabId: number; allFrames?: boolean };
+        files?: string[];
+      }) => {
+        // A closed tab cannot take an injection, exactly like tabs.get.
+        if (state.closedTabs.has(opts.target.tabId)) {
+          throw new Error(`No tab with id: ${String(opts.target.tabId)}`);
+        }
+        state.executed.push({
+          tabId: opts.target.tabId,
+          allFrames: opts.target.allFrames === true,
+          files: [...(opts.files ?? [])],
+        });
+        return [];
+      },
+    },
     storage: {
       // Really stores: the share-room mirror exists precisely to outlive the
       // worker, so a fake that forgets everything cannot test it.
@@ -322,6 +421,8 @@ let membersWire: Record<string, unknown> = {};
 let roomWire: Record<string, unknown> = {};
 /** Every URL the worker fetched, so a test can say what it did NOT fetch. */
 let fetched: string[] = [];
+/** …and each request's body, so a test can say what a join DID carry. */
+let fetchedBodies: Array<{ url: string; body: string }> = [];
 /** Make GET /rooms/:id never answer, as a dead network does. */
 let hangRoomFetch = false;
 
@@ -339,9 +440,10 @@ let bg: typeof import('../src/background');
 
 beforeAll(async () => {
   fake = installChromeFake();
-  globalThis.fetch = (async (url: string) => {
+  globalThis.fetch = (async (url: string, init?: { body?: unknown }) => {
     const u = String(url);
     fetched.push(u);
+    fetchedBodies.push({ url: u, body: typeof init?.body === 'string' ? init.body : '' });
     // A request that never settles — not a rejection, which every caller
     // already handles, but the silence a dead network actually produces.
     if (hangRoomFetch && /\/rooms\/[^/]+$/.test(u)) return new Promise(() => undefined);
@@ -379,7 +481,13 @@ beforeEach(async () => {
   membersWire = {};
   roomWire = {};
   fetched = [];
+  fetchedBodies = [];
   hangRoomFetch = false;
+  // Browser-held permission state, like tabUrls: reset to a browser that has
+  // granted nothing and registered nothing.
+  fake.grantedOrigins.length = 0;
+  fake.registrations.clear();
+  fake.executed.length = 0;
   fake.nextPick = { streamId: 'desktop-stream-1', canRequestAudioTrack: false };
   fake.nextTabStreamId = 'tab-stream-1';
   fake.nextShareReply = { ok: true, audio: true, note: '' };
@@ -505,6 +613,43 @@ function pageChanged(tabId: number): void {
   notify({ kind: 'provider' }, { tab: { id: tabId } });
 }
 
+/** Let the fire-and-forget promise chains behind an event settle. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** The browser announcing the extension is installed / the browser started. */
+async function fireInstalled(): Promise<void> {
+  for (const listener of [...fake.onInstalled.listeners]) listener({ reason: 'install' });
+  await flush();
+}
+
+async function fireStartup(): Promise<void> {
+  for (const listener of [...fake.onStartup.listeners]) listener();
+  await flush();
+}
+
+/** The user grants origins: the browser records them, THEN fires the event —
+ *  the order chrome.permissions itself guarantees. */
+async function grantOrigins(...patterns: string[]): Promise<void> {
+  for (const pattern of patterns) {
+    if (!fake.grantedOrigins.includes(pattern)) fake.grantedOrigins.push(pattern);
+  }
+  for (const listener of [...fake.onPermissionsAdded.listeners]) listener({ origins: patterns });
+  await flush();
+}
+
+/** …and takes them away again, from the extensions page. */
+async function revokeOrigins(...patterns: string[]): Promise<void> {
+  for (const pattern of patterns) {
+    const at = fake.grantedOrigins.indexOf(pattern);
+    if (at >= 0) fake.grantedOrigins.splice(at, 1);
+  }
+  for (const listener of [...fake.onPermissionsRemoved.listeners]) listener({ origins: patterns });
+  await flush();
+}
+
 /**
  * The worker is terminated, and something wakes it.
  *
@@ -620,10 +765,29 @@ describe('planShare — tab (the original Mode B path)', () => {
     });
   });
 
-  it('works on a tab nothing has classified yet', async () => {
-    const plan = await bg.planShare(ROOM, 'tab', fakeDeps());
+  it('still captures a tab classified as generic — unknown sites are shareable', async () => {
+    const plan = await bg.planShare(
+      ROOM,
+      'tab',
+      fakeDeps({ provider: providerForUrl('https://example.com/watch') }),
+    );
     if (!plan.start) throw new Error('expected a started share');
     expect(plan.message.source).toBe('tab');
+  });
+
+  /**
+   * Unclassifiable is not unprotected. The unclassified-skips-the-DRM-refusal
+   * bug shipped once (README, Honest limits); under the narrowed permission
+   * model "no URL" is a state a tab can genuinely be in, and it must refuse
+   * rather than capture blind.
+   */
+  it('refuses a tab it cannot classify at all, before any capture call', async () => {
+    const deps = fakeDeps();
+    await expect(bg.planShare(ROOM, 'tab', deps)).rejects.toThrow(
+      "Gather can't see what this tab is, so it won't share it — reconnect from the Gather button on that tab.",
+    );
+    expect(deps.tabCaptured).toEqual([]);
+    expect(deps.pickedSources).toEqual([]);
   });
 
   it('refuses without a tab to capture', async () => {
@@ -714,15 +878,47 @@ describe('what a tab is, after the worker has forgotten', () => {
     expect(fake.tabCaptureCalls).toEqual([9]);
   });
 
-  it('captures a tab it cannot classify rather than refusing on a guess', async () => {
-    // A tab the browser will not describe — it closed under us, or it is not a
-    // page. Nothing is known, so nothing is claimed, and the platform's own
-    // output protection remains the backstop the screen path already relies on.
+  it('refuses a tab the browser will not describe, rather than capturing blind', async () => {
+    // No URL means no classification, and no classification means the DRM
+    // refusal cannot run. Capturing anyway is how the unclassified tab slipped
+    // past the refusal once before — refuse, and say how to recover.
     fake.activeTab = { id: 9, url: 'https://example.com/watch' };
     fake.tabUrls.delete(9);
     await connectRoom();
 
-    expect((await share('tab')).shared).toBe(true);
+    await expect(share('tab')).rejects.toThrow("Gather can't see what this tab is");
+    expect(fake.tabCaptureCalls).toEqual([]);
+    expect(fake.desktopCalls).toEqual([]);
+    // The offscreen document exists only to capture; a refusal opens nothing.
+    expect(fake.offscreenCreated).toBe(0);
+  });
+
+  /**
+   * The cache's one dangerous lie. Without host permissions, tabs.onUpdated
+   * omits changeInfo.url for ungranted origins — so a navigation never
+   * invalidates the cached classification, and a tab classified on YouTube
+   * then moved to Netflix would be shared as unprotected: a black rectangle
+   * for the room. The share path must therefore classify from a FRESH
+   * chrome.tabs.get, never from the cache.
+   */
+  it('classifies a tab share from the browser, never from a stale cache', async () => {
+    // Classified while the tab was YouTube…
+    focusTab(7, YOUTUBE_URL);
+    await connectRoom();
+    pageChanged(7);
+    await flush();
+
+    // …then navigated to Netflix WITHOUT a url-bearing onUpdated (the
+    // ungranted-origin case). Only the browser itself knows.
+    fake.tabUrls.set(7, NETFLIX_URL);
+    // The cache still says YouTube — precisely the lie the fresh read closes.
+    expect((await status()).provider?.name).toBe('YouTube');
+
+    await expect(share('tab')).rejects.toThrow(
+      'Netflix is protected — sharing it would show a black picture. Everyone plays their own copy in sync instead.',
+    );
+    expect(fake.tabCaptureCalls).toEqual([]);
+    expect(fake.desktopCalls).toEqual([]);
   });
 });
 
@@ -1274,6 +1470,81 @@ describe('the popup is answered about the tab it is drawn over', () => {
     fake.activeTab = null;
 
     expect((await status()).provider).toBeNull();
+  });
+});
+
+/**
+ * 'Connected · playing' is ROOM state; only the election proves a player on
+ * THIS tab is being driven. The status answer now carries both facts, and the
+ * status ask itself is the recovery for a handoff-armed tab that never got
+ * injected: opening the popup IS an activeTab grant, so the worker spends it
+ * on a best-effort one-shot — floored at once per 5 s per tab, and never when
+ * a frame is already elected, there is no session, or the active tab is not
+ * the driven tab.
+ */
+describe('popup:status says whether this tab is actually driven', () => {
+  interface DrivingStatus {
+    connected: boolean;
+    drivenTab: boolean;
+    driving: boolean;
+  }
+
+  const drivingStatus = (): Promise<DrivingStatus> => ask<DrivingStatus>({ kind: 'popup:status' });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    claimFrom(7, 3, null);
+    if ((await status()).connected) await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('reports driving only for the driven tab with an elected frame', async () => {
+    await connectRoom();
+    let s = await drivingStatus();
+    expect(s.drivenTab).toBe(true);
+    expect(s.driving).toBe(false);
+
+    claimFrom(7, 3);
+    s = await drivingStatus();
+    expect(s.driving).toBe(true);
+
+    // Another tab's popup is about that tab, not about the room's.
+    focusTab(9, YOUTUBE_URL);
+    s = await drivingStatus();
+    expect(s.drivenTab).toBe(false);
+    expect(s.driving).toBe(false);
+  });
+
+  it('injects the content script as recovery — at most once per five seconds', async () => {
+    vi.useFakeTimers();
+    await connectRoom();
+    // Clear of the connect-time injection AND of any stamp an earlier test's
+    // status ask left for this tab (the floor is a per-tab module timestamp).
+    await vi.advanceTimersByTimeAsync(6000);
+    fake.executed.length = 0;
+
+    await drivingStatus();
+    await drivingStatus();
+    expect(fake.executed).toEqual([{ tabId: 7, allFrames: true, files: ['content.js'] }]);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await drivingStatus();
+    expect(fake.executed).toHaveLength(2);
+  });
+
+  it('does not inject when elected, without a session, or off the driven tab', async () => {
+    // No session: a popup on any tab gets its status and nothing else.
+    await drivingStatus();
+    expect(fake.executed).toEqual([]);
+
+    await connectRoom();
+    claimFrom(7, 3);
+    fake.executed.length = 0;
+    await drivingStatus(); // a frame is elected: healthy, nothing to recover
+    expect(fake.executed).toEqual([]);
+
+    focusTab(9, YOUTUBE_URL); // the popup is not over the driven tab
+    await drivingStatus();
+    expect(fake.executed).toEqual([]);
   });
 });
 
@@ -2154,6 +2425,133 @@ describe('the length of the playing item reaches the room from the worker', () =
   });
 });
 
+/* ── an ad in the driven element cannot speak for the film ── */
+
+/**
+ * A preroll/mid-roll swapped into the driven element (same element, new src)
+ * fires a genuine 'ended' under a fresh end-latch key, reports the AD's
+ * duration in telemetry, and sits at a position the drive loop reads as a
+ * catastrophic lag. Unvetoed, that chain (1) named the FILM's queue row in
+ * `sync.advance` and moved the whole room off it, (2) filled the film's
+ * fill-once null-duration row with ~15 s, permanently, and (3) had the drive
+ * loop hard-seek the ad to its end — manufacturing the 'ended' itself. The
+ * veto is driver.ts's `isInterstitialSource`, judged against the same room
+ * projection the drive tick uses.
+ */
+describe('an interstitial source cannot speak for the film', () => {
+  const FEATURE = { kind: 'url', url: 'https://cdn.example.com/feature.m3u8', mime: 'video/mp4' };
+
+  const item = (id: string, mediaRef: Record<string, unknown>): Record<string, unknown> => ({
+    id,
+    mediaRef,
+    title: id,
+    durationMs: null,
+    artworkUrl: null,
+    addedBy: 'user_1',
+    votesToSkip: [],
+  });
+
+  const advances = (): unknown[] =>
+    room.sent.filter((m) => m.type === 'sync.advance').map((m) => m.payload);
+  const durations = (): unknown[] =>
+    room.sent.filter((m) => m.type === 'sync.duration').map((m) => m.payload);
+
+  function telemetry(over: { positionMs: number; durationMs: number }): void {
+    notify(
+      {
+        kind: 'telemetry',
+        positionMs: over.positionMs,
+        durationMs: over.durationMs,
+        playing: true,
+        rate: 1,
+      },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+  }
+
+  /** A driven room ten minutes into the feature — the position an ad break
+   *  interrupts, and far past any ad's own length. */
+  async function tenMinutesIn(): Promise<void> {
+    await connectRoom();
+    claimFrom(7, 3);
+    room.emit('queue.state', { items: [item('q_a', FEATURE)], version: 1 });
+    room.emit('sync.state', { ...playbackAt(600_000, FEATURE), queueIndex: 0 });
+  }
+
+  afterEach(async () => {
+    claimFrom(7, 3, null);
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  it("does not advance the room off an ad's 'ended'", async () => {
+    await tenMinutesIn();
+
+    // A 15 s ad swapped into the driven element runs out.
+    notify(
+      { kind: 'mediaEnded', positionMs: 15_000, durationMs: 15_000 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+    expect(advances()).toEqual([]);
+
+    // The film's own end still advances: the veto is per-source, not a latch.
+    notify(
+      { kind: 'mediaEnded', positionMs: 5_400_000, durationMs: 5_400_000 },
+      { tab: { id: 7 }, frameId: 3 },
+    );
+    expect(advances()).toEqual([{ endedItemId: 'q_a' }]);
+  });
+
+  it("does not fill the film's blank duration row with the ad's length", async () => {
+    await tenMinutesIn();
+    // The settling frame every rename produces (see reportItemDuration).
+    telemetry({ positionMs: 600_000, durationMs: 0 });
+
+    // The ad's frames arrive under the film's name. A duration is a FILL-ONCE
+    // on the server, so one accepted frame here would be permanent.
+    telemetry({ positionMs: 3_000, durationMs: 15_000 });
+    telemetry({ positionMs: 4_000, durationMs: 15_000 });
+    expect(durations()).toEqual([]);
+
+    // The element holds the film again: its real length still lands — the
+    // veto must not have latched the item as already reported.
+    telemetry({ positionMs: 615_000, durationMs: 5_400_000 });
+    expect(durations()).toEqual([{ itemId: 'q_a', durationMs: 5_400_000 }]);
+  });
+
+  it('sends the tab nothing while the ad holds the element, and resumes after', async () => {
+    await tenMinutesIn();
+    // The ad as the drive loop sees it: a short source near its start, which
+    // reads as a ~10-minute lag — the correction would be a hard seek to the
+    // ad's end, which is what manufactures its 'ended'.
+    telemetry({ positionMs: 3_000, durationMs: 15_000 });
+    fake.tabMessages.length = 0;
+
+    room.emit('sync.state', { ...playbackAt(601_000, FEATURE), queueIndex: 0 });
+    expect(messagesOfKind('drive')).toEqual([]);
+
+    // The film is back in the element. Driving resumes by itself: the same
+    // room state now produces the correction the ad was denied.
+    telemetry({ positionMs: 300_000, durationMs: 5_400_000 });
+    room.emit('sync.state', { ...playbackAt(602_000, FEATURE), queueIndex: 0 });
+    expect(messagesOfKind('drive').length).toBeGreaterThan(0);
+  });
+
+  it('leaves the no-telemetry fallback and unknown durations alone', async () => {
+    await tenMinutesIn();
+    fake.tabMessages.length = 0;
+    // No telemetry at all: the no-telemetry fallback drive still goes out.
+    room.emit('sync.state', { ...playbackAt(601_000, FEATURE), queueIndex: 0 });
+    expect(messagesOfKind('drive').length).toBeGreaterThan(0);
+
+    // durationMs 0 is "unknown", never "short": a pre-metadata player (or a
+    // live stream reporting 0) ten minutes adrift is corrected, not vetoed.
+    telemetry({ positionMs: 0, durationMs: 0 });
+    fake.tabMessages.length = 0;
+    room.emit('sync.state', { ...playbackAt(602_000, FEATURE), queueIndex: 0 });
+    expect(messagesOfKind('drive').length).toBeGreaterThan(0);
+  });
+});
+
 /* ── the injected room overlay ── */
 
 interface OverlayState {
@@ -2165,6 +2563,8 @@ interface OverlayState {
   nowPlaying: string | null;
   upNext: string | null;
   canSkip: boolean;
+  /** The driven element's LOCAL volume/mute; null until telemetry says. */
+  audio: { volume: number; muted: boolean } | null;
 }
 
 function presence(userId: string, over: { state?: string; micOn?: boolean } = {}): unknown {
@@ -2304,6 +2704,119 @@ describe('the injected room overlay', () => {
     await ask({ kind: 'overlay:open-app' }, { tab: { id: 7 } });
 
     expect(fake.createdTabs).toEqual(['http://localhost:3000/room/room_1']);
+  });
+});
+
+/**
+ * The overlay's volume lever, routed through the worker. Everything here is
+ * LOCAL: the ask lands on the driven frame's element as `setAudio`, nothing
+ * touches the room's socket, and the overlay state's `audio` block is read
+ * from the driven frame's own telemetry — the external event-port telemetry
+ * shape stays exactly what it was.
+ */
+describe('the overlay volume lever', () => {
+  /** The driven frame's 1 Hz heartbeat, with the audio half on it. */
+  function telemetryFrom(
+    tabId: number,
+    frameId: number,
+    over: { volume?: number; muted?: boolean } = {},
+  ): void {
+    notify(
+      {
+        kind: 'telemetry',
+        positionMs: 600_000,
+        durationMs: 5_400_000,
+        playing: true,
+        rate: 1,
+        volume: over.volume ?? 1,
+        muted: over.muted ?? false,
+      },
+      { tab: { id: tabId }, frameId },
+    );
+  }
+
+  const audioSent = (): TabMessage[] => messagesOfKind('setAudio');
+
+  beforeEach(async () => {
+    await connectRoom();
+    claimFrom(7, 3);
+  });
+
+  afterEach(async () => {
+    claimFrom(7, 3, null);
+    await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('routes overlay:volume to the driven frame as setAudio, clamped', async () => {
+    await ask({ kind: 'overlay:volume', volume: 0.3 }, { tab: { id: 7 } });
+    await ask({ kind: 'overlay:volume', volume: 1.7 }, { tab: { id: 7 } });
+
+    expect(audioSent()).toEqual([
+      { tabId: 7, frameId: 3, msg: { kind: 'setAudio', volume: 0.3 } },
+      { tabId: 7, frameId: 3, msg: { kind: 'setAudio', volume: 1 } },
+    ]);
+    // LOCAL means local: nothing about volume ever reaches the room.
+    expect(room.sent).toEqual([]);
+  });
+
+  it('routes overlay:mute the same way', async () => {
+    await ask({ kind: 'overlay:mute', muted: true }, { tab: { id: 7 } });
+
+    expect(audioSent()).toEqual([
+      { tabId: 7, frameId: 3, msg: { kind: 'setAudio', muted: true } },
+    ]);
+    expect(room.sent).toEqual([]);
+  });
+
+  it('refuses the ask from a tab that is not in the room', async () => {
+    await expect(ask({ kind: 'overlay:volume', volume: 0.3 }, { tab: { id: 8 } })).rejects.toThrow(
+      'This tab is not in the room.',
+    );
+    await expect(ask({ kind: 'overlay:mute', muted: true }, { tab: { id: 8 } })).rejects.toThrow(
+      'This tab is not in the room.',
+    );
+    expect(audioSent()).toEqual([]);
+  });
+
+  it('refuses a volume that is not a number at all', async () => {
+    await expect(ask({ kind: 'overlay:volume', volume: 'loud' }, { tab: { id: 7 } })).rejects.toThrow(
+      'There was nothing to change.',
+    );
+    expect(audioSent()).toEqual([]);
+  });
+
+  it('carries no audio block before any telemetry has said where the lever is', async () => {
+    const state = await ask<OverlayState | null>({ kind: 'overlay:state' }, { tab: { id: 7 } });
+    expect(state?.audio).toBeNull();
+  });
+
+  it('reads the audio block from the driven frame’s telemetry', async () => {
+    telemetryFrom(7, 3, { volume: 0.4, muted: true });
+
+    const state = await ask<OverlayState | null>({ kind: 'overlay:state' }, { tab: { id: 7 } });
+    expect(state?.audio).toEqual({ volume: 0.4, muted: true });
+  });
+
+  it('ignores the audio another tab or frame reports — the election gate holds', async () => {
+    telemetryFrom(8, 0, { volume: 0.1, muted: true });
+    telemetryFrom(7, 5, { volume: 0.1, muted: true });
+
+    const state = await ask<OverlayState | null>({ kind: 'overlay:state' }, { tab: { id: 7 } });
+    expect(state?.audio).toBeNull();
+  });
+
+  it('pushes the overlay when the audible facts move, not on every heartbeat', async () => {
+    telemetryFrom(7, 3, { volume: 0.5 });
+    fake.tabMessages.length = 0;
+
+    // Same reading again: the 1 Hz heartbeat must not become a 1 Hz redraw.
+    telemetryFrom(7, 3, { volume: 0.5 });
+    expect(messagesOfKind('overlay')).toEqual([]);
+
+    telemetryFrom(7, 3, { volume: 0.5, muted: true });
+    const push = messagesOfKind('overlay').pop();
+    expect(push?.tabId).toBe(7);
+    expect((push?.msg['state'] as OverlayState).audio).toEqual({ volume: 0.5, muted: true });
   });
 });
 
@@ -2481,12 +2994,126 @@ describe('the overlay names the people in the room', () => {
   });
 });
 
+/* ── reaching content pages under the narrowed permissions ── */
+
+/**
+ * The manifest no longer demands any host: content pages are reached through
+ * a dynamic registration that mirrors what the user has GRANTED, plus a
+ * one-shot injection for the tab the popup connects (activeTab) and for tabs
+ * already open when a grant lands. These tests pin that mirror — because a
+ * registration that drifts from the grants is either a site that silently
+ * stops working or a site the user revoked that Gather still boards.
+ */
+describe('the registered content script mirrors the granted origins', () => {
+  const NETFLIX_GRANT = 'https://*.netflix.com/*';
+  const CUSTOM_GRANT = 'https://films.example.org/*';
+  const driver = (): Record<string, unknown> | undefined =>
+    fake.registrations.get('gather-driver');
+
+  it('registers exactly the granted origins on install — Gather origins excluded', async () => {
+    // The Gather origin grant is the declarative entry's territory: the
+    // announce ships in the manifest and must not be said twice.
+    fake.grantedOrigins.push(NETFLIX_GRANT, CUSTOM_GRANT, 'http://localhost:3000/*');
+    await fireInstalled();
+
+    const reg = driver();
+    expect(reg).toBeDefined();
+    expect(reg?.['matches']).toEqual([NETFLIX_GRANT, CUSTOM_GRANT]);
+    expect(reg?.['js']).toEqual(['content.js']);
+    // Every frame, and about:blank/srcdoc player frames by parent origin —
+    // the registered script must reach everything the old declarative
+    // <all_urls> entry reached, or the player iframe design breaks.
+    expect(reg?.['allFrames']).toBe(true);
+    expect(reg?.['matchOriginAsFallback']).toBe(true);
+    expect(reg?.['persistAcrossSessions']).toBe(true);
+    expect(reg?.['runAt']).toBe('document_idle');
+  });
+
+  it('puts the registration back on browser startup', async () => {
+    fake.grantedOrigins.push(NETFLIX_GRANT);
+    await fireStartup();
+
+    expect(driver()?.['matches']).toEqual([NETFLIX_GRANT]);
+  });
+
+  it('registers nothing while nothing is granted', async () => {
+    await fireInstalled();
+
+    expect(driver()).toBeUndefined();
+  });
+
+  it('follows a new grant, and injects into matching tabs already open', async () => {
+    fake.grantedOrigins.push(NETFLIX_GRANT);
+    await fireInstalled();
+    navigateTab(8, 'https://vimeo.com/12345');
+    fake.executed.length = 0;
+
+    await grantOrigins('https://*.vimeo.com/*');
+
+    expect(driver()?.['matches']).toEqual([NETFLIX_GRANT, 'https://*.vimeo.com/*']);
+    // The registration reaches only documents that load AFTER it exists; the
+    // tab already open on the granted origin gets the one-shot — all frames,
+    // because its player iframe may already be there. No other tab is touched.
+    expect(fake.executed).toEqual([{ tabId: 8, allFrames: true, files: ['content.js'] }]);
+  });
+
+  it('shrinks with a revoked grant, and unregisters at zero', async () => {
+    fake.grantedOrigins.push(NETFLIX_GRANT, CUSTOM_GRANT);
+    await fireInstalled();
+
+    await revokeOrigins(CUSTOM_GRANT);
+    expect(driver()?.['matches']).toEqual([NETFLIX_GRANT]);
+
+    await revokeOrigins(NETFLIX_GRANT);
+    expect(driver()).toBeUndefined();
+  });
+});
+
+describe('connecting from the popup, under activeTab', () => {
+  afterEach(async () => {
+    if ((await status()).connected) await ask({ kind: 'popup:disconnect' });
+  });
+
+  it('injects the content script into the connected tab, before any driving', async () => {
+    await connectRoom();
+
+    // The popup click was the activeTab grant; the injection spends it. All
+    // frames, because the player iframe may already exist.
+    expect(fake.executed).toEqual([{ tabId: 7, allFrames: true, files: ['content.js'] }]);
+    // Nothing has been driven yet: the script is in place before the room
+    // can say anything to the tab.
+    expect(fake.tabMessages.filter((m) => m.msg['kind'] === 'drive')).toEqual([]);
+  });
+
+  it('carries the room password to the join — and only when one was given', async () => {
+    await ask({ kind: 'popup:connect', code: 'abcd-efgh-ijkl', password: '  swordfish  ' });
+    await ask({ kind: 'popup:disconnect' });
+    await ask({ kind: 'popup:connect', code: 'abcd-efgh-ijkl' });
+
+    const joins = fetchedBodies.filter((f) => f.url.includes('/auth/guest'));
+    expect(joins).toHaveLength(2);
+    const withPassword = JSON.parse(joins[0]?.body ?? '{}') as Record<string, unknown>;
+    const withoutPassword = JSON.parse(joins[1]?.body ?? '{}') as Record<string, unknown>;
+    expect(withPassword['password']).toBe('swordfish');
+    // The KEY is absent, not empty: absence is what "no password" is.
+    expect('password' in withoutPassword).toBe(false);
+  });
+});
+
 /* ── manifest ↔ code ── */
 
 describe('manifest permissions', () => {
   const manifest = JSON.parse(
     readFileSync(fileURLToPath(new URL('../public/manifest.json', import.meta.url)), 'utf8'),
-  ) as { permissions: string[] };
+  ) as {
+    permissions: string[];
+    host_permissions?: string[];
+    optional_host_permissions?: string[];
+    content_scripts: Array<{ matches: string[]; all_frames?: boolean }>;
+    icons: Record<string, string>;
+    action: { default_icon?: Record<string, string> };
+    version: string;
+  };
 
   it('declares both capture permissions — neither API implies the other', () => {
     expect(manifest.permissions).toContain('desktopCapture');
@@ -2497,6 +3124,38 @@ describe('manifest permissions', () => {
     for (const permission of ['offscreen', 'storage', 'activeTab', 'scripting', 'alarms']) {
       expect(manifest.permissions, permission).toContain(permission);
     }
+  });
+
+  it('demands no host at install — every content origin is an optional grant', () => {
+    // `<all_urls>` under host_permissions is the maximum-warning install and
+    // the maximum-scrutiny review. Optional means: grantable at runtime,
+    // silent at install.
+    expect(manifest.host_permissions ?? []).toEqual([]);
+    expect(manifest.optional_host_permissions).toContain('<all_urls>');
+  });
+
+  it('injects declaratively on the Gather web origins only — the announce path', () => {
+    // detectExtension()'s announce fallback dies without this entry; content
+    // sites are reached by the dynamic registration instead.
+    expect(manifest.content_scripts[0]?.matches).toEqual([
+      'http://localhost:3000/*',
+      'http://127.0.0.1:3000/*',
+      'https://gather.watch/*',
+      'https://www.gather.watch/*',
+      'https://app.gather.watch/*',
+    ]);
+  });
+
+  it('ships icons at every size the store lists, on both surfaces', () => {
+    for (const size of ['16', '32', '48', '128']) {
+      expect(manifest.icons[size], size).toBe(`icon-${size}.png`);
+    }
+    expect(manifest.action.default_icon).toEqual(manifest.icons);
+  });
+
+  it('carries a real listing version, not the scaffold placeholder', () => {
+    expect(manifest.version).not.toBe('0.1.0');
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });
 

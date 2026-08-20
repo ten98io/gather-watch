@@ -1,8 +1,9 @@
 /**
- * Content script — runs in EVERY frame (manifest `all_frames: true`), because
- * on most sites the player lives in an iframe. A frame does not decide it is
- * the player: it *claims*, the background elects exactly one winner per tab
- * (see frameElection.ts), and only the winner is driven.
+ * Content script — runs in EVERY frame (`allFrames: true` on the worker's
+ * registered script and its executeScript one-shots), because on most sites
+ * the player lives in an iframe. A frame does not decide it is the player: it
+ * *claims*, the background elects exactly one winner per tab (see
+ * frameElection.ts), and only the winner is driven.
  *
  * Detection is deliberately paranoid about modern sites:
  *   - open shadow roots are traversed (web-component players)
@@ -21,6 +22,10 @@
  *          it is present and well-formed; `playing`/`positionMs`/`rate` are
  *          the legacy shape, kept so an OLD build of this script still
  *          reproduces that decision under its own fixed bands. See drive().
+ *   ← { kind: 'setAudio', volume?, muted? }           the viewer's own volume
+ *                                 lever (overlay → worker → here). LOCAL state:
+ *                                 it never came from the room and never returns
+ *                                 to it. Same licence as 'drive'.
  *   ← { kind: 'driveOff' }                            release the element now
  *   ← { kind: 'frameRole', role: 'driver' | 'idle' }  election result, and the
  *                                                     ONLY grant to drive
@@ -30,7 +35,10 @@
  *   ← { kind: 'castNative' } → { clicked, reason }    press the site's own
  *                                                     cast button
  *   → { kind: 'frameClaim', metrics, url }            election input
- *   → { kind: 'telemetry', positionMs, durationMs, playing, rate }
+ *   → { kind: 'telemetry', positionMs, durationMs, playing, rate,
+ *                          volume, muted }            volume/muted are for the
+ *                                 overlay's audio row only — the worker never
+ *                                 forwards them to the web app or the room
  *   → { kind: 'userIntent', intent, positionMs }      the user's own hand on
  *                                 the SITE's player (driver frame, driven only)
  *   → { kind: 'mediaEnded', positionMs, durationMs }  the item ran out — a
@@ -63,7 +71,7 @@ import {
   readTelemetry,
   toMetrics,
 } from './mediaDriver';
-import type { MediaElementLike, MediaMetrics, MediaProbe } from './mediaDriver';
+import type { DriveDecision, MediaElementLike, MediaMetrics, MediaProbe } from './mediaDriver';
 // Types only — erased at compile time, so this does NOT pull the overlay in.
 // The module itself is imported dynamically; see showRoomOverlay below.
 import type { OverlayHandle, OverlayRoomState, OverlaySend, OverlayStorage } from './overlay';
@@ -523,69 +531,90 @@ async function castNative(): Promise<CastResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Wiring
+// Wiring — registration happens in boot(), exactly once per document
 // ---------------------------------------------------------------------------
 
-chrome.runtime.onMessage.addListener(
-  (
-    msg: { kind?: string } & Record<string, unknown>,
-    _sender,
-    sendResponse: (response: unknown) => void,
-  ) => {
-    switch (msg.kind) {
-      case 'drive':
-        // A command is not a licence. Only the elected frame drives, so a frame
-        // that was demoted — or was never elected at all — drops the command
-        // instead of taking the element back from whoever holds it.
-        if (role !== 'driver') return false;
-        driven = true;
-        lastCommand = {
-          playing: msg['playing'] === true,
-          positionMs: typeof msg['positionMs'] === 'number' ? msg['positionMs'] : 0,
-          rate: typeof msg['rate'] === 'number' ? msg['rate'] : 1,
-          elastic: parseElasticDirective(msg['elastic']),
-        };
-        drive();
-        return false;
-      case 'driveOff':
+/** The worker's channel into this frame. Registered once, by {@link boot}. */
+function onWorkerMessage(
+  msg: { kind?: string } & Record<string, unknown>,
+  _sender: chrome.runtime.MessageSender,
+  sendResponse: (response: unknown) => void,
+): boolean {
+  switch (msg.kind) {
+    case 'drive':
+      // A command is not a licence. Only the elected frame drives, so a frame
+      // that was demoted — or was never elected at all — drops the command
+      // instead of taking the element back from whoever holds it.
+      if (role !== 'driver') return false;
+      driven = true;
+      lastCommand = {
+        playing: msg['playing'] === true,
+        positionMs: typeof msg['positionMs'] === 'number' ? msg['positionMs'] : 0,
+        rate: typeof msg['rate'] === 'number' ? msg['rate'] : 1,
+        elastic: parseElasticDirective(msg['elastic']),
+      };
+      drive();
+      return false;
+    case 'driveOff':
+      driven = false;
+      lastCommand = null;
+      return false;
+    case 'setAudio': {
+      // The viewer's own volume/mute, from their overlay via the worker.
+      // Same licence as 'drive' — only the elected, driven frame touches the
+      // element — but a command is not a grant: it must not set `driven`.
+      if (role !== 'driver' || !driven) return false;
+      const el = currentMedia();
+      if (el === null) return false;
+      const volume = msg['volume'];
+      const muted = msg['muted'];
+      const decision: DriveDecision = {
+        action: 'none',
+        seekToMs: null,
+        setRate: null,
+        ...(typeof volume === 'number' && Number.isFinite(volume) ? { setVolume: volume } : {}),
+        ...(typeof muted === 'boolean' ? { setMuted: muted } : {}),
+      };
+      // Deliberately NOT userIntent.noteApplied: volume is not transport,
+      // the intent detector watches no volume event, and marking would arm
+      // a play/pause expectation that no event ever comes to consume.
+      applyDecision(el as MediaElementLike, decision);
+      return false;
+    }
+    case 'frameRole':
+      role = msg['role'] === 'driver' ? 'driver' : 'idle';
+      if (role === 'idle') {
         driven = false;
         lastCommand = null;
-        return false;
-      case 'frameRole':
-        role = msg['role'] === 'driver' ? 'driver' : 'idle';
-        if (role === 'idle') {
-          driven = false;
-          lastCommand = null;
-        }
-        return false;
-      case 'overlay': {
-        // One room, one overlay, in the tab's own document — never in an
-        // iframe, which would put a second copy on the page.
-        if (!isTopFrame) return false;
-        const state = msg['state'];
-        if (typeof state !== 'object' || state === null) hideRoomOverlay();
-        else void showRoomOverlay(state as OverlayRoomState);
-        return false;
       }
-      case 'overlayOff':
-        hideRoomOverlay();
-        return false;
-      case 'castNative':
-        castNative()
-          .then((res) => sendResponse(res))
-          .catch((err: unknown) =>
-            sendResponse({
-              clicked: false,
-              selector: null,
-              reason: err instanceof Error ? err.message : 'Cast failed',
-            }),
-          );
-        return true; // async response
-      default:
-        return false;
+      return false;
+    case 'overlay': {
+      // One room, one overlay, in the tab's own document — never in an
+      // iframe, which would put a second copy on the page.
+      if (!isTopFrame) return false;
+      const state = msg['state'];
+      if (typeof state !== 'object' || state === null) hideRoomOverlay();
+      else void showRoomOverlay(state as OverlayRoomState);
+      return false;
     }
-  },
-);
+    case 'overlayOff':
+      hideRoomOverlay();
+      return false;
+    case 'castNative':
+      castNative()
+        .then((res) => sendResponse(res))
+        .catch((err: unknown) =>
+          sendResponse({
+            clicked: false,
+            selector: null,
+            reason: err instanceof Error ? err.message : 'Cast failed',
+          }),
+        );
+      return true; // async response
+    default:
+      return false;
+  }
+}
 
 // Route changes: same document, different content. Re-detect from scratch.
 const navHost = {
@@ -619,35 +648,9 @@ function onRouteChange(): void {
  *  because a disposed watcher never fires and is not worth keeping. */
 let nav: NavigationWatcher | null = null;
 
-// The element is often replaced in place without any navigation at all.
-const observer = new MutationObserver((records) => {
-  for (const record of records) {
-    if (record.addedNodes.length > 0 || record.removedNodes.length > 0) {
-      scanDirty = true;
-      return;
-    }
-  }
-});
-
-// Media events do not bubble, but capture-phase listeners on the document see
-// them (including from open shadow roots) — the fastest re-claim signal.
-for (const type of [
-  'loadedmetadata',
-  'durationchange',
-  'emptied',
-  'play',
-  'pause',
-  'ended',
-] as const) {
-  document.addEventListener(
-    type,
-    () => {
-      scanDirty = true;
-      scheduleClaim();
-    },
-    true,
-  );
-}
+/** The element is often replaced in place without any navigation at all.
+ *  Constructed by {@link boot}: a second copy of this script builds nothing. */
+let observer: MutationObserver | null = null;
 
 /**
  * A gesture on the SITE's own controls is room intent, not drift to correct
@@ -675,10 +678,6 @@ function onTransportEvent(type: 'play' | 'pause' | 'seeked', ev: Event): void {
   void chrome.runtime
     .sendMessage({ kind: 'userIntent', intent: found.intent, positionMs: found.positionMs })
     .catch(() => undefined);
-}
-
-for (const type of ['play', 'pause', 'seeked'] as const) {
-  document.addEventListener(type, (ev) => onTransportEvent(type, ev), true);
 }
 
 /**
@@ -725,8 +724,6 @@ function onMediaEnded(ev: Event): void {
     .catch(() => undefined);
 }
 
-document.addEventListener('ended', (ev) => onMediaEnded(ev), true);
-
 /**
  * Everything in this document that is TAKEN DOWN when the page goes away —
  * and PUT BACK when it comes back.
@@ -752,7 +749,7 @@ function armPage(): void {
   // A disposed watcher never fires again — this takes a fresh one, anchored at
   // the URL the page actually came back on.
   nav = watchNavigation(navHost, onRouteChange);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer?.observe(document.documentElement, { childList: true, subtree: true });
   // The document was frozen, not reloaded, so the DOM may be exactly as it was
   // — but this frame's claim has long since expired out of the election, and
   // the worker may have been recycled and restored since.
@@ -769,32 +766,9 @@ function disarmPage(): void {
   armed = false;
   nav?.dispose();
   nav = null;
-  observer.disconnect();
+  observer?.disconnect();
   hideRoomOverlay();
 }
-
-window.addEventListener('pagehide', () => {
-  disarmPage();
-});
-
-window.addEventListener('pageshow', (ev: Event) => {
-  // A fresh document armed itself at module scope; only a restore from the
-  // back/forward cache has a teardown to undo.
-  if ((ev as PageTransitionEvent).persisted !== true) return;
-  armPage();
-});
-
-const heartbeat = setInterval(() => {
-  // An orphaned script has nobody to talk to and nothing to drive. Stop the
-  // beat rather than spending a tick a second on a page forever.
-  if (!runtimeAlive()) {
-    clearInterval(heartbeat);
-    return;
-  }
-  nav?.check();
-  reportClaim();
-  if (role === 'driver') sendTelemetry();
-}, HEARTBEAT_MS);
 
 // ---------------------------------------------------------------------------
 // Extension-id announcement — Gather's own origins, top frame only
@@ -828,14 +802,100 @@ function announceToGather(): void {
   }
 }
 
-if (window.top === window && WEB_ORIGINS.includes(location.origin)) {
-  // The page may load after we did, so answer requests as well as announcing.
-  window.addEventListener('message', (ev: MessageEvent) => {
-    if (ev.source !== window || ev.origin !== location.origin) return;
-    if (!isAnnounceRequest(ev.data)) return;
-    announceToGather();
+// ---------------------------------------------------------------------------
+// Boot — once per document, whatever injected us and however many times
+// ---------------------------------------------------------------------------
+
+/** Every listener, observer and interval this script owns. Nothing above
+ *  registers at module scope, so evaluating the module twice is harmless —
+ *  only calling this twice would not be, and the sentinel below forbids it. */
+function boot(): void {
+  chrome.runtime.onMessage.addListener(onWorkerMessage);
+
+  // Media events do not bubble, but capture-phase listeners on the document
+  // see them (including from open shadow roots) — the fastest re-claim signal.
+  for (const type of [
+    'loadedmetadata',
+    'durationchange',
+    'emptied',
+    'play',
+    'pause',
+    'ended',
+  ] as const) {
+    document.addEventListener(
+      type,
+      () => {
+        scanDirty = true;
+        scheduleClaim();
+      },
+      true,
+    );
+  }
+
+  for (const type of ['play', 'pause', 'seeked'] as const) {
+    document.addEventListener(type, (ev) => onTransportEvent(type, ev), true);
+  }
+
+  document.addEventListener('ended', (ev) => onMediaEnded(ev), true);
+
+  observer = new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.addedNodes.length > 0 || record.removedNodes.length > 0) {
+        scanDirty = true;
+        return;
+      }
+    }
   });
-  announceToGather();
+
+  window.addEventListener('pagehide', () => {
+    disarmPage();
+  });
+
+  window.addEventListener('pageshow', (ev: Event) => {
+    // A fresh document armed itself in boot(); only a restore from the
+    // back/forward cache has a teardown to undo.
+    if ((ev as PageTransitionEvent).persisted !== true) return;
+    armPage();
+  });
+
+  const heartbeat = setInterval(() => {
+    // An orphaned script has nobody to talk to and nothing to drive. Stop the
+    // beat rather than spending a tick a second on a page forever.
+    if (!runtimeAlive()) {
+      clearInterval(heartbeat);
+      return;
+    }
+    nav?.check();
+    reportClaim();
+    if (role === 'driver') sendTelemetry();
+  }, HEARTBEAT_MS);
+
+  if (window.top === window && WEB_ORIGINS.includes(location.origin)) {
+    // The page may load after we did, so answer requests as well as announcing.
+    window.addEventListener('message', (ev: MessageEvent) => {
+      if (ev.source !== window || ev.origin !== location.origin) return;
+      if (!isAnnounceRequest(ev.data)) return;
+      announceToGather();
+    });
+    announceToGather();
+  }
+
+  armPage();
 }
 
-armPage();
+/**
+ * The boot sentinel. This script can now reach one document TWICE: once from
+ * the manifest's declarative entry or the worker's registered script, and
+ * again from scripting.executeScript into a tab that was already open when
+ * access was granted (or when the popup connected it). Both copies share one
+ * isolated world, so without a guard every listener and interval would exist
+ * twice and the frame would claim, report and drive double. The flag lives on
+ * globalThis — per document, per world — and is checked-and-set before
+ * anything registers, so the second evaluation does nothing at all.
+ */
+const BOOT_FLAG = '__gatherContentBooted';
+const bootScope = globalThis as Record<string, unknown>;
+if (bootScope[BOOT_FLAG] !== true) {
+  bootScope[BOOT_FLAG] = true;
+  boot();
+}

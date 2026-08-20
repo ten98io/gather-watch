@@ -11,6 +11,10 @@ export interface MediaElementLike {
   readonly duration: number;
   readonly paused: boolean;
   playbackRate: number;
+  /** 0..1. Per-viewer LOCAL state: read for telemetry, written only by the
+   *  viewer's own overlay — never by sync, never by the room. */
+  volume: number;
+  muted: boolean;
   play(): Promise<void> | void;
   pause(): void;
 }
@@ -20,6 +24,10 @@ export interface MediaTelemetry {
   durationMs: number;
   playing: boolean;
   rate: number;
+  /** 0..1, clamped. LOCAL — it rides the internal telemetry heartbeat for the
+   *  overlay's audio row and never becomes room state. */
+  volume: number;
+  muted: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +180,15 @@ export interface DriveDecision {
   seekToMs: number | null;
   setRate: number | null;
   action: 'play' | 'pause' | 'none';
+  /**
+   * The volume/mute half. null — and, for a decision built before these fields
+   * existed, absent — means leave the element alone, the same convention as
+   * `setRate`. Only the overlay's own 'setAudio' path ever fills them in:
+   * {@link decideDrive} never prescribes either, because volume is per-viewer
+   * LOCAL state and sync must not touch it.
+   */
+  setVolume?: number | null;
+  setMuted?: boolean | null;
 }
 
 /**
@@ -235,6 +252,13 @@ export function decideDrive(
   };
 }
 
+/** A volume that is a real 0..1 fraction, whatever the element reported. 1 is
+ *  the element default and the honest fallback for a reading that is not a
+ *  finite number at all. */
+function clampVolume(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+}
+
 /** Read telemetry from a live element. */
 export function readTelemetry(el: MediaElementLike): MediaTelemetry {
   return {
@@ -242,6 +266,8 @@ export function readTelemetry(el: MediaElementLike): MediaTelemetry {
     durationMs: Number.isFinite(el.duration) ? el.duration * 1000 : 0,
     playing: !el.paused,
     rate: el.playbackRate,
+    volume: clampVolume(el.volume),
+    muted: el.muted === true,
   };
 }
 
@@ -262,6 +288,21 @@ export function applyDecision(el: MediaElementLike, d: DriveDecision): void {
       el.playbackRate = d.setRate;
     } catch {
       // Some DRM players reject playbackRate — seek corrections still work.
+    }
+  }
+  if (d.setVolume !== null && d.setVolume !== undefined) {
+    try {
+      el.volume = clampVolume(d.setVolume);
+    } catch {
+      // Same rule as the seek guard above: a player that refuses a volume
+      // write must not carry off the transport below with the throw.
+    }
+  }
+  if (d.setMuted !== null && d.setMuted !== undefined) {
+    try {
+      el.muted = d.setMuted;
+    } catch {
+      // A refused mute is survivable; the room's play/pause is not.
     }
   }
   if (d.action === 'play') void el.play()?.catch?.(() => undefined);

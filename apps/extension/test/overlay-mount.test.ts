@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mountOverlay } from '../src/overlay/mount';
 import type { OverlayHandle, OverlayStorage } from '../src/overlay/mount';
@@ -396,6 +396,97 @@ describe('mountOverlay — what is playing', () => {
 
     expect(sent).toContainEqual({ kind: 'overlay:skip' });
     expect(pageKeys).toEqual([]);
+  });
+});
+
+/**
+ * The viewer's own volume, drawn under the playing title. Everything it sends
+ * is LOCAL — overlay:volume / overlay:mute go to the driven element through
+ * the worker and never near the room — and everything it shows comes back the
+ * long way: pushed state, read off the element's own telemetry.
+ */
+describe('mountOverlay — the volume lever', () => {
+  const withAudio = (over: Partial<OverlayRoomState> = {}): OverlayRoomState =>
+    room({ nowPlaying: 'The Feature', audio: { volume: 0.5, muted: false }, ...over });
+
+  const volumesSent = (sent: OverlayOutbound[]): OverlayOutbound[] =>
+    sent.filter((m) => m.kind === 'overlay:volume');
+
+  it('draws the lever only once telemetry has said where it sits', () => {
+    const { host, overlay } = mount({ initialState: room({ nowPlaying: 'The Feature' }) });
+    // No reading yet: a slider with nowhere honest to sit is not drawn.
+    expect(oneByClass(host, 'audio').hidden).toBe(true);
+
+    overlay.update(withAudio());
+
+    expect(oneByClass(host, 'audio').hidden).toBe(false);
+    expect(oneByClass(host, 'vol').value).toBe('50');
+    expect(oneByClass(host, 'mute').textContent).toBe('Mute');
+  });
+
+  it('shows the way OUT of the state the player is in', () => {
+    const { host, overlay } = mount({ initialState: withAudio() });
+
+    overlay.update(withAudio({ audio: { volume: 0.5, muted: true } }));
+
+    expect(oneByClass(host, 'mute').textContent).toBe('Unmute');
+    expect(oneByClass(host, 'mute').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('asks for the flip of what is shown, and only asks — the state comes back', () => {
+    const { host, sent } = mount({ initialState: withAudio() });
+
+    click(host, oneByClass(host, 'mute'));
+
+    expect(sent).toContainEqual({ kind: 'overlay:mute', muted: true });
+    // Not assumed locally: the label flips when the pushed state says so.
+    expect(oneByClass(host, 'mute').textContent).toBe('Mute');
+  });
+
+  it('sends one overlay:volume per gesture, with where the slider ended', () => {
+    vi.useFakeTimers();
+    try {
+      const { host, sent } = mount({ initialState: withAudio() });
+      const slider = oneByClass(host, 'vol');
+
+      // One drag: many input events, one intent.
+      slider.focus();
+      for (const value of ['40', '30', '20']) {
+        slider.value = value;
+        dispatchOn(slider, 'input');
+      }
+      expect(volumesSent(sent)).toHaveLength(0);
+
+      vi.advanceTimersByTime(300);
+
+      expect(volumesSent(sent)).toEqual([{ kind: 'overlay:volume', volume: 0.2 }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never yanks the slider under the hand that is moving it', () => {
+    vi.useFakeTimers();
+    try {
+      const { host, overlay } = mount({ initialState: withAudio() });
+      const slider = oneByClass(host, 'vol');
+
+      slider.focus();
+      slider.value = '30';
+      dispatchOn(slider, 'input');
+
+      // The pushed state is a round trip old — it says where the slider WAS.
+      overlay.update(withAudio({ audio: { volume: 0.8, muted: false } }));
+      expect(slider.value).toBe('30');
+
+      // Hand off the slider, echo window over: the pushed state is the truth.
+      oneByClass(host, 'input').focus();
+      vi.advanceTimersByTime(1500);
+      overlay.update(withAudio({ audio: { volume: 0.8, muted: false } }));
+      expect(slider.value).toBe('80');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

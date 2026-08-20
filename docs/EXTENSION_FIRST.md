@@ -190,23 +190,35 @@ is a single-window experience, and it is what "browse-here-like" implies.
 
 ### One contract, three implementations
 
-`PlaybackDriver` is **declared, unshared, and unimplemented** — three separate
-gaps, and the middle one used to be described as if it were closed.
+`PlaybackDriver` is **declared and unshared, and the volume half is now
+implemented** (2026-08-20). What remains true: it lives in
+`apps/extension/src/driver.ts` (with the elastic corrector beside it), not in
+`packages/contracts` or a `packages/playback`, so web and mobile satisfy the
+same *shape* by hand rather than by type, and nothing literally `implements`
+it — `ElasticDriver`, the class that actually corrects, exposes
+`tick`/`reset`/`state`/`setProfile`, a different surface.
 
-It lives in `apps/extension/src/driver.ts` (with the elastic corrector beside
-it), not in `packages/contracts` or a `packages/playback`, so web and mobile
-satisfy the same *shape* by hand rather than by type. And nothing `implements`
-it: grep `PlaybackDriver` across the repo and you get its own declaration and
-nothing else. `ElasticDriver`, the class that actually drives, exposes
-`tick`/`reset`/`state`/`setProfile` — a different surface. Four of the
-interface's members exist nowhere in the extension at all (`load`, `setMuted`,
-`isMuted`, `setVolume`): what the extension really does to a page's player is
-seek, rate, play and pause, and that is the whole list.
+What changed: `setMuted`/`isMuted`/`setVolume` now have a real extension-side
+implementation. The overlay carries a mute toggle and a volume slider in the
+now-playing block; the ask travels overlay → background (`overlay:volume` /
+`overlay:mute`, driven-tab gate) → elected frame (`setAudio`, licence-gated
+like `drive`) → guarded element writes in `mediaDriver.applyDecision`, and the
+1 Hz telemetry heartbeat reflects the element's own `volume`/`muted` back so
+the slider settles to what the player actually did. Volume is per-viewer
+LOCAL state: it never crosses the room socket and never appears on the
+external event port — sync never touches it (`decideDrive` is pinned to
+prescribe neither). `load()` stays 'unsupported' **by design**: the user
+navigates to their own copy; the extension never navigates anyone's browser
+to paid content.
 
-So read the interface as a **target**, not as shipped capability. Lifting it
-into a package and making the three surfaces conform to it — or trimming it
-down to what is genuinely implemented — is the honest completion of this
-section, and neither has happened. The three implementations it anticipates:
+Still open, deliberately: "duck the site while someone talks" has the lever
+(these volume writes) but no honest trigger — the speech signal lives in the
+web tab's call (`apps/web/lib/player/ducking.ts` reads real speech activity,
+not mic-open flags), and the worker cannot hear it. Wiring a duck off the
+presence `micOn` flag would pin the film at 35% for as long as anyone leaves
+a mic open, so it waits for a signal the worker can see — which arrives with
+voice in the overlay (offscreen `getUserMedia`, the backlog item). The three
+implementations the interface anticipates:
 
 1. **Web adapters** (existing YouTube/HLS/SoundCloud/Vimeo/native) — for
    content the web can play directly. Keeps a room link working instantly

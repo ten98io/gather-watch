@@ -47,6 +47,9 @@
  *   - {@link DriverCapabilities} — canSeek / canSetRate / canControlVolume /
  *     isDrmProtected, reported honestly and allowed to change at runtime once
  *     the driver has *evidence* (a rate assignment that was silently ignored).
+ *     The volume half of the contract is live on this surface: the overlay's
+ *     audio row drives setVolume/setMuted through the worker into the content
+ *     script's 'setAudio' path, strictly LOCAL to this viewer.
  *   - {@link CommandResult} — a command may be refused, not just performed.
  *   - {@link DriverTelemetry} — one consistent observation, timestamped, so a
  *     corrector running in another process (this extension's background
@@ -134,6 +137,13 @@ export interface DriverTelemetry {
  *             `capabilities()`, `observe()` and CommandResult returns.
  *   extension this repo — mediaDriver.ts measures and applies, content.ts is
  *             the DOM plumbing, and the elected frame is the driver instance.
+ *             That surface now implements the volume half too: setMuted /
+ *             isMuted / setVolume land on the driven element via content.ts's
+ *             'setAudio' path, driven from the overlay's audio row, and stay
+ *             per-viewer LOCAL — volume is never room state and never leaves
+ *             the machine. `load()` remains 'unsupported' there BY DESIGN: the
+ *             user navigates to their own copy of the content, and we never
+ *             navigate anybody's browser to paid content on their behalf.
  *   native    AVPlayer / ExoPlayer / WebView behind the same methods.
  *
  * Method names match apps/web's `PlayerAdapter` on purpose, so conforming is a
@@ -158,6 +168,9 @@ export interface PlaybackDriver {
   pause(): CommandResult;
   seekTo(ms: number): CommandResult;
   setRate(rate: number): CommandResult;
+  /** The volume half — implemented on the extension surface (overlay-driven,
+   *  content-side; see mediaDriver's DriveDecision.setMuted/setVolume). Local
+   *  to the viewer: never a room command, never shared. */
   setMuted(muted: boolean): CommandResult;
   isMuted(): boolean | null;
   setVolume(volume: number): CommandResult; // 0..1
@@ -1255,6 +1268,53 @@ export class MediaEndDetector {
     this.reportedKey = ev.sourceKey;
     return { positionMs: ev.positionMs, durationMs: ev.durationMs };
   }
+}
+
+/** Longest source that can still be an ad: prerolls and mid-rolls run seconds
+ *  to a couple of minutes, while a feature is always longer. */
+export const INTERSTITIAL_MAX_DURATION_MS = 120_000;
+/** How far past a short source's own end the room's projection must have run
+ *  before the source is called an interstitial. Comfortably wider than clock
+ *  skew, telemetry staleness and the elastic bands' largest deliberate lag. */
+export const INTERSTITIAL_PROJECTION_SLACK_MS = 45_000;
+
+/**
+ * Is the element's current source an interstitial — an ad the site swapped
+ * into the driven element — rather than the room's item?
+ *
+ * THE DEFECT THIS CLOSES. A preroll/mid-roll swapped into the driven element
+ * fires 'ended' under a fresh end-latch key, and the worker's handlers only
+ * gate on the tab/frame election — so one viewer's 15-second ad (1) named the
+ * FILM's queue row in `sync.advance` and moved the whole room off it, (2)
+ * filled the room's fill-once null-duration row with the ad's length,
+ * permanently, and (3) had the drive loop clamp the room's expectation to the
+ * ad's duration and hard-seek the ad to its end — manufacturing the very
+ * 'ended' it then believed.
+ *
+ * THE TEST. A source is an interstitial when its duration is KNOWN and short
+ * (≤ {@link INTERSTITIAL_MAX_DURATION_MS}) while the room's projected position
+ * has run more than {@link INTERSTITIAL_PROJECTION_SLACK_MS} past that
+ * duration: the room is provably watching something much longer than what the
+ * element currently holds. A long film always passes (duration > 2 min), a
+ * room near a short item's REAL end has projection ≈ duration — under the
+ * slack — so genuine ends pass, and a duration of 0 is "unknown" (pre-metadata,
+ * or a live stream reporting 0/Infinity→0) and is never vetoed.
+ *
+ * THE ACCEPTED TRADE, stated rather than hidden: a SHORT (≤ 2 min) genuine
+ * item in a room whose projection ran far past its end — a room stranded
+ * overnight on a finished short clip — is ALSO vetoed, and recovery there is
+ * the overlay's Skip or a host seek. That rare stall is accepted because the
+ * alternative was one viewer's preroll skipping the film for the whole room.
+ */
+export function isInterstitialSource(
+  elementDurationMs: number,
+  roomProjectedMs: number,
+): boolean {
+  return (
+    elementDurationMs > 0 &&
+    elementDurationMs <= INTERSTITIAL_MAX_DURATION_MS &&
+    roomProjectedMs > elementDurationMs + INTERSTITIAL_PROJECTION_SLACK_MS
+  );
 }
 
 /**

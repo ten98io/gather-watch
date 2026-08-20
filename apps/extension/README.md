@@ -13,11 +13,14 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
   `src/driver.ts` (`ElasticDriver`), which applies the same learned-anchor
   bands as `@gather/sync-core` rather than frame-locking. That controller is
   **not** an implementation of the `PlaybackDriver` interface declared beside
-  it: `ElasticDriver` exposes `tick`/`reset`/`state`/`setProfile`, nothing in
-  this repo says `implements PlaybackDriver`, and four of the interface's
-  members (`load`, `setMuted`, `isMuted`, `setVolume`) exist nowhere in the
-  extension at all. Read it as a target, as `docs/EXTENSION_FIRST.md` Part 2
-  already does. Works on any page with a `<video>/<audio>`; known providers
+  it: `ElasticDriver` exposes `tick`/`reset`/`state`/`setProfile`, and nothing
+  in this repo says `implements PlaybackDriver`. Of the interface's members,
+  `load()` stays deliberately unimplemented — the user navigates to their own
+  copy, and Gather never navigates anybody's browser to paid content — while
+  `setMuted`/`isMuted`/`setVolume` **are** implemented, through the overlay's
+  audio lever (per-viewer LOCAL, guarded element writes; see the overlay
+  bullet below). Read the interface as a target, as `docs/EXTENSION_FIRST.md`
+  Part 2 already does. Works on any page with a `<video>/<audio>`; known providers
   are badged, and the **generic** driver handles everything else, which is what
   makes a `{ kind: 'page' }` queue item playable at all.
   The content script runs in **every frame** (players usually live in an
@@ -44,7 +47,11 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
 - **In-page overlay** (`src/overlay/`): the room's chat, its people list, what
   is playing and what is up next — plus a **Skip** for a member the room's
   `playbackControl` policy admits, which sends the same `sync.advance` the
-  worker sends when an item runs out. Injected into the content site's page in
+  worker sends when an item runs out, and a **volume lever** (mute toggle +
+  slider in the now-playing block). Volume is per-viewer LOCAL state: the ask
+  rides overlay → worker → elected frame → guarded element writes, the
+  element's own telemetry settles the slider, and nothing about it ever
+  crosses the room socket or the external event port. Injected into the content site's page in
   a closed shadow root, with the design tokens emitted from `@gather/design`.
   `docs/EXTENSION_FIRST.md` calls this "Model C" and defines it as injecting
   Gather's **chat/call/queue** UI: three of those four are here, **the call is
@@ -100,6 +107,10 @@ page's own `<video>` element, which is why DRM black-screens don't apply.
   1. **Popup guest join** with an invite code — room-scoped, no account, joins
      as "Extension". Driving playback obeys the room's `playbackControl` policy
      like any guest (default `host` — the host drives; the extension follows).
+     A password-protected room takes its password in the same card; unknown
+     code, missing password and wrong password all come back as the same
+     "Invite code not found — or the password is wrong." because the server
+     deliberately prices probes as missing invites.
   2. **Handoff from the web app** over the externally-connectable channel
      (`src/external.ts`) — the web app passes the room id and a room-scoped
      access token, and the extension drives **as the signed-in member**, with
@@ -131,8 +142,12 @@ single byte. The message names the fix each time.
 
 Then Chrome → `chrome://extensions` → Developer mode → **Load unpacked** →
 select `apps/extension/dist`. Open the site you want to watch, click the
-Gather toolbar icon, paste the room code (`XXXX-XXXX-XXXX`), Connect. Or just
-open the room on gather.watch in another tab and let the handoff do it.
+Gather toolbar icon, paste the room code (`XXXX-XXXX-XXXX`), Connect —
+Chrome will offer to let Gather stay on that site (say yes once and the site
+keeps working across visits; decline and this tab still works until it
+navigates away). Or just open the room on gather.watch in another tab and
+let the handoff do it — then click the Gather icon on the content tab the
+first time you use a new site, so the extension may reach it.
 
 ### The dev one
 
@@ -174,11 +189,38 @@ into a real profile — by Chrome's design, not an oversight.
 
 ## Permissions, and why each one
 
-`tabCapture` + `desktopCapture` + `offscreen` (Mode B), `storage` (session
-state survives service-worker death), `activeTab` + `scripting` (drive the tab
-you are on), `alarms` (keepalive), `host_permissions: <all_urls>` (the content
-script has to reach any site you might watch on). No `cookies` permission — the
+**The install grants no host access at all** (FEATURE_PLAN 3.2 — narrowed
+before any store submission). `permissions`: `tabCapture` + `desktopCapture` +
+`offscreen` (Mode B), `storage` (session state survives service-worker death),
+`activeTab` + `scripting` (reach the tab you are on), `alarms` (keepalive).
+`optional_host_permissions: ["<all_urls>"]` — every SITE is a runtime grant
+the user makes, never an install-time demand. No `cookies` permission — the
 extension never reads one.
+
+Content pages are reached three ways, in order of durability:
+
+1. **Granted sites.** The worker keeps ONE dynamically registered content
+   script (`gather-driver`, `src/siteAccess.ts` + `syncRegisteredScripts` in
+   `background.ts`) whose matches equal the granted origins. Registered
+   scripts behave exactly like the old declarative entry on those origins —
+   every new document, every new frame (`allFrames`), about:blank/srcdoc
+   player frames included (`matchOriginAsFallback`, the modern spelling of
+   `match_about_blank`) — which is what preserves "the player iframe can
+   appear at any time".
+2. **This tab, right now.** Opening the popup IS the activeTab grant for that
+   tab; Connect injects `content.js` into it. Two limits, accepted: activeTab
+   does not reach cross-origin iframes on an ungranted page, and it dies on a
+   cross-origin navigation. The popup's "Keep Gather on this site" is the
+   durable fix.
+3. **Everything at once.** "Allow all supported sites" in the popup requests
+   the provider registry's `grantPatterns` (one Chrome dialog for the named
+   streaming sites).
+
+The one DECLARATIVE content script left covers exactly the five Gather web
+origins — that is the extension-id announce the web app's detection relies
+on, and the build fails if the manifest ever misses one of them. The build
+also refuses to emit a manifest with missing icon files or a placeholder
+version (`manifestShipErrors` in `src/buildTarget.ts`).
 
 ## Honest limits
 
@@ -220,6 +262,32 @@ extension never reads one.
   that does nothing at all. When finding the button meant opening the site's
   own overflow menu, the same toggle closes it again rather than leaving it
   hanging open over the video.
+- **An ad in the driven element is left alone — and a rare stall is the
+  price.** A source whose duration is ≤2 minutes while the room's own clock
+  is far past it is treated as not being the room's item
+  (`isInterstitialSource`, `src/driver.ts`): it is not driven, its 'ended'
+  never becomes `sync.advance` (one viewer's preroll must not skip the film
+  for the whole room), and its duration never fills the room's fill-once
+  duration row. The accepted trade: a SHORT genuine item in a room whose
+  projection ran far past its end (stranded overnight on a finished clip)
+  is also vetoed — recovery there is the overlay's Skip or a host seek.
+- **A pause the page performs reads as your hand.** An ad SDK that pauses
+  the content element to run an overlay ad (the standard IMA pattern) is
+  indistinguishable from the user pressing pause, so the room pauses too —
+  and resumes when the page resumes. Arguably the right group behavior
+  (the room waits for the ad viewer); recorded here because no honest
+  discriminator exists.
+- **A per-site grant reaches frames on THAT site.** Registered content
+  scripts match each frame's own URL, so granting a generic page does not
+  reach a player iframe served from another origin. "Allow all supported
+  sites" covers the known embed providers (a YouTube iframe on a blog is
+  reachable once youtube.com is granted); an arbitrary third-party embed on
+  an arbitrary page is not, until a frame-aware grant lands.
+- **The popup's grant offer describes the tab it opened over.** The pattern
+  list is computed at popup open (the permission ask must run synchronously
+  inside the click), so a tab navigated to a different origin under an open
+  popup can be offered the previous site. Grants are visible and revocable
+  in Chrome's own UI; reopen the popup to re-read the tab.
 - **No voice yet.** The extension carries the room's chat, its queue and its
   playback — not the call. Mic in the overlay (offscreen `getUserMedia`,
   reusing the screen-share plumbing) is backlog. Nothing in the overlay, the

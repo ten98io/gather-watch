@@ -22,6 +22,7 @@ export {
   upNextLine,
 } from './state';
 export type {
+  AudioView,
   MessageView,
   OverlayConnection,
   OverlayMessage,

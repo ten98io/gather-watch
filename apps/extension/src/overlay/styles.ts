@@ -295,6 +295,46 @@ input:focus-visible {
   cursor: not-allowed;
 }
 
+/*
+ * The viewer's own volume, under the title of what is playing. One compact
+ * row: the mute chip (same geometry as .hide and .skip — 28px beside a mouse,
+ * 44px under a finger) and a slider that takes the rest of the width. The
+ * slider's thumb and track come from the browser; accent-color is the one
+ * knob CSS offers for them, and it takes the same token every other accent
+ * here does.
+ */
+.audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.audio[hidden] {
+  display: none;
+}
+.mute {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h-sm);
+  padding: 0 var(--control-px-sm);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-mid);
+  font-size: var(--text-label-size);
+}
+.mute:hover {
+  background: var(--surface-3);
+  color: var(--text-hi);
+}
+.vol {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .people {
   padding: 10px 12px;
   border-bottom: 1px solid var(--hairline);
@@ -452,6 +492,7 @@ input:focus-visible {
   .handle,
   .hide,
   .link,
+  .mute,
   .send,
   .skip {
     transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;

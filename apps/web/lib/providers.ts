@@ -1,6 +1,9 @@
 /**
- * Mode A provider registry — every supported service, its URL parser, and its
- * HONEST capability tier:
+ * Mode A provider registry — DERIVED from the one shared registry in
+ * @gather/contracts (packages/contracts/src/providers.ts): the superset there
+ * carries hosts/drm/cast for the extension; this module maps it down to the
+ * five fields the web renders and keeps the URL parser, because contracts is
+ * environment-free and cannot `new URL`. The honest capability tiers:
  *
  *  full-sync   real player API (YouTube/SoundCloud/Vimeo) → drift-corrected
  *  approximate official embed with no position API (Spotify/Apple Music/
@@ -23,10 +26,10 @@
  *              device. A viewer without the extension just sees the link, and
  *              the queue note says exactly that.
  */
-import type { MediaRef } from '@gather/contracts';
+import { PROVIDERS as REGISTRY, providerForHost } from '@gather/contracts';
+import type { MediaRef, ProviderCapability } from '@gather/contracts';
 
-/** Mirrors apps/extension/src/providers.ts — the two registries share tiers. */
-export type ProviderCapability = 'full-sync' | 'approximate' | 'extension' | 'generic';
+export type { ProviderCapability } from '@gather/contracts';
 
 export interface Provider {
   id: string;
@@ -42,30 +45,21 @@ const EXTENSION_NOTE =
   'Plays through the Gather browser extension — everyone signs in with their own account';
 
 export const PROVIDERS: readonly Provider[] = [
-  { id: 'youtube', name: 'YouTube', icon: '▶', capability: 'full-sync', note: 'Plays in sync for everyone' },
-  { id: 'youtubemusic', name: 'YouTube Music', icon: '♫', capability: 'full-sync', note: 'Plays in sync for everyone' },
-  { id: 'soundcloud', name: 'SoundCloud', icon: '☁', capability: 'full-sync', note: 'Plays in sync for everyone' },
-  { id: 'vimeo', name: 'Vimeo', icon: 'Ⓥ', capability: 'full-sync', note: 'Plays in sync for everyone' },
-  { id: 'spotify', name: 'Spotify', icon: '●', capability: 'approximate', note: 'Starts together — may drift slightly' },
-  { id: 'applemusic', name: 'Apple Music', icon: '◆', capability: 'approximate', note: 'Starts together — may drift slightly' },
-  { id: 'tidal', name: 'Tidal', icon: '≈', capability: 'approximate', note: 'Starts together — may drift slightly' },
-  { id: 'deezer', name: 'Deezer', icon: '▤', capability: 'approximate', note: 'Starts together — may drift slightly' },
-  // One sentence for all eight, because the two facts a person needs before
-  // pasting are the same on every one of them: it plays through the extension,
-  // and nobody is sharing a login. Netflix used to be the only entry that said
-  // the second half.
-  { id: 'netflix', name: 'Netflix', icon: 'Ⓝ', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'primevideo', name: 'Prime Video', icon: 'Ⓟ', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'disneyplus', name: 'Disney+', icon: 'Ⓓ', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'max', name: 'Max', icon: 'Ⓜ', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'hulu', name: 'Hulu', icon: 'Ⓗ', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'paramountplus', name: 'Paramount+', icon: '⛰', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'peacock', name: 'Peacock', icon: '🦚', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'crunchyroll', name: 'Crunchyroll', icon: 'Ⓒ', capability: 'extension', note: EXTENSION_NOTE },
-  { id: 'direct', name: 'Direct link or upload', icon: '🔗', capability: 'full-sync', note: 'Plays in sync for everyone' },
-  // The fallback every unrecognised host lands on. `name` is a placeholder:
-  // parseProviderUrl swaps in the actual host, the way the extension's
-  // UNKNOWN_URL does, so the row names the site instead of a category.
+  // One sentence for all eight extension-tier services, because the two facts
+  // a person needs before pasting are the same on every one of them: it plays
+  // through the extension, and nobody is sharing a login. The shared registry
+  // keeps the extension popup's shorter per-site notes; this app overrides.
+  ...REGISTRY.map(({ id, name, icon, capability, note }) => ({
+    id,
+    name,
+    icon,
+    capability,
+    note: capability === 'extension' ? EXTENSION_NOTE : note,
+  })),
+  // The fallback every unrecognised host lands on — this app's own row, the
+  // web-side mirror of the shared registry's UNKNOWN. `name` is a
+  // placeholder: parseProviderUrl swaps in the actual host, so the row names
+  // the site instead of a category.
   { id: 'generic', name: 'Web page', icon: '🌐', capability: 'generic', note: 'Everyone with the Gather browser extension plays it on their own screen — others just see the link' },
 ] as const;
 
@@ -169,26 +163,17 @@ export function parseProviderUrl(raw: string): ParsedProviderUrl | null {
   // DRM tier — recognized, never embedded, and queued like any other page. No
   // embed and no capture exist for these, so the room carries the LINK and
   // each viewer's extension drives the site's own player (its driver.ts keys
-  // `page:${url}`, and its providers.ts classifies the same eight hosts).
-  // Matching a name here is therefore a BETTER row, not a gate: keeping the
-  // provider identity is what makes it render as Netflix instead of
-  // netflix.com, and the tier is what makes the UI say an extension is needed.
-  const drmHosts: Record<string, string> = {
-    'netflix.com': 'netflix',
-    'primevideo.com': 'primevideo',
-    'disneyplus.com': 'disneyplus',
-    'max.com': 'max',
-    'hulu.com': 'hulu',
-    'paramountplus.com': 'paramountplus',
-    'peacocktv.com': 'peacock',
-    'crunchyroll.com': 'crunchyroll',
-  };
-  const drmId = Object.entries(drmHosts).find(([h]) => host === h || host.endsWith(`.${h}`))?.[1];
-  if (drmId !== undefined) {
+  // `page:${url}`). Which hosts are extension-tier is the shared registry's
+  // knowledge now — no hand-kept host map to drift. Matching a name here is a
+  // BETTER row, not a gate: keeping the provider identity is what makes it
+  // render as Netflix instead of netflix.com, and the tier is what makes the
+  // UI say an extension is needed.
+  const registryMatch = providerForHost(host);
+  if (registryMatch.capability === 'extension') {
     // Same https rule as the generic page branch below, stated here because a
     // page ref reaches this return without passing that one.
     if (!secure) return null;
-    const drm = found(drmId, { kind: 'page', url });
+    const drm = found(registryMatch.id, { kind: 'page', url });
     return { ...drm, titleHint: drm.provider.name };
   }
 

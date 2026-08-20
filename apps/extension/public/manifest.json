@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gather — Watch Together",
-  "version": "0.1.0",
-  "description": "Watch and listen together in sync on any site — everyone plays their own copy, signed in to their own account. Or share a tab, a window or your screen with the room.",
+  "version": "1.0.0",
+  "description": "Watch together in sync on any site — everyone plays their own copy on their own account. Share a tab, a window or your screen.",
   "permissions": [
     "tabCapture",
     "desktopCapture",
@@ -12,20 +12,30 @@
     "scripting",
     "alarms"
   ],
-  "host_permissions": ["<all_urls>"],
+  "optional_host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*",
+        "https://gather.watch/*",
+        "https://www.gather.watch/*",
+        "https://app.gather.watch/*"
+      ],
       "js": ["content.js"],
-      "run_at": "document_idle",
-      "all_frames": true,
-      "match_about_blank": true
+      "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Gather"
+    "default_title": "Gather",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
   },
   "externally_connectable": {
     "matches": [
@@ -36,5 +46,10 @@
       "https://app.gather.watch/*"
     ]
   },
-  "icons": {}
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  }
 }

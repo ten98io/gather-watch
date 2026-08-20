@@ -12,12 +12,23 @@
  *
  * It is also COMMON now rather than rare: protected rows (Netflix, Disney+)
  * became queueable, so this is what every viewer without the extension sees for
- * one. The three things it has to settle are asserted below — what the item is,
- * that each person plays their own copy from their own account, and how to get
- * the extension when there is honestly somewhere to send them.
+ * one. The things it has to settle are asserted below — what the item is, that
+ * each person plays their own copy from their own account, how to get the
+ * extension (there is ALWAYS somewhere honest to send them now: the app's own
+ * /extension page, docs/FEATURE_PLAN.md §9 amendments), and that the install
+ * funnel — <ExtensionGate> — mounts here, in this one branch, and nowhere
+ * else.
+ *
+ * The driver hook is stood in for (same technique as
+ * stage-driven-transport.test.ts) because a static server render can only ever
+ * show the `detecting` snapshot: the phases the funnel exists for — absent,
+ * ready — settle asynchronously, which a `renderToStaticMarkup` pass cannot
+ * wait for. The default the mock answers is exactly the real hook's server
+ * snapshot, so every case that does not touch `ext` renders what SSR renders.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MediaRef } from '@gather/contracts';
+import type { ExtensionDriverState } from '@/lib/player/extension-driver';
 import {
   h,
   makeMember,
@@ -27,10 +38,40 @@ import {
   renderInRoom,
 } from './helpers/room-render';
 
+/** The driver's answer, settable per test. `checking: true` beside the
+ *  detecting phase is what the real store's SERVER_SNAPSHOT carries. */
+const ext = vi.hoisted(() => ({
+  state: { phase: 'detecting' } as ExtensionDriverState,
+  checking: true,
+}));
+
+vi.mock('@/lib/player/extension-driver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/player/extension-driver')>();
+  return {
+    ...actual,
+    useExtensionDriver: () => ({
+      state: ext.state,
+      checking: ext.checking,
+      ready: ext.state.phase === 'ready',
+      driving: ext.state.phase === 'ready' && ext.state.driving,
+      refresh: () => undefined,
+      supports: () => false,
+      handoff: () => Promise.resolve({ ok: true as const }),
+      sendIntent: () => Promise.resolve({ ok: true as const }),
+      release: () => Promise.resolve({ ok: true as const }),
+    }),
+  };
+});
+
 const { StagePane } = await import('@/components/stage/StagePane');
 
 const PAGE: MediaRef = { kind: 'page', url: 'https://films.example/the-quiet-hour' };
 const YT: MediaRef = { kind: 'youtube', videoId: 'dQw4w9WgXcQ' };
+
+afterEach(() => {
+  ext.state = { phase: 'detecting' };
+  ext.checking = true;
+});
 
 function renderPage(mediaRef: MediaRef): string {
   const room = makeRoom('watch');
@@ -41,6 +82,34 @@ function renderPage(mediaRef: MediaRef): string {
     { playback: playbackFor(mediaRef, 0), queue: { items, version: 1 } },
     h(StagePane, { roomId: room.id }),
   );
+}
+
+/** The absent-extension phase, as the real store reports it on desktop Chrome
+ *  with nothing installed and no store listing configured. */
+function notInstalled(): ExtensionDriverState {
+  return {
+    phase: 'unavailable',
+    reason: 'not-installed',
+    message: 'Gather plays through its browser extension — add it to watch together.',
+    installUrl: '/extension',
+    canInstall: true,
+  };
+}
+
+function ready(): ExtensionDriverState {
+  return {
+    phase: 'ready',
+    extensionVersion: '0.1.0',
+    protocolVersion: 1,
+    capabilities: ['handoff'],
+    driving: false,
+    connected: false,
+    roomId: null,
+    roomName: null,
+    provider: null,
+    hasMedia: false,
+    notice: null,
+  };
 }
 
 describe('the stage explains a page item it cannot play', () => {
@@ -83,19 +152,34 @@ describe('the stage explains a page item it cannot play', () => {
   });
 
   /**
-   * `extensionInstallUrl()` returns null when this build has no store listing,
-   * and the detecting phase (which is what a server render is) has none either.
-   * An "Add the extension" button that goes nowhere is worse than no button, so
-   * the offer is withheld — and the action that DOES exist inherits the
-   * region's one gradient rather than leaving the surface with no primary.
+   * `extensionInstallUrl()` used to return null in an unconfigured build and
+   * the button was withheld — an offer the build could not honour. That state
+   * is unreachable now: the function bottoms out at the app's own /extension
+   * page, which ships with the app, so the button always has somewhere honest
+   * to go.
    */
-  it('does not offer an install it cannot honour, and promotes the action that works', () => {
+  it('always offers the install, at the /extension page when nothing is configured', () => {
     const html = renderPage(PAGE);
-    expect(html).not.toContain('Add the extension');
-    expect(html).toContain('aurora-gradient');
-    // One gradient in the region (§2). The install link and this one are the
-    // only two candidates, and exactly one of them is ever rendered.
+    expect(html).toContain('Add the extension');
+    expect(html).toContain('href="/extension"');
+    // Still exactly one gradient in the region (§2): the install action is the
+    // primary, "Open the link" steps down to secondary beside it, and the gate
+    // below offers no action while detection runs.
     expect(html.match(/aurora-gradient/g)).toHaveLength(1);
+  });
+
+  it('lets a configured install URL win over the /extension fallback', () => {
+    const key = 'NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL';
+    const previous = process.env[key];
+    process.env[key] = 'https://store.example/gather';
+    try {
+      const html = renderPage(PAGE);
+      expect(html).toContain('href="https://store.example/gather"');
+      expect(html).not.toContain('href="/extension"');
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
   });
 
   it('does not claim the room is broken, and does not pretend to be a player', () => {
@@ -112,5 +196,54 @@ describe('the stage explains a page item it cannot play', () => {
     const html = renderPage(YT);
     expect(html).not.toContain('This is a link to a page');
     expect(html).toContain('Shared video');
+  });
+});
+
+/**
+ * The install funnel itself. <ExtensionGate> was built for exactly this
+ * screen and then never mounted anywhere; the page-kind branch is the ONE
+ * honest place it can live before WEB_SLIMMING step 4 executes — every other
+ * media kind still plays through this page's own adapters, so a gate anywhere
+ * wider would block playback that works.
+ */
+describe('the install funnel mounts here, and only here', () => {
+  it('shows the gate while detection is still running', () => {
+    const html = renderPage(PAGE);
+    expect(html).toContain('Looking for the Gather extension');
+  });
+
+  it('offers the gate’s install action once the extension is known to be absent', () => {
+    ext.state = notInstalled();
+    ext.checking = false;
+    const html = renderPage(PAGE);
+    expect(html).toContain('Add the Gather extension to watch together');
+    expect(html).toContain('href="/extension"');
+    // The poster hands the install conversation to the gate rather than
+    // repeating it: one offer, one gradient in the region (DESIGN.md §2).
+    // "Open the link" stays on the poster, as the secondary it was.
+    expect(html.match(/aurora-gradient/g)).toHaveLength(1);
+    expect(html.match(/Add the extension/g)).toHaveLength(1);
+    expect(html).toContain('Open the link');
+  });
+
+  it('withdraws the gate once the driver is ready', () => {
+    ext.state = ready();
+    ext.checking = false;
+    const html = renderPage(PAGE);
+    expect(html).not.toContain('Looking for the Gather extension');
+    expect(html).not.toContain('Add the Gather extension to watch together');
+    // What remains is the poster’s own sentence for this state.
+    expect(html).toContain('You already have the extension');
+  });
+
+  it('never gates a kind the web still plays itself', () => {
+    const html = renderPage(YT);
+    expect(html).not.toContain('Looking for the Gather extension');
+    expect(html).not.toContain('Add the Gather extension');
+
+    ext.state = notInstalled();
+    ext.checking = false;
+    const absent = renderPage(YT);
+    expect(absent).not.toContain('Add the Gather extension');
   });
 });

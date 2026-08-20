@@ -22,18 +22,34 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
  * real player does not have fails here, not in Chrome.
  */
 const player = {
-  /** In order, as it reached the element: 'seek:<ms>' | 'rate:<n>' | 'play' | 'pause'. */
+  /** In order, as it reached the element: 'seek:<ms>' | 'rate:<n>' | 'play' |
+   *  'pause' | 'volume:<v>' | 'muted:<bool>'. */
   touched: [] as string[],
   positionMs: 600_000,
   rate: 1,
   paused: false,
+  volume: 1,
+  muted: false,
 };
 
 const element = {
   tagName: 'VIDEO',
   isConnected: true,
   readyState: 4,
-  muted: false,
+  get muted(): boolean {
+    return player.muted;
+  },
+  set muted(value: boolean) {
+    player.muted = value;
+    player.touched.push(`muted:${String(value)}`);
+  },
+  get volume(): number {
+    return player.volume;
+  },
+  set volume(value: number) {
+    player.volume = value;
+    player.touched.push(`volume:${value}`);
+  },
   duration: 5400,
   currentSrc: 'https://cdn.example.com/feature.m3u8',
   src: '',
@@ -189,6 +205,8 @@ beforeEach(() => {
   player.positionMs = 600_000;
   player.rate = 1;
   player.paused = false;
+  player.volume = 1;
+  player.muted = false;
   deliver({ kind: 'frameRole', role: 'driver' });
 });
 
@@ -359,6 +377,83 @@ describe('drive — a block from a worker we cannot trust', () => {
       expect(player.touched).toEqual(['seek:604000']);
     });
   }
+});
+
+/**
+ * The viewer's own volume lever, arriving as `setAudio` from the worker (the
+ * overlay pressed it). LOCAL state with the same licence as 'drive': only the
+ * elected, driven frame writes the element — and unlike 'drive', the message
+ * is not a grant, so it must never set `driven` on its own.
+ */
+describe('setAudio — the local volume lever', () => {
+  it('writes volume and mute on the driven element, and nothing else', () => {
+    deliver(driveMessage(600_000, block({ reason: 'idle' }))); // driven
+    player.touched.length = 0;
+
+    deliver({ kind: 'setAudio', volume: 0.3 });
+    deliver({ kind: 'setAudio', muted: true });
+
+    expect(player.touched).toEqual(['volume:0.3', 'muted:true']);
+  });
+
+  it('ignores junk fields instead of writing something the user never asked', () => {
+    deliver(driveMessage(600_000, block({ reason: 'idle' })));
+    player.touched.length = 0;
+
+    deliver({ kind: 'setAudio', volume: 'loud' });
+    deliver({ kind: 'setAudio', volume: Number.NaN });
+    deliver({ kind: 'setAudio', muted: 'yes' });
+    deliver({ kind: 'setAudio' });
+
+    expect(player.touched).toEqual([]);
+  });
+
+  it('is a no-op at a frame the election never granted', () => {
+    deliver({ kind: 'frameRole', role: 'idle' });
+
+    deliver({ kind: 'setAudio', volume: 0.3, muted: true });
+
+    expect(player.touched).toEqual([]);
+  });
+
+  it('is a no-op at the driver frame while nothing has driven it', () => {
+    // Role granted (beforeEach) but no drive command since: driven is false,
+    // and a setAudio must not become the thing that starts driving.
+    deliver({ kind: 'setAudio', volume: 0.3 });
+
+    expect(player.touched).toEqual([]);
+  });
+
+  it('is a no-op after driveOff released the element', () => {
+    deliver(driveMessage(600_000, block({ reason: 'idle' })));
+    deliver({ kind: 'driveOff' });
+    player.touched.length = 0;
+
+    deliver({ kind: 'setAudio', volume: 0.3 });
+
+    expect(player.touched).toEqual([]);
+  });
+});
+
+/** The 1 Hz heartbeat now carries the audio half of the element's state —
+ *  for the overlay's own row, never for the room. */
+describe('telemetry carries volume and muted', () => {
+  it("reports the element's volume and mute with the rest of the reading", () => {
+    player.volume = 0.4;
+    player.muted = true;
+    toWorker.length = 0;
+
+    vi.advanceTimersByTime(1000);
+
+    const telemetry = toWorker.find((m) => m['kind'] === 'telemetry');
+    expect(telemetry).toMatchObject({
+      kind: 'telemetry',
+      positionMs: 600_000,
+      playing: true,
+      volume: 0.4,
+      muted: true,
+    });
+  });
 });
 
 describe('drive — release', () => {

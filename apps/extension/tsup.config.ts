@@ -6,6 +6,7 @@ import { defineConfig } from 'tsup';
 import {
   formatBuildBanner,
   formatBuildInfo,
+  manifestShipErrors,
   originsMissingFromManifest,
   resolveBuildTarget,
   stampManifest,
@@ -46,6 +47,17 @@ if (uncovered.length > 0) {
       'Chrome blocks those messages before any code runs — add the matching ' +
       'pattern(s) to the manifest, or drop the origin(s).',
   );
+}
+
+// The same bar for the manifest itself: icons that exist, a content-script
+// entry that reaches every Gather origin the BUILD really allows (the
+// announce — checked against target.effectiveWebOrigins, the same list the
+// externally_connectable check above uses, because a custom-origins build has
+// replaced the defaults), a real version, and a description under Chrome's
+// cap. All of it fails silently at install time, so it fails loudly here.
+const shipErrors = manifestShipErrors(manifest, readdirSync('public'), target.effectiveWebOrigins);
+if (shipErrors.length > 0) {
+  throw new Error(shipErrors.join('\n'));
 }
 
 export default defineConfig(() => {

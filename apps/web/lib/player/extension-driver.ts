@@ -115,18 +115,26 @@ export function describeExtensionError(error: BridgeError, fallback = GENERIC_FA
 
 const CHROME_WEB_STORE_DETAIL = 'https://chromewebstore.google.com/detail/';
 
+/** The in-app page that explains the extension and how to get it. It ships
+ *  with the app, so it exists in every build — which is what lets the funnel
+ *  always have somewhere honest to send people. */
+export const EXTENSION_DOCS_PATH = '/extension';
+
 /**
- * Where the install funnel should send the user, or null when this build has
- * no id and no URL configured — render nothing rather than a dead link.
+ * Where the install funnel should send the user. A configured URL wins, then
+ * the Web Store listing derived from a configured id, then this app's own
+ * `/extension` page. The dead-link rule this function used to enforce by
+ * returning null is preserved by the fallback instead: `/extension` ships
+ * with the app, so the answer is never a link that goes nowhere.
  *
  * Both lookups are literal `process.env.NEXT_PUBLIC_*` member accesses because
  * that is the only form Next inlines at build time.
  */
-export function extensionInstallUrl(): string | null {
+export function extensionInstallUrl(): string {
   const configured = process.env.NEXT_PUBLIC_GATHER_EXTENSION_INSTALL_URL;
   if (typeof configured === 'string' && configured.trim().length > 0) return configured.trim();
   const id = parseExtensionIds(process.env.NEXT_PUBLIC_GATHER_EXTENSION_ID)[0];
-  return id === undefined ? null : `${CHROME_WEB_STORE_DETAIL}${id}`;
+  return id === undefined ? EXTENSION_DOCS_PATH : `${CHROME_WEB_STORE_DETAIL}${id}`;
 }
 
 /* ═══════════════════════ can this browser install it? ════════════════════ */
@@ -181,6 +189,26 @@ function brandsSayChromium(raw: unknown): boolean {
  * by construction — but it is approximate about the browser, which is the
  * question, instead of exact about something else.
  */
+/**
+ * A phone or tablet — the platform where no extension surface exists at all
+ * and the funnel's answer is the app, never an install link. Distinct from
+ * `canInstallExtension`, which also says no for desktop Safari/Firefox: those
+ * still get told what the extension is; a handheld gets sent elsewhere.
+ *
+ * False where there is no window (SSR): with no browser to sniff, the server
+ * renders the desktop shape and hydration corrects it — the same order every
+ * other client-only answer in this module settles in.
+ */
+export function isHandheldBrowser(): boolean {
+  const nav = browserNavigator();
+  if (nav === null) return false;
+  const rawData = nav['userAgentData'];
+  const data = isRecord(rawData) ? rawData : null;
+  if (data?.['mobile'] === true) return true;
+  const ua = typeof nav['userAgent'] === 'string' ? nav['userAgent'] : '';
+  return HANDHELD_UA.test(ua);
+}
+
 export function canInstallExtension(): boolean {
   if (isExtensionChannelSupported()) return true;
   const nav = browserNavigator();

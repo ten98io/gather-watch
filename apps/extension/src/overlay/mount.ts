@@ -84,6 +84,22 @@ export interface OverlayHandle {
 const HANDLE_NAME = 'Gather';
 const SEND_FAILED = 'That message did not send. Try again.';
 const SKIP_FAILED = 'Couldn’t skip. Try again.';
+const AUDIO_FAILED = 'Couldn’t change the volume. Try again.';
+/**
+ * A drag of the volume slider is many 'input' events and one intent, so the
+ * send trails the last of them by this much. Long enough to coalesce a
+ * gesture, short enough that the player answers while the hand is still on
+ * the slider.
+ */
+const VOLUME_SEND_QUIET_MS = 250;
+/**
+ * After the user's own touch of the slider, how long a pushed room state may
+ * not move it. The push is a round trip through the worker and the element's
+ * next telemetry heartbeat, so inside this window an arriving value is the
+ * echo of an OLDER position — applying it would drag the slider backwards
+ * under the user's hand.
+ */
+const VOLUME_LOCAL_HOLD_MS = 1000;
 const CHAT_PLACEHOLDER = 'Message the room';
 const OFFLINE_PLACEHOLDER = 'You can chat once you are back in the room';
 /** Distance from the end of the chat that still counts as "reading the latest". */
@@ -130,6 +146,10 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   /** A skip is in flight. One press, one `sync.advance` — the room's own
    *  compare-and-set would drop the second, but the button should not send it. */
   let skipping = false;
+  /** The trailing send of a volume gesture; see {@link VOLUME_SEND_QUIET_MS}. */
+  let volDebounce: ReturnType<typeof setTimeout> | null = null;
+  /** When the user last moved the slider themselves; see VOLUME_LOCAL_HOLD_MS. */
+  let lastVolInputAt = 0;
   /** The overlay has been told the room's real state at least once. */
   let stateSeen = false;
   /** The host is in the page's top layer, above whatever went fullscreen. */
@@ -227,6 +247,25 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
   nowText.appendChild(nowTitle);
   nowText.appendChild(nowEl);
   nowText.appendChild(nextEl);
+  // The viewer's OWN volume for the player under this panel. Local by
+  // definition — it goes to the driven element and never to the room — and
+  // drawn only once telemetry has said where the lever actually sits.
+  const audioRow = make('div', 'audio');
+  audioRow.hidden = true;
+  const muteBtn = doc.createElement('button');
+  muteBtn.className = 'mute';
+  muteBtn.setAttribute('type', 'button');
+  muteBtn.textContent = 'Mute';
+  const volSlider = doc.createElement('input');
+  volSlider.className = 'vol';
+  volSlider.setAttribute('type', 'range');
+  volSlider.setAttribute('min', '0');
+  volSlider.setAttribute('max', '100');
+  volSlider.setAttribute('step', '1');
+  volSlider.setAttribute('aria-label', 'Volume — only changes what you hear');
+  audioRow.appendChild(muteBtn);
+  audioRow.appendChild(volSlider);
+  nowText.appendChild(audioRow);
   const skipBtn = doc.createElement('button');
   skipBtn.className = 'skip';
   skipBtn.setAttribute('type', 'button');
@@ -384,6 +423,25 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     setLine(nextEl, next.upNextLine);
     skipBtn.hidden = !next.canSkip;
     skipBtn.disabled = skipping;
+    syncAudio(next);
+  };
+
+  const syncAudio = (next: RoomView): void => {
+    const audio = next.audio;
+    audioRow.hidden = audio === null;
+    if (audio === null) return;
+    setText(muteBtn, audio.muted ? 'Unmute' : 'Mute');
+    muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+    // The pushed value is a round trip old (worker + the element's telemetry
+    // heartbeat), so while the user's hand is on the slider — focus, or a
+    // touch inside the hold window — an arriving value is the echo of where
+    // the slider WAS, and applying it would drag it back under their thumb.
+    const interacting =
+      shadow.activeElement === volSlider || Date.now() - lastVolInputAt < VOLUME_LOCAL_HOLD_MS;
+    if (!interacting) {
+      const pct = String(Math.round(audio.volume * 100));
+      if (volSlider.value !== pct) volSlider.value = pct;
+    }
   };
 
   const renderPeople = (next: RoomView): void => {
@@ -591,6 +649,40 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
 
   boundary.on(sendBtn, 'click', () => submit());
   boundary.on(skipBtn, 'click', () => skip());
+
+  /* ── the volume lever: local, debounced, and never fought ── */
+
+  const sendVolume = (): void => {
+    volDebounce = null;
+    if (destroyed) return;
+    const pct = Number(volSlider.value);
+    if (!Number.isFinite(pct)) return;
+    void opts
+      .send({ kind: 'overlay:volume', volume: Math.min(1, Math.max(0, pct / 100)) })
+      .catch(() => {
+        // A real outcome, said in words — the slider itself snaps back on the
+        // next pushed state, which is the player's honest answer.
+        if (!destroyed) setNotice(AUDIO_FAILED);
+      });
+  };
+
+  boundary.on(volSlider, 'input', () => {
+    lastVolInputAt = Date.now();
+    // A drag is many 'input' events and one intent: only the trailing edge of
+    // the gesture goes to the worker.
+    if (volDebounce !== null) clearTimeout(volDebounce);
+    volDebounce = setTimeout(sendVolume, VOLUME_SEND_QUIET_MS);
+  });
+
+  boundary.on(muteBtn, 'click', () => {
+    const audio = current.audio;
+    if (audio === null) return;
+    // The label already shows the state the toggle flips; the flip itself is
+    // confirmed by the next pushed state, never assumed here.
+    void opts.send({ kind: 'overlay:mute', muted: !audio.muted }).catch(() => {
+      if (!destroyed) setNotice(AUDIO_FAILED);
+    });
+  });
   boundary.on(hideBtn, 'click', () => {
     userToggled = true;
     setCollapsed(true, { moveFocus: true, save: true });
@@ -737,6 +829,10 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     destroy(): void {
       if (destroyed) return;
       destroyed = true;
+      if (volDebounce !== null) {
+        clearTimeout(volDebounce);
+        volDebounce = null;
+      }
       endDrag();
       boundary.destroy();
       for (const off of disposers.splice(0)) off();

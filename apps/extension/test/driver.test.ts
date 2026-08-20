@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ElasticDriver,
   INTENT_ECHO_WINDOW_MS,
+  INTERSTITIAL_MAX_DURATION_MS,
+  INTERSTITIAL_PROJECTION_SLACK_MS,
   MediaEndDetector,
   MIN_SEEK_INTERVAL_MS,
   OBSERVER_CAPABILITIES,
@@ -10,6 +12,7 @@ import {
   TELEMETRY_STALE_MS,
   appliesVerbatim,
   elasticDecision,
+  isInterstitialSource,
   mediaKeyOf,
   parseElasticDirective,
   profileForContent,
@@ -259,7 +262,7 @@ describe('ElasticDriver — a viewer 8 s behind', () => {
     // 8 s is four times the legacy hard-seek threshold. This is the behaviour
     // docs/EXTENSION_FIRST.md rejects, kept here as the contrast.
     const legacy = decideDrive(
-      { positionMs: 592_000, durationMs: 5_400_000, playing: true, rate: 1 },
+      { positionMs: 592_000, durationMs: 5_400_000, playing: true, rate: 1, volume: 1, muted: false },
       600_000,
       { playing: true, rate: 1 },
       LEGACY_BANDS,
@@ -780,7 +783,7 @@ describe('ElasticDriver — the wire contract with the content script', () => {
       // What the element actually is at the moment the command lands.
       position = sample.positionMs + (sample.playing ? 400 * sample.rate : 0);
       const legacy = decideDrive(
-        { positionMs: position, durationMs: 0, playing: true, rate: sample.rate },
+        { positionMs: position, durationMs: 0, playing: true, rate: sample.rate, volume: 1, muted: false },
         cmd.wirePositionMs,
         { playing: true, rate: cmd.setRate ?? 1 },
         LEGACY_BANDS,
@@ -1057,5 +1060,43 @@ describe('MediaEndDetector', () => {
     expect(detector.observe(end())).not.toBeNull();
     detector.reset();
     expect(detector.observe(end())).not.toBeNull();
+  });
+});
+
+/* ── an ad in the driven element is not the room's item ── */
+
+/**
+ * The predicate behind the worker's three vetoes (background.ts): an ad
+ * swapped into the driven element must not name the film's queue row in
+ * `sync.advance`, must not fill the film's fill-once duration row, and must
+ * not be hard-seeked to its own end by the drive loop — which is what
+ * manufactured its 'ended' in the first place.
+ */
+describe('isInterstitialSource', () => {
+  it('vetoes an ad-length source while the room is deep in a longer item', () => {
+    // A 15 s preroll under a room ten minutes into a film.
+    expect(isInterstitialSource(15_000, 600_000)).toBe(true);
+  });
+
+  it('passes a genuine short item near its own end — projection ≈ duration', () => {
+    // A 90 s clip with the room sitting at its end: well under the slack.
+    expect(isInterstitialSource(90_000, 90_000)).toBe(false);
+    expect(isInterstitialSource(90_000, 100_000)).toBe(false);
+  });
+
+  it('never vetoes an unknown duration — 0 means pre-metadata or a live stream', () => {
+    expect(isInterstitialSource(0, 10_000_000)).toBe(false);
+    expect(isInterstitialSource(-1, 10_000_000)).toBe(false);
+  });
+
+  it('never vetoes a long item, however far the projection has run', () => {
+    expect(isInterstitialSource(INTERSTITIAL_MAX_DURATION_MS + 1, 100_000_000)).toBe(false);
+    expect(isInterstitialSource(5_400_000, 99_000_000)).toBe(false);
+  });
+
+  it('trips only past duration + slack, at the documented constants', () => {
+    const edge = INTERSTITIAL_MAX_DURATION_MS + INTERSTITIAL_PROJECTION_SLACK_MS;
+    expect(isInterstitialSource(INTERSTITIAL_MAX_DURATION_MS, edge)).toBe(false);
+    expect(isInterstitialSource(INTERSTITIAL_MAX_DURATION_MS, edge + 1)).toBe(true);
   });
 });

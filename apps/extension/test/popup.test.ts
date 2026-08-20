@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { providerForUrl } from '../src/providers';
+import { providerForUrl, providerGrantPatterns } from '../src/providers';
 import type { TabProvider } from '../src/providers';
 
 /**
@@ -65,6 +65,10 @@ interface Status {
   telemetry: null;
   provider: TabProvider | null;
   sharing: boolean;
+  /** The popup's tab is the driven tab. Optional — older backgrounds omit it. */
+  drivenTab?: boolean;
+  /** …and a frame on it is elected and actually driven. Optional likewise. */
+  driving?: boolean;
   /** Why the ROOM ended the last share; absent when nothing ended that way. */
   shareEnded?: string;
 }
@@ -81,9 +85,27 @@ interface Worker {
 let elements = new Map<string, FakeEl>();
 let worker: Worker;
 
+/** The tab the popup is drawn over; null = the browser has no active tab. */
+let activeTab: { id: number; url: string } | null;
+
+/** chrome.permissions, recorded: what was asked for, and what Chrome said. */
+let permissions: {
+  /** Every origins list handed to permissions.request, in order. */
+  requested: string[][];
+  /** What the next request answers — false is the user declining. */
+  requestAnswer: boolean;
+  /** What contains() answers about any origins list. */
+  containsAnswer: boolean;
+};
+
+/** Everything the popup did that has an order worth asserting: 'request' for
+ *  a permission ask, 'msg:<kind>' for a worker message. */
+let calls: string[] = [];
+
 /** The worker's half of the internal channel, answering in its envelope. */
 async function sendMessage(msg: Record<string, unknown>): Promise<Envelope> {
   worker.sent.push(msg);
+  calls.push(`msg:${String(msg['kind'] ?? '')}`);
   switch (msg['kind']) {
     case 'popup:status':
       return { ok: true, value: { ...worker.status } };
@@ -148,12 +170,30 @@ beforeEach(() => {
       telemetry: null,
       provider: null,
       sharing: false,
+      // A healthy driven tab, so only the tests about the unhealthy states
+      // have to say anything about driving.
+      drivenTab: true,
+      driving: true,
     },
     shareAnswer: SHARED_WINDOW,
     castAnswer: { clicked: false, reason: '' },
   };
+  activeTab = { id: 7, url: 'https://example.com/watch' };
+  permissions = { requested: [], requestAnswer: true, containsAnswer: false };
+  calls = [];
   globals.document = { getElementById: (id: string): FakeEl | null => elements.get(id) ?? null };
-  globals.chrome = { runtime: { sendMessage } };
+  globals.chrome = {
+    runtime: { sendMessage },
+    tabs: { query: async () => (activeTab === null ? [] : [activeTab]) },
+    permissions: {
+      request: async (opts: { origins?: string[] }) => {
+        permissions.requested.push([...(opts.origins ?? [])]);
+        calls.push('request');
+        return permissions.requestAnswer;
+      },
+      contains: async () => permissions.containsAnswer,
+    },
+  };
 });
 
 afterEach(() => {
@@ -430,6 +470,182 @@ describe('a share the room ended', () => {
 
     expect(el('share-error').hidden).toBe(true);
     expect(el('share-error').textContent).toBe('');
+  });
+});
+
+/* ── connecting: the password, and the site grant the click carries ── */
+
+describe('connecting with a room code', () => {
+  it('sends the password only when one was typed', async () => {
+    await openPopup();
+    el('code').value = 'abcd-efgh-ijkl';
+    el('password').value = '  swordfish  ';
+    el('connect').click();
+    await settle();
+
+    const first = worker.sent.find((m) => m['kind'] === 'popup:connect');
+    expect(first?.['password']).toBe('swordfish');
+
+    worker.sent.length = 0;
+    el('password').value = '   ';
+    el('connect').click();
+    await settle();
+
+    const second = worker.sent.find((m) => m['kind'] === 'popup:connect');
+    expect(second).toBeDefined();
+    // The KEY is absent, not empty — absence is what "no password" is.
+    expect('password' in (second ?? {})).toBe(false);
+  });
+
+  it('asks for the site inside the click, before the join is sent', async () => {
+    await openPopup();
+    calls.length = 0;
+    el('code').value = 'abcd-efgh-ijkl';
+    el('connect').click();
+    await settle();
+
+    // The active tab was read when the popup opened, so the click had its
+    // pattern list ready — and asked before anything went to the worker.
+    expect(permissions.requested).toEqual([['https://example.com/*']]);
+    expect(calls.indexOf('request')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('request')).toBeLessThan(calls.indexOf('msg:popup:connect'));
+  });
+
+  it('still connects when the grant is declined — activeTab covers the tab', async () => {
+    permissions.requestAnswer = false;
+    await openPopup();
+    el('code').value = 'abcd-efgh-ijkl';
+    el('connect').click();
+    await settle();
+
+    expect(worker.sent.filter((m) => m['kind'] === 'popup:connect')).toHaveLength(1);
+    expect(el('error').hidden).toBe(true);
+  });
+});
+
+/* ── the live card's site-access levers ── */
+
+describe('the live card offers to make site access stick', () => {
+  it('says how to keep Gather on an ungranted site, and asks when pressed', async () => {
+    permissions.containsAnswer = false;
+    await openPopup();
+
+    expect(el('site-keep').hidden).toBe(false);
+    expect(el('site-access-note').hidden).toBe(false);
+    expect(el('site-access-note').textContent).toBe(
+      'Gather follows this tab only while you keep it connected — allow the site to make it stick.',
+    );
+
+    el('site-keep').click();
+    await settle();
+
+    expect(permissions.requested).toContainEqual(['https://example.com/*']);
+  });
+
+  it('goes quiet once the site is granted', async () => {
+    permissions.containsAnswer = true;
+    await openPopup();
+
+    expect(el('site-keep').hidden).toBe(true);
+    expect(el('site-access-note').hidden).toBe(true);
+    expect(el('site-access-note').textContent).toBe('');
+  });
+
+  it('requests every supported site from the all-sites button', async () => {
+    await openPopup();
+
+    el('site-all').click();
+    await settle();
+
+    expect(permissions.requested).toContainEqual(providerGrantPatterns());
+  });
+});
+
+/* ── 'Connected · playing' must not outrun the tab in front of the user ── */
+
+/**
+ * `connected`/`playing` are ROOM state; on an ungranted page whose player
+ * lives in a cross-origin iframe (or before any injection at all) the room is
+ * "playing" while this tab drives nothing. The worker now says so — status
+ * carries `drivenTab` + `driving` — and the provider line owns the sentence.
+ */
+describe('the popup says when no player has been found on the driven tab', () => {
+  it('appends the sentence to the provider line', async () => {
+    worker.status.provider = providerForUrl('https://example.com/watch');
+    worker.status.driving = false; // the driven tab, but nothing elected on it
+    await openPopup();
+
+    // The generic classifier names an unknown site by its hostname.
+    expect(el('provider').textContent).toBe(
+      'This tab: example.com — no player found on this tab yet',
+    );
+  });
+
+  it('stands alone when there is no provider line to append to', async () => {
+    worker.status.provider = null;
+    worker.status.driving = false;
+    await openPopup();
+
+    expect(el('provider').textContent).toBe('No player found on this tab yet');
+  });
+
+  it('says nothing while a frame is driven, or on a tab the room does not drive', async () => {
+    worker.status.provider = providerForUrl('https://example.com/watch');
+    await openPopup();
+    expect(el('provider').textContent).not.toContain('no player found');
+
+    worker.status = { ...worker.status, drivenTab: false, driving: false };
+    vi.advanceTimersByTime(2000);
+    await settle();
+    expect(el('provider').textContent).not.toContain('no player found');
+  });
+
+  it('puts nothing up for an older background that reports neither field', async () => {
+    worker.status.provider = providerForUrl('https://example.com/watch');
+    delete worker.status.drivenTab;
+    delete worker.status.driving;
+    await openPopup();
+
+    expect(el('provider').textContent).not.toContain('no player found');
+  });
+});
+
+/* ── an insecure site cannot be kept ── */
+
+/**
+ * siteAccess.ts refuses a standing grant for a plain-http page (a persistent
+ * http origin grant is a standing MITM door), so the popup must neither ask
+ * for one on connect nor dangle a keep button — and it owes the user the
+ * sentence, because to them the site looks exactly like one Gather could keep.
+ */
+describe('an insecure site cannot be kept', () => {
+  it('hides the keep button, explains, and requests nothing on connect', async () => {
+    activeTab = { id: 7, url: 'http://intranet.local/movie' };
+    await openPopup();
+
+    expect(el('site-keep').hidden).toBe(true);
+    expect(el('site-access-note').hidden).toBe(false);
+    expect(el('site-access-note').textContent).toBe(
+      'Gather follows this tab while it stays connected — an insecure site can’t be kept.',
+    );
+
+    el('code').value = 'abcd-efgh-ijkl';
+    el('connect').click();
+    await settle();
+
+    // The join still goes out — activeTab covers the tab while connected —
+    // but no permissions.request is made for an http origin.
+    expect(permissions.requested).toEqual([]);
+    expect(worker.sent.filter((m) => m['kind'] === 'popup:connect')).toHaveLength(1);
+  });
+
+  it('stays silent for a page with nothing grantable at all', async () => {
+    activeTab = { id: 7, url: 'chrome://extensions' };
+    await openPopup();
+
+    expect(el('site-keep').hidden).toBe(true);
+    expect(el('site-access-note').hidden).toBe(true);
+    expect(el('site-access-note').textContent).toBe('');
   });
 });
 

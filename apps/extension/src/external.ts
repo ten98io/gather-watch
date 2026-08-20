@@ -4,10 +4,12 @@
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * An externally-connectable extension is an attack surface: any page the
- * manifest lists can send it messages, and the extension runs with
- * `<all_urls>` host permissions. Everything below exists to make that
- * asymmetry safe. `protocol.ts` decides what is *well-formed*; this module
- * decides what is *allowed*.
+ * manifest lists can send it messages, and the extension can reach any site
+ * the user has granted it (optional host permissions — the install itself
+ * grants no host, but the granted set grows over time and the channel's
+ * power grows with it). Everything below exists to make that asymmetry
+ * safe. `protocol.ts` decides what is *well-formed*; this module decides
+ * what is *allowed*.
  *
  * ── Trust ──────────────────────────────────────────────────────────────────
  * Trusted (browser-populated, unforgeable by the page):

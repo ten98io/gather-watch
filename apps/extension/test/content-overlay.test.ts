@@ -324,7 +324,11 @@ describe('a frame that is not the top one', () => {
     const askedBefore = sentKinds('overlay:state').length;
 
     // A second copy of the script, this time somewhere other than the top.
+    // A real subframe is a different global scope, so its boot sentinel starts
+    // unset — the shared globalThis here is the harness's artifact, and the
+    // flag is cleared to reproduce the frame's actual starting state.
     vi.resetModules();
+    delete (globalThis as Record<string, unknown>)['__gatherContentBooted'];
     listeners.length = 0;
     win.top = { differentFrom: 'this one' };
     room = ROOM_STATE;

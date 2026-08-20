@@ -66,6 +66,13 @@ export interface OverlayRoomState {
   messagesAhead?: number;
   /** False while the room cannot accept a message. Defaults to "live means yes". */
   canSend?: boolean;
+  /**
+   * The driven player's volume/mute, as its last telemetry said. Per-viewer
+   * LOCAL state: it is this user's own lever, never room state, and it never
+   * leaves the machine. Null (or absent) while nothing has reported — the
+   * panel draws no lever for a player it has heard nothing from.
+   */
+  audio?: { volume: number; muted: boolean } | null;
 }
 
 /* ──────────────────── what the overlay asks the background ───────────────── */
@@ -81,6 +88,11 @@ export type OverlayOutbound =
   /** Move the room off the item it is on — the same `sync.advance` the worker
    *  sends when an item runs out of frames. */
   | { kind: 'overlay:skip' }
+  /** This viewer's OWN volume for the driven player, 0..1. LOCAL: the worker
+   *  routes it to the driven frame's element and never to the room. */
+  | { kind: 'overlay:volume'; volume: number }
+  /** The mute half of the same lever, under the same rule. */
+  | { kind: 'overlay:mute'; muted: boolean }
   | { kind: 'overlay:leave' }
   | { kind: 'overlay:open-app' };
 
@@ -219,6 +231,12 @@ export interface MessageView {
   mine: boolean;
 }
 
+/** The audio lever with every field decided. Volume is a clamped 0..1. */
+export interface AudioView {
+  volume: number;
+  muted: boolean;
+}
+
 /** Exactly what the panel renders. Nothing here needs interpreting. */
 export interface RoomView {
   connection: OverlayConnection;
@@ -235,6 +253,8 @@ export interface RoomView {
   upNextLine: string;
   /** Draw the skip control at all. Never true without something to skip. */
   canSkip: boolean;
+  /** The viewer's own volume/mute lever; null draws no lever at all. */
+  audio: AudioView | null;
 }
 
 const UNTITLED_ROOM = 'Your room';
@@ -250,6 +270,7 @@ export const EMPTY_VIEW: RoomView = {
   nowPlaying: '',
   upNextLine: '',
   canSkip: false,
+  audio: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -281,6 +302,18 @@ function readSync(raw: unknown): ElasticDriverState | null {
     stalled: raw['stalled'] === true,
     driftMs: finiteOr(raw['driftMs'], 0),
   };
+}
+
+/**
+ * The audio lever off the wire. A volume that is not a finite number is not a
+ * lever half-drawn — it is no lever: a slider with nowhere honest to sit lies
+ * about the player, so the whole row is withheld instead.
+ */
+function readAudio(raw: unknown): AudioView | null {
+  if (!isRecord(raw)) return null;
+  const volume = raw['volume'];
+  if (typeof volume !== 'number' || !Number.isFinite(volume)) return null;
+  return { volume: Math.min(1, Math.max(0, volume)), muted: raw['muted'] === true };
 }
 
 /**
@@ -439,5 +472,6 @@ export function normalizeRoomState(raw: unknown): RoomView {
     upNextLine:
       nowPlaying.length > 0 ? upNextLine(safeText(raw['upNext'], MAX_ITEM_TITLE, 'name')) : '',
     canSkip: nowPlaying.length > 0 && raw['canSkip'] === true,
+    audio: readAudio(raw['audio']),
   };
 }
