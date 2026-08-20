@@ -67,8 +67,18 @@ describe('PerfectNegotiator', () => {
     expect(bob.pc.signalingState).toBe('stable');
     expect(alice.pc.connectionState).toBe('connected');
     expect(bob.pc.connectionState).toBe('connected');
-    // The impolite side (bob) won the glare: its offer got alice's answer.
-    expect(bob.pc.remoteDescription?.sdp?.startsWith('answer:')).toBe(true);
+    // The impolite side (bob) won the glare — alice answered his offer — and
+    // then alice RE-OFFERED: her own offer was rolled back unapplied, so the
+    // browser's negotiation-needed check comes up true again on stable (the
+    // mock models this; Chrome does it for real). Bob answers that re-offer,
+    // which is why HIS final remote description is an offer while hers is the
+    // answer that completed the exchange. One glare answer each way, no more:
+    // the re-offer must converge, not echo.
+    expect(alice.pc.remoteDescription?.sdp?.startsWith('answer:')).toBe(true);
+    const toBob = router.sentEvents.filter((ev) => ev.payload.targetUserId === BOB);
+    const toAlice = router.sentEvents.filter((ev) => ev.payload.targetUserId === ALICE);
+    expect(toBob.filter((ev) => ev.type === 'webrtc.answer')).toHaveLength(1);
+    expect(toAlice.filter((ev) => ev.type === 'webrtc.answer')).toHaveLength(1);
     expect(alice.errors).toEqual([]);
     expect(bob.errors).toEqual([]);
   });

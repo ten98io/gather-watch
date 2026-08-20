@@ -227,7 +227,13 @@ export class MockDataChannel implements DataChannelLike {
   }
 }
 
-/** Sender mock recording parameter updates. */
+/** Sender mock recording parameter updates.
+ *
+ *  Fidelity contract (matches Chrome, and every quiet-wire assertion leans on
+ *  it): `replaceTrack` and `setParameters` NEVER fire negotiationneeded — only
+ *  addTrack/removeTrack/createDataChannel/restartIce on the pc do. A mock that
+ *  renegotiated on replaceTrack would hide the exact difference between
+ *  muting a sender and demolishing it. */
 export class MockRtpSender implements RtpSenderLike {
   track: MediaStreamTrackLike | null;
   appliedParameters: RtpParametersLike[] = [];
@@ -390,9 +396,15 @@ export class MockPeerConnection implements RtcPeerConnectionLike {
     if (description.type === 'offer') {
       if (this.signalingState === 'have-local-offer') {
         // Implicit rollback (spec): the polite side of perfect negotiation
-        // depends on this.
+        // depends on this. The rolled-back offer existed because something
+        // needed negotiating, and the rollback un-negotiates it — so a real
+        // browser's negotiation-needed check comes up true again on the next
+        // return to stable and re-fires. Chrome does exactly this; without it
+        // the mock silently loses every change glare rolls back, and a test
+        // can neither see the polite side's re-offer nor any storm it feeds.
         this.localDescription = null;
         this.signalingState = 'stable';
+        this.negotiationPendingStable = true;
       } else if (this.signalingState !== 'stable') {
         return Promise.reject(
           new Error(`InvalidStateError: remote offer in ${this.signalingState}`),
