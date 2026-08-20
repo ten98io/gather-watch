@@ -480,7 +480,7 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
               // floats in space" line. It is only affordable once there is
               // width to spend: below `xl` a 64px gutter comes straight out of
               // the picture. Theater drops the frame entirely.
-              theaterActive ? '' : 'gap-4 px-4 pb-4 xl:gap-section',
+              theaterActive ? '' : 'gap-4 px-4 pb-4 xl:gap-6',
             )}
           >
             <main
@@ -723,7 +723,7 @@ export function RoomShell({ roomId }: { roomId: RoomId }) {
             <Skeleton radius="ctl" className="h-7 w-56 md:h-8 md:w-64" />
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 gap-4 px-4 pb-4 xl:gap-section">
+        <div className="flex min-h-0 flex-1 gap-4 px-4 pb-4 xl:gap-6">
           <Skeleton radius="panel" className="min-w-0 flex-1" />
           <Skeleton radius="panel" className="hidden w-rail shrink-0 md:block" />
         </div>

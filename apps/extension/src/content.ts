@@ -216,6 +216,52 @@ function claimKey(m: MediaMetrics | null): string {
 
 /** Report this frame's best candidate — or explicitly nothing, so a frame
  *  that lost its player stops being eligible immediately. */
+/**
+ * Has this content script outlived the extension that injected it?
+ *
+ * A reload, an update or a disable leaves every already-injected content
+ * script running in its page with a DEAD `chrome.runtime`. The next call into
+ * it throws "Extension context invalidated" — and throws SYNCHRONOUSLY, which
+ * is the whole trap: every call site here was written as
+ * `void chrome.runtime.sendMessage(...).catch(() => undefined)`, and a
+ * `.catch()` only ever sees an async rejection. The synchronous throw sailed
+ * straight past it, uncaught, on every heartbeat of every frame of every open
+ * tab — hundreds of identical errors in the console of a page the user is
+ * simply trying to watch.
+ *
+ * So the send is guarded, and a dead context is TERMINAL rather than
+ * something to retry: nothing in this document can be revived by us, and the
+ * page will get a fresh content script when it next loads. Once it is seen,
+ * the heartbeat stops and this script goes quiet — which is what an orphan
+ * should do.
+ */
+let contextDead = false;
+
+/** True while the extension this script belongs to is still there. */
+function runtimeAlive(): boolean {
+  if (contextDead) return false;
+  // `chrome.runtime.id` reads undefined on an invalidated context and is the
+  // one probe that does not throw.
+  try {
+    if (chrome.runtime?.id !== undefined) return true;
+  } catch {
+    // Touching the namespace can itself throw once the context is gone.
+  }
+  contextDead = true;
+  return false;
+}
+
+/** Fire-and-forget message that cannot outlive its extension. */
+function tell(message: Record<string, unknown>): void {
+  if (!runtimeAlive()) return;
+  try {
+    void chrome.runtime.sendMessage(message).catch(() => undefined);
+  } catch {
+    // The synchronous half of the same death; stop trying.
+    contextDead = true;
+  }
+}
+
 function reportClaim(force = false): void {
   const metrics = currentMetrics();
   const payload = isPlausibleMain(metrics) ? metrics : null;
@@ -228,9 +274,7 @@ function reportClaim(force = false): void {
   }
   lastClaimKey = key;
   lastClaimAt = now;
-  void chrome.runtime
-    .sendMessage({ kind: 'frameClaim', metrics: payload, url: location.href })
-    .catch(() => undefined);
+  tell({ kind: 'frameClaim', metrics: payload, url: location.href });
 }
 
 let claimDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -253,7 +297,7 @@ function scheduleClaim(): void {
  */
 function reportProvider(): void {
   if (window.top !== window) return; // one report per tab, from the top frame
-  void chrome.runtime.sendMessage({ kind: 'provider' }).catch(() => undefined);
+  tell({ kind: 'provider' });
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +353,7 @@ function sendTelemetry(): void {
   // and the end detector's proof that a player it saw end is playing again.
   userIntent.notePosition(t.positionMs);
   mediaEnd.notePosition(t.positionMs, t.durationMs);
-  void chrome.runtime.sendMessage({ kind: 'telemetry', ...t }).catch(() => undefined);
+  tell({ kind: 'telemetry', ...t });
 }
 
 // ---------------------------------------------------------------------------
@@ -740,7 +784,13 @@ window.addEventListener('pageshow', (ev: Event) => {
   armPage();
 });
 
-setInterval(() => {
+const heartbeat = setInterval(() => {
+  // An orphaned script has nobody to talk to and nothing to drive. Stop the
+  // beat rather than spending a tick a second on a page forever.
+  if (!runtimeAlive()) {
+    clearInterval(heartbeat);
+    return;
+  }
   nav?.check();
   reportClaim();
   if (role === 'driver') sendTelemetry();

@@ -67,6 +67,35 @@ describe('web security headers', () => {
     }
   });
 
+  /**
+   * THE POLICY MUST ADMIT THE PLAYERS IT DRIVES, and this is the test that
+   * would have caught it. Every provider player is loaded by injecting THEIR
+   * script tag — YouTube's iframe_api, Vimeo's player.js, SoundCloud's widget
+   * api.js, Google's cast_sender.js. Under `script-src 'self'` the browser
+   * refused all four before any of our code ran, so a queued YouTube row
+   * never played and NOTHING in the room said why: the only evidence was a
+   * CSP violation in a console nobody had open. A silent failure at the
+   * product's single most common action is exactly the shape a header test
+   * exists to catch, and this file already existed and did not look.
+   */
+  it('admits the player SDKs the room actually loads', async () => {
+    const headers = await headersForAllRoutes();
+    const csp = headers.find((h) => h.key === 'Content-Security-Policy')!.value;
+    const scriptSrc = csp.split(';').find((d) => d.trim().startsWith('script-src')) ?? '';
+    for (const host of [
+      'https://www.youtube.com',
+      'https://player.vimeo.com',
+      'https://w.soundcloud.com',
+      'https://www.gstatic.com',
+      'https://static.cloudflareinsights.com',
+    ]) {
+      expect(scriptSrc, `script-src must admit ${host}`).toContain(host);
+    }
+    // Named hosts, never a blanket https: — that would readmit the external
+    // script injection the rest of this policy exists to block.
+    expect(scriptSrc).not.toMatch(/script-src[^;]*\shttps:(\s|$)/);
+  });
+
   it('the CSP closes the frames and objects that matter', async () => {
     const headers = await headersForAllRoutes();
     const csp = headers.find((h) => h.key === 'Content-Security-Policy')!.value;
