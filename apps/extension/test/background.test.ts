@@ -2571,6 +2571,26 @@ describe('the presence beat belongs to a surface the user can close', () => {
     expect(beats()).toBe(3);
   });
 
+  it('never writes presence STATE from a timer', async () => {
+    // The presence entry is one per PERSON, not one per socket. This beat used
+    // to stamp `state: 'watching'` every 15 seconds — so for a member also on
+    // the room's call in a web tab, every beat told the room they had left it,
+    // and everyone else's call pulled their audio and video. The web tab wrote
+    // 'in-call' back when it noticed, and the two fought for the whole call.
+    // The extension knows the person is watching; it does not know they are
+    // not ALSO on the call, so state is not its to write on a schedule.
+    vi.useFakeTimers();
+    await connectRoom();
+    room.sent.length = 0;
+
+    await vi.advanceTimersByTimeAsync(PRESENCE_BEAT_MS * 3);
+
+    const stamped = room.sent
+      .filter((m) => m.type === 'presence.update')
+      .filter((m) => (m.payload as Record<string, unknown>)['state'] !== undefined);
+    expect(stamped).toEqual([]);
+  });
+
   it('stops beating, and lets the room go, once the last surface closes', async () => {
     vi.useFakeTimers();
     await connectRoom();

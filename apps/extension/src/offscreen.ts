@@ -647,7 +647,11 @@ export async function startShare(
       // Now, and not a moment before: presence's `sharing` flag is what the
       // room's publisher ceiling counts, so claiming it BEFORE the ceiling
       // answered would have made this document its own exemption.
-      socket?.send('presence.update', { sharing: true, state: 'watching' });
+      // `sharing` only — never `state`. Presence is one entry per PERSON, and
+      // the person sharing from this document may be on the room's call in
+      // their web tab; writing 'watching' here is what made every other member
+      // pull their audio and video the moment a share started.
+      socket?.send('presence.update', { sharing: true });
       return;
     }
     if (!stageIsOurs) return;
@@ -684,7 +688,9 @@ export async function startShare(
   const askForRoom = (): void => {
     if (mesh !== sharedMesh) return;
     socket?.send('presence.update', {
-      state: 'watching',
+      // No `state` for the same reason the claim above sends none: the sharer
+      // may be mid-call in their web tab, and state is not this document's to
+      // write. `wantSnapshot` keeps the ask explicit either way.
       ...(stageIsOurs ? { sharing: true } : {}),
       wantSnapshot: true,
     });

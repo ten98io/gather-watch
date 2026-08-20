@@ -1286,7 +1286,9 @@ async function openSession(input: OpenSessionInput): Promise<void> {
   // still alive, so it does not auto-reply with one on reconnect. Ask
   // explicitly, the same way the web client does on refresh.
   if (input.resumed) {
-    socket.send('presence.update', { state: 'watching', wantSnapshot: true });
+    // No `state`: the ask is for the snapshot, and a revived worker knows no
+    // better than the beat does whether this person is mid-call in a web tab.
+    socket.send('presence.update', { wantSnapshot: true });
   }
 
   if (!input.resumed) await clearAbsence();
@@ -1465,10 +1467,18 @@ async function presenceBeat(): Promise<void> {
   if (present) {
     await clearAbsence();
     if (session !== live) return;
-    // Re-assert what we already are. An empty payload would be read by the
-    // server as a snapshot request and cost a full roster reply every beat.
+    // Liveness, NEVER state. This beat used to re-assert `state: 'watching'`
+    // every 15 seconds, and the presence entry is ONE PER PERSON, not one per
+    // socket — so for a member who was also on the room's call in a web tab,
+    // every beat stamped them back to 'watching' and every other member's
+    // call read it as "left the call" and pulled their audio and video. The
+    // web tab re-asserted 'in-call' when it noticed, and the two fought at
+    // 15-second intervals for the whole call. The extension knows whether this
+    // PERSON is watching; it does not know they are not ALSO on the call, so
+    // state is not its to write from a timer. `sharing` keeps the payload
+    // non-empty, which is what stops the server reading it as a roster
+    // request and answering with a full snapshot every beat.
     live.socket.send('presence.update', {
-      state: 'watching',
       sharing: live.restream?.active === true && live.restream.hostUserId === live.userId,
     });
     return;

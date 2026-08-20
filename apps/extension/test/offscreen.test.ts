@@ -626,15 +626,15 @@ describe('the room’s answer', () => {
 
     socket?.open();
     expect(socket?.sentOf('presence.update')).toEqual([
-      { state: 'watching', wantSnapshot: true },
+      { wantSnapshot: true },
     ]);
 
     // A reconnect is a fresh socket with no roster behind it: the peers it has
     // to rebuild are the ones in that reply, so it asks again.
     socket?.open();
     expect(socket?.sentOf('presence.update')).toEqual([
-      { state: 'watching', wantSnapshot: true },
-      { state: 'watching', wantSnapshot: true },
+      { wantSnapshot: true },
+      { wantSnapshot: true },
     ]);
   });
 
@@ -648,14 +648,14 @@ describe('the room’s answer', () => {
     // member already flagged takes their own slot — so claiming it before
     // restream.start was answered made this document its own exemption.
     expect(socket?.sentOf('presence.update')).toEqual([
-      { state: 'watching', wantSnapshot: true },
+      { wantSnapshot: true },
     ]);
 
     socket?.emit('restream.state', stage());
 
     expect(socket?.sentOf('presence.update')).toEqual([
-      { state: 'watching', wantSnapshot: true },
-      { sharing: true, state: 'watching' },
+      { wantSnapshot: true },
+      { sharing: true },
     ]);
   });
 
@@ -669,9 +669,9 @@ describe('the room’s answer', () => {
     socket?.open();
 
     expect(socket?.sentOf('presence.update')).toEqual([
-      { state: 'watching', wantSnapshot: true },
-      { sharing: true, state: 'watching' },
-      { sharing: true, state: 'watching', wantSnapshot: true },
+      { wantSnapshot: true },
+      { sharing: true },
+      { sharing: true, wantSnapshot: true },
     ]);
     // The stage is asked for ONCE. Re-taking it on every reconnect would put
     // this capture back on a room that had released it, which is a decision
@@ -798,10 +798,7 @@ describe('the room’s answer', () => {
 
     // …and the share still starts when the room does answer.
     h.sockets[0]?.emit('restream.state', stage());
-    expect(h.sockets[0]?.sentOf('presence.update')).toContainEqual({
-      sharing: true,
-      state: 'watching',
-    });
+    expect(h.sockets[0]?.sentOf('presence.update')).toContainEqual({ sharing: true });
   });
 
   it('stops capturing when a moderator stops the share', async () => {
@@ -848,8 +845,8 @@ describe('the room’s answer', () => {
     socket?.emit('restream.state', stage({ viewerCount: 2 }));
 
     expect(socket?.sentOf('presence.update')).toEqual([
-      { state: 'watching', wantSnapshot: true },
-      { sharing: true, state: 'watching' },
+      { wantSnapshot: true },
+      { sharing: true },
     ]);
   });
 
