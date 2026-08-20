@@ -47,7 +47,12 @@ const { RoomLayout } = await import('@/app/room/[id]/room-shell');
 const SC_REF: MediaRef = { kind: 'soundcloud', url: 'https://soundcloud.com/artist/neon-rain' };
 const YT_REF: MediaRef = { kind: 'youtube', videoId: 'dQw4w9WgXcQ' };
 
-function renderLayout(room: Room, member: Member, mediaRef: MediaRef | null): string {
+function renderLayout(
+  room: Room,
+  member: Member,
+  mediaRef: MediaRef | null,
+  over: { shareLive?: boolean } = {},
+): string {
   // Fresh per render: CallSessionProvider (inside RoomLayout) runs useQuery,
   // and a shared client would bleed cache between cases.
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -58,6 +63,17 @@ function renderLayout(room: Room, member: Member, mediaRef: MediaRef | null): st
     {
       playback: mediaRef === null ? null : playbackFor(mediaRef, 0),
       queue: { items, version: 1 },
+      ...(over.shareLive === true
+        ? {
+            restream: {
+              active: true,
+              hostUserId: member.userId,
+              startedAt: 1,
+              viewerCount: 0,
+              uplinkQuality: null,
+            },
+          }
+        : {}),
     },
     h(QueryClientProvider, { client }, h(RoomLayout, { roomId: room.id })),
   );
@@ -80,6 +96,13 @@ describe('theater follows the playing item', () => {
   it('hides the theater control while nothing plays', () => {
     const html = renderLayout(makeRoom('watch'), host, null);
     expect(html).not.toContain('Turn theater mode');
+  });
+
+  it('offers theater while a screen share is live — a share is a moving picture too', () => {
+    // The gate used to read the playing ITEM only, and a share is not an item:
+    // the one layout a live share most wants was unreachable for its host.
+    const html = renderLayout(makeRoom('watch'), host, null, { shareLive: true });
+    expect(html).toContain('Turn theater mode on');
   });
 
   it('never offers the control to plain members', () => {

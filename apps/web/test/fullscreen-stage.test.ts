@@ -181,16 +181,36 @@ describe('true browser fullscreen for the stage', () => {
     removeFullscreenApi();
   });
 
-  async function mount(room: Room = makeRoom('watch')): Promise<void> {
+  async function mount(
+    room: Room = makeRoom('watch'),
+    over: { shareLive?: boolean } = {},
+  ): Promise<void> {
     const items = [queueItem(MP4, 'a clip')];
+    const member = makeMember('member');
     await act(async () => {
       root.render(
         h(
           RoomProvider,
-          { room, member: makeMember('member'), roomId: ROOM_ID, lastEventSeq: 0 } as never,
+          { room, member, roomId: ROOM_ID, lastEventSeq: 0 } as never,
           h(
             Seeded,
-            { patch: { playback: playbackFor(MP4, 0), queue: { items, version: 1 } } },
+            {
+              patch: {
+                playback: playbackFor(MP4, 0),
+                queue: { items, version: 1 },
+                ...(over.shareLive === true
+                  ? {
+                      restream: {
+                        active: true,
+                        hostUserId: member.userId,
+                        startedAt: 1,
+                        viewerCount: 0,
+                        uplinkQuality: null,
+                      },
+                    }
+                  : {}),
+              },
+            },
             h(StagePane, { roomId: ROOM_ID }),
           ),
         ),
@@ -222,6 +242,26 @@ describe('true browser fullscreen for the stage', () => {
     const btn = buttonByLabel(/fullscreen/i);
     expect(btn?.getAttribute('aria-label')).toBe('Fullscreen (F)');
     expect(btn?.disabled).toBe(false);
+  });
+
+  it('keeps a fullscreen control during a screen share, where the transport is withheld', async () => {
+    // The transport bar deliberately disappears while a share is on stage, and
+    // the fullscreen control lived in it — so the one moment a whole screen is
+    // exactly what a viewer wants was the one moment the button did not exist.
+    // The F key worked the entire time; a key nobody is told about is not an
+    // affordance.
+    installFullscreenApi();
+    await mount(makeRoom('watch'), { shareLive: true });
+    // The transport is genuinely gone…
+    expect(buttonByLabel(/^(Play|Pause)/)).toBeNull();
+    // …and fullscreen survives on the share stage itself.
+    const btn = buttonByLabel(/^fullscreen/i);
+    expect(btn).not.toBeNull();
+  });
+
+  it('withholds the share-stage control too where the platform cannot fullscreen', async () => {
+    await mount(makeRoom('watch'), { shareLive: true });
+    expect(buttonByLabel(/fullscreen/i)).toBeNull();
   });
 
   it('fullscreens the whole stage section, so the transport goes with it', async () => {

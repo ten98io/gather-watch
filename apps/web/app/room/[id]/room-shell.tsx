@@ -304,7 +304,11 @@ export function RoomLayout({ roomId }: { roomId: RoomId }) {
    * trap, and the queue can move to music while theater is on.
    */
   const theaterActive = room.theater;
-  const canToggleTheater = canManage && (stageKind === 'video' || theaterActive);
+  /** A live share is a moving picture too: theater is exactly as sensible over
+   *  it as over a video item, and hiding the toggle during a share left the
+   *  host unable to give the room the layout the share most wants. */
+  const shareLive = connection.useRoomState((s) => s.restream?.active === true);
+  const canToggleTheater = canManage && (stageKind === 'video' || shareLive || theaterActive);
 
   const toggleTheater = (): void => {
     void apiFetch(`/rooms/${roomId}/theater`, {

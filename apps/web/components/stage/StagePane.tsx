@@ -42,7 +42,8 @@ import type { ProviderSummary } from '@/lib/extension-bridge';
 import { API_URL, getAccessToken } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonClasses } from '@/components/ui/button';
-import { PlayIcon } from '@/components/ui/icons';
+import { PlayIcon, TheaterIcon } from '@/components/ui/icons';
+import { Tooltip } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 import { EmoteOverlay } from './EmoteOverlay';
@@ -1308,7 +1309,34 @@ export function StagePane({ roomId }: { roomId: RoomId }) {
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center">
         {shareOnStage ? (
-          <ScreenShareStage restream={restream} />
+          <>
+            <ScreenShareStage restream={restream} />
+            {/* The transport bar is deliberately withheld during a share, and
+                the fullscreen control lived in it — so the one moment a whole
+                screen is exactly what a viewer wants was the one moment the
+                button did not exist. The `f` binding worked the entire time;
+                a key nobody is told about is not an affordance. Glass, because
+                this genuinely floats over moving video (DESIGN.md §4). */}
+            {fullscreen.supported && (
+              <div className="absolute right-4 top-14 z-20">
+                <Tooltip
+                  content={fullscreen.active ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                  align="end"
+                >
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-pressed={fullscreen.active}
+                    aria-label={fullscreen.active ? 'Exit fullscreen' : 'Fullscreen'}
+                    onClick={fullscreen.toggle}
+                    className="glass-panel"
+                  >
+                    <TheaterIcon size={16} />
+                  </Button>
+                </Tooltip>
+              </div>
+            )}
+          </>
         ) : extensionDriving ? (
           <ExtensionDrivingStage
             provider={extension.state.phase === 'ready' ? extension.state.provider : null}
